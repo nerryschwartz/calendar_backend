@@ -1,0 +1,40 @@
+---
+description: Layer ownership boundaries for calendar_backend
+alwaysApply: true
+---
+
+Respect package ownership boundaries.
+
+calendar_backend/db:
+- Owns SQLAlchemy base, metadata, engine/session setup, and Alembic integration.
+- Does not own business rules or scheduling algorithms.
+
+calendar_backend/models:
+- Owns SQLAlchemy table mappings and relationships.
+- Models are persistence records.
+- Do not put public mutation behavior or scheduling logic here.
+
+calendar_backend/domain:
+- Owns pure enums, IDs, errors, dataclasses, time helpers, DTOs, and ServiceResult.
+- Does not import SQLAlchemy sessions.
+
+calendar_backend/services:
+- Owns public service methods, validation, transactions, and persistence-changing behavior.
+- Services coordinate models and domain types.
+- Do not put heavy optional solver dependencies here.
+
+calendar_backend/scheduling:
+- Owns assignment solver interfaces and algorithms.
+- Does not import SQLAlchemy sessions or write the database.
+
+calendar_backend/deletion:
+- Owns deletion previews and conflict deletion suggestions.
+- Does not execute task assignment.
+
+calendar_backend/orchestration:
+- Owns composed workflows such as refresh_schedule.
+- Does not duplicate low-level service logic.
+
+tools:
+- Thin development CLI only.
+- No business logic that is not callable from services.

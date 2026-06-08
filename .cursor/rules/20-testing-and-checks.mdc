@@ -1,0 +1,18 @@
+---
+description: Testing and check expectations
+alwaysApply: true
+---
+
+Testing expectations:
+- Add or update tests with each implementation slice when behavior changes.
+- Invariant tests should come before complex scheduling implementation.
+- Prefer small service/invariant tests over broad end-to-end tests until the service layer is stable.
+- Use integration tests for refresh_schedule and cross-service persistence behavior.
+- Do not silently skip failing tests.
+- If a check fails during a command that is not explicitly a fix command, report the failure and stop.
+
+Default local check sequence:
+1. uv run ruff format .
+2. uv run ruff check .
+3. uv run pyright
+4. uv run pytest -m not slow and not failure_expected

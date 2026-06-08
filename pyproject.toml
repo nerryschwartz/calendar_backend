@@ -1,0 +1,72 @@
+[project]
+name = "calendar-backend"
+version = "0.1.0"
+description = "Python service-layer backend for task planning, scheduling, calendar assignment, and free-time allocation."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.13",
+    "sqlalchemy>=2.0",
+]
+
+[project.scripts]
+calendar-backend-dev = "tools.dev_cli:main"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["calendar_backend", "tools", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "SIM",
+    "PL",
+    "RUF",
+]
+ignore = [
+    "PLR0913", # service methods may need explicit parameters
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "PLR2004", # magic values in tests are often clearer than named constants
+]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+include = ["calendar_backend", "tools", "tests"]
+venvPath = "."
+venv = ".venv"
+reportMissingTypeStubs = "warning"
+reportUnknownMemberType = "warning"
+reportUnknownVariableType = "warning"
+reportUnknownArgumentType = "warning"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "slow: tests that are too slow for the default local suite",
+    "failure_expected: tests that document known unsupported/failing behavior",
+    "integration: integration tests that touch multiple services or persistence boundaries",
+]

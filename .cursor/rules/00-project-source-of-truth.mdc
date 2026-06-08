@@ -1,0 +1,26 @@
+---
+description: Project source of truth and implementation boundaries
+alwaysApply: true
+---
+
+The updated calendar_backend V1 engineering design document is the source of truth for architecture and behavior.
+
+Project identity:
+- Python service-layer backend named calendar_backend.
+- Persistence uses SQLite through SQLAlchemy ORM and Alembic.
+- Mutations go through services inside transactions.
+- ORM models are persistence records, not behavior-heavy domain objects.
+- DTOs/result objects use frozen dataclasses where practical.
+- Scheduling components must be isolated from persistence.
+- V1 prioritizes correctness, readability, deterministic behavior, and explicit invariants.
+
+Do not implement V1 non-goals unless explicitly asked:
+- No production HTTP API or mobile frontend.
+- No OS notification scheduler.
+- No external calendar sync.
+- No recurring availability constraints.
+- No undo/audit/soft-delete/history system.
+- No DAG plan relationships.
+- No orphan active plans.
+- No mutable plan type or plan type conversion.
+- No sub-minute scheduling.

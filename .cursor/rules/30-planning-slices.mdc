@@ -1,0 +1,20 @@
+---
+description: Planning and slice discipline
+alwaysApply: true
+---
+
+For implementation plans:
+- Plans live in .cursor/plans/.
+- Each plan must be split into small, reviewable slices.
+- Stop after each slice and wait for approval before building the next slice.
+- Do not stop after each individual file edit.
+- Each slice must include:
+  - objective
+  - files expected to change
+  - implementation steps
+  - tests/checks
+  - acceptance criteria
+  - risks/edge cases
+- Do not broaden scope during build.
+- If implementation reveals a need to change the approved plan, stop and ask.
+- If additional dependencies are necessary, install them with uv as part of the relevant slice.

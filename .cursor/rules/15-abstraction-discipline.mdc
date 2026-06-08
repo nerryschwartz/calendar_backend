@@ -1,0 +1,23 @@
+---
+description: Prevent unnecessary abstractions while preserving useful decomposition
+alwaysApply: true
+---
+
+Abstraction discipline:
+- Prefer the simplest readable implementation that satisfies current known requirements.
+- Prefer extraction for readability; avoid abstraction for hypothetical flexibility.
+- Do not add classes, factories, registries, strategies, protocols, adapters, or frameworks for possible future needs.
+- An abstraction is allowed only when at least one of these is true:
+  1. There are already two or more real implementations.
+  2. The abstraction removes duplicated logic that exists now.
+  3. The boundary represents a real domain concept with independent invariants.
+  4. The seam is needed for testing an otherwise hard-to-control side effect.
+  5. The approved plan explicitly calls for this abstraction.
+
+Helper functions:
+- One-call helper functions are allowed only when they name a meaningful domain step, isolate a side effect, or keep a function from mixing levels of detail.
+- Do not create pass-through wrappers.
+- Do not create classes that only hold one method and no meaningful state.
+- Prefer functions and explicit parameters over classes unless object state or polymorphism is genuinely needed.
+- Prefer local, direct code over extensibility hooks until variation actually exists.
+- If introducing an abstraction, explain why it is necessary now.

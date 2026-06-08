@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtualenv
+.venv/
+
+# Databases and local generated files
+*.sqlite
+*.sqlite3
+*.db
+local_data/
+
+# Cursor/editor
+.cursor/plans/*.tmp.md
+
+# OS/editor noise
+.DS_Store
+.vscode/
