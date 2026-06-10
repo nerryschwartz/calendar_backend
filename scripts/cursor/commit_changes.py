@@ -30,58 +30,18 @@ def has_changes() -> bool:
     return unstaged or staged
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--skip-tests",
-        action="store_true",
-        help="Skip pytest for this invocation only.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show status and suggested process without staging or committing.",
-    )
-    args = parser.parse_args()
-
-    if not has_changes():
-        print("No changes to commit.")
-        return 0
-
+def run_checks(*, skip_tests: bool) -> None:
     run(["uv", "run", "ruff", "format", "."])
     run(["uv", "run", "ruff", "check", "."])
     run(["uv", "run", "pyright"])
 
-    if args.skip_tests:
+    if skip_tests:
         print("\nTests skipped for this invocation only.")
     else:
         run(["uv", "run", "pytest", "-m", "not slow and not failure_expected"])
 
-    print("\n## Current diff summary")
-    run(["git", "status", "--short"], check=False)
-    run(["git", "diff", "--stat"], check=False)
-    run(["git", "diff", "--name-status"], check=False)
 
-    print(
-        """
-## Commit splitting rubric
-
-Prefer separate commits when changes differ by:
-- behavior vs tests
-- production code vs refactor
-- config/dependency changes vs app code
-- generated files vs source files
-- docs vs implementation
-- schema migration vs consumers
-- mechanical rename vs semantic behavior change
-
-Use `git add -p` for patch-level staging.
-"""
-    )
-
-    if args.dry_run:
-        return 0
-
+def run_staging_loop() -> int:
     while True:
         answer = input("Open interactive staging now? [y/N] ").strip().lower()
         if answer not in {"y", "yes"}:
@@ -110,6 +70,62 @@ Use `git add -p` for patch-level staging.
         if again not in {"y", "yes"}:
             print("Remaining changes left uncommitted.")
             return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--skip-tests",
+        action="store_true",
+        help="Skip pytest for this invocation only.",
+    )
+    parser.add_argument(
+        "--skip-checks",
+        action="store_true",
+        help="Skip ruff, pyright, and pytest for this invocation only.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show status and suggested process without staging or committing.",
+    )
+    args = parser.parse_args()
+
+    if not has_changes():
+        print("No changes to commit.")
+        return 0
+
+    if args.skip_checks:
+        print("\nChecks skipped for this invocation only.")
+    else:
+        run_checks(skip_tests=args.skip_tests)
+
+    print("\n## Current diff summary")
+    run(["git", "status", "--short"], check=False)
+    run(["git", "diff", "--stat"], check=False)
+    run(["git", "diff", "--name-status"], check=False)
+
+    print(
+        """
+## Commit splitting rubric
+
+Prefer separate commits when changes differ by:
+- behavior vs tests
+- production code vs refactor
+- config/dependency changes vs app code
+- generated files vs source files
+- docs vs implementation
+- schema migration vs consumers
+- mechanical rename vs semantic behavior change
+
+Use `git add -p` for patch-level staging.
+"""
+    )
+
+    if args.dry_run:
+        return 0
+
+    return run_staging_loop()
 
 
 if __name__ == "__main__":
