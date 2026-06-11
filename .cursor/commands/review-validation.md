@@ -12,9 +12,15 @@ Parameter hygiene:
 - If `Edit` is missing, assume `Edit: false`.
 - Do not infer parameters from previous invocations.
 
+Working diff definition:
+- Start with tracked changes from `git diff` and `git diff --cached`.
+- Also include untracked files that are not excluded by `.gitignore` (new commitable files).
+- For an untracked non-ignored file in scope, treat the entire current file as newly added content.
+- Exclude ignored and hidden generated files even if present on disk.
+
 Area to examine:
-- If `Changes only: true` and `File` is absent, inspect the current git diff.
-- If `Changes only: true` and `File` is set, inspect `git diff -- <file>`.
+- If `Changes only: true` and `File` is absent, inspect the full working diff.
+- If `Changes only: true` and `File` is set, inspect the working diff for `<file>` only.
 - If `Changes only: false` and `File` is set, inspect the whole file.
 - If `Changes only: false` and `File` is absent, inspect the whole codebase.
   - Prefer targeted searches for validation patterns.

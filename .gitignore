@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+*.egg-info/
 
 # Virtualenv
 .venv/
@@ -14,9 +15,6 @@ htmlcov/
 *.sqlite3
 *.db
 local_data/
-
-# Cursor/editor
-.cursor/plans/*.tmp.md
 
 # OS/editor noise
 .DS_Store

@@ -16,8 +16,8 @@ Use these decisions throughout the project:
 - Use `ruff format`, `ruff check`, `pyright`, and `pytest`.
 - Use SQLAlchemy ORM with SQLite and Alembic migrations.
 - Keep Cursor files repo-local unless a file is explicitly described as optional/global.
-- Store active Cursor plans in `.cursor/plans/`.
-- Store durable human-facing summaries in `docs/plans/` only when useful.
+- Store draft Cursor plans in `~/.cursor/plans/`.
+- Store finalized plans in `docs/plans/`.
 - Stop and review after each implementation slice, not after each file edit.
 - Work on sequential solo branches. Merge-command tooling is intentionally omitted.
 - Defer OR-Tools until the exact-solver implementation slice.
@@ -40,7 +40,7 @@ A typical loop:
 2. Start a new branch for a logical implementation unit.
 3. Use /request-questions in Plan Mode.
 4. Answer questions until there are no blocking questions.
-5. Use /draft-plan to create a plan in .cursor/plans/.
+5. Use /draft-plan to create a draft plan in ~/.cursor/plans/, then finalize it in docs/plans/.
 6. Use /revise-plan until the plan is acceptable.
 7. Use /build-plan-slice for slice 1 only.
 8. Review the diff and run checks.
@@ -115,7 +115,6 @@ mkdir -p \
   scripts/cursor \
   .cursor/commands \
   .cursor/rules \
-  .cursor/plans \
   docs/plans
 ```
 
@@ -242,7 +241,6 @@ htmlcov/
 local_data/
 
 # Cursor/editor
-.cursor/plans/*.tmp.md
 
 # OS/editor noise
 .DS_Store
@@ -258,7 +256,7 @@ Create `README.md`:
 
 Python service-layer backend for task planning, scheduling, calendar assignment, and free-time allocation.
 
-The implementation source of truth is the updated V1 engineering design document. Active Cursor implementation plans live in `.cursor/plans/`.
+The implementation source of truth is the updated V1 engineering design document. Finalized implementation plans live in `docs/plans/`.
 ```
 
 ### 2.7 Minimal `tools/dev_cli.py`
@@ -426,7 +424,8 @@ alwaysApply: true
 ---
 
 For implementation plans:
-- Plans live in .cursor/plans/.
+- Draft plans live in ~/.cursor/plans/.
+- Finalized plans live in docs/plans/.
 - Each plan must be split into small, reviewable slices.
 - Stop after each slice and wait for approval before building the next slice.
 - Do not stop after each individual file edit.
@@ -483,7 +482,8 @@ Draft a Cursor implementation plan.
 Inputs:
 - The updated calendar_backend V1 engineering design document is the source of truth.
 - Use the active conversation instructions and any locked decisions.
-- Store the plan in .cursor/plans/.
+- Store draft plans in ~/.cursor/plans/.
+- After approval, save the finalized plan to docs/plans/.
 - Do not edit source code.
 
 Plan requirements:
@@ -538,7 +538,7 @@ Use this when a plan already exists.
 Revise the existing implementation plan. Do not create a new plan unless I explicitly say to start over.
 
 Instructions:
-- Locate the current active plan, preferably the open plan or the most recent relevant file in .cursor/plans/.
+- Locate the current active plan in docs/plans/ if finalized, or in ~/.cursor/plans/ if still drafting.
 - Preserve the plan's structure unless the structure itself is the problem.
 - Apply my requested changes as a patch to the existing plan.
 - If the requested change conflicts with an earlier locked decision or the design document, ask before changing it.
@@ -559,7 +559,7 @@ Use this in Agent mode after a plan and slice are approved.
 Build exactly one approved plan slice.
 
 Before editing:
-- Identify the active plan file in .cursor/plans/.
+- Identify the active finalized plan file in docs/plans/.
 - Identify the exact slice to build.
 - If the slice is ambiguous, ask one concise blocking question and stop.
 - Do not build future slices.
@@ -1197,7 +1197,7 @@ uv run pytest -m "not slow and not failure_expected"
 
 ## 9. Implementation plan prompts
 
-Use these prompts sequentially. Each prompt should create one plan in `.cursor/plans/`, and each plan should contain smaller build slices.
+Use these prompts sequentially. Each prompt should produce a finalized plan in `docs/plans/`, and each plan should contain smaller build slices.
 
 These prompts intentionally split the design into more granular plans than the high-level roadmap.
 
@@ -1222,7 +1222,7 @@ The plan should be split into small slices:
 3. Cursor rules/commands/scripts
 4. initial smoke tests/checks
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 2: Database base, session, and Alembic baseline
@@ -1247,7 +1247,7 @@ Split into slices:
 3. Alembic initialization/configuration
 4. database infrastructure tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 3: Domain primitives, IDs, enums, time helpers, results
@@ -1270,7 +1270,7 @@ Split into slices:
 4. ServiceResult and common result helpers
 5. tests for domain validation and time helpers
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 4: Core ORM models part 1 — plans and child chains
@@ -1296,7 +1296,7 @@ Split into slices:
 4. initial Alembic migration
 5. model/schema tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 5: Core ORM models part 2 — constraints, repetitions, calendar, settings, runs, free time
@@ -1324,7 +1324,7 @@ Split into slices:
 5. settings and run metadata tables
 6. Alembic migration and schema tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 6: Master plan, app settings, and master horizon services
@@ -1351,7 +1351,7 @@ Split into slices:
 4. MasterHorizonService
 5. invariant/service tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 7: Time constraint service and invariant validation
@@ -1376,7 +1376,7 @@ Split into slices:
 4. invariant diagnostics
 5. tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 8: Plan tree service
@@ -1403,7 +1403,7 @@ Split into slices:
 4. real deletion and cascade parity
 5. tests for tree invariants and deletion behavior
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 9: Task service
@@ -1427,7 +1427,7 @@ Split into slices:
 3. clone detachment hooks/primitives
 4. service tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 10: Repetition service
@@ -1454,7 +1454,7 @@ Split into slices:
 5. detachment behavior tests
 6. horizon expansion tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 11: Task resolution service
@@ -1480,7 +1480,7 @@ Split into slices:
 5. invalid incomplete task blocking metadata
 6. tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 12: Deletion previews and conflict deletion suggestions
@@ -1505,7 +1505,7 @@ Split into slices:
 4. conflict deletion candidate generation
 5. ranking tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 13: Scheduling interfaces and heuristic solver
@@ -1531,7 +1531,7 @@ Split into slices:
 4. deterministic heuristic algorithm
 5. heuristic tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 14: Task assignment service and conflict analysis
@@ -1557,7 +1557,7 @@ Split into slices:
 4. failure behavior and conflict analysis
 5. tests for success/failure/no-calendar-replacement
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 15: Free-time activity and assignment services
@@ -1586,7 +1586,7 @@ Split into slices:
 5. deterministic free-time assignment
 6. tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 16: Orchestration refresh workflow
@@ -1612,7 +1612,7 @@ Split into slices:
 5. CalendarRun and ActiveCalendarState tests
 6. end-to-end integration tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 17: Exact solver with OR-Tools CP-SAT
@@ -1640,7 +1640,7 @@ Split into slices:
 6. integration with TaskAssignmentService fallback
 7. tests with small deterministic cases
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 18: Development CLI
@@ -1664,7 +1664,7 @@ Split into slices:
 4. optional refresh_schedule command once services support it
 5. smoke tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 19: Invariant and integration test hardening
@@ -1690,7 +1690,7 @@ Split into slices by test category:
 7. deletion tests
 8. integration tests
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 20: Final V1 design conformance audit
@@ -1715,7 +1715,7 @@ Split into slices:
 6. abstraction discipline audit
 7. docs/dev CLI audit
 
-Store the plan in .cursor/plans/.
+Store the finalized plan in docs/plans/.
 ```
 
 ## 10. Branch workflow for solo sequential work
@@ -1747,7 +1747,7 @@ If `--ff-only` fails, stop and inspect manually. In a solo sequential workflow, 
 
 ### 11.2 Before building a slice
 
-- Is the active plan in `.cursor/plans/`?
+- Is the active finalized plan in `docs/plans/`?
 - Is the slice number/name explicit?
 - Are acceptance criteria clear?
 - Are expected files listed?

@@ -1,4 +1,10 @@
-Analyze private helpers changed by the git diff for one specified Python file.
+Analyze private helpers changed by the working diff for one specified Python file.
+
+Working diff definition:
+- Start with tracked changes from `git diff` and `git diff --cached`.
+- Also include untracked files that are not excluded by `.gitignore` (new commitable files).
+- For an untracked non-ignored file in scope, treat the entire current file as newly added content.
+- Exclude ignored and hidden generated files even if present on disk.
 
 Parameter hygiene:
 - Ignore trailing words attached to the slash command.
@@ -15,28 +21,34 @@ Rules:
 - Do not run formatters.
 - Do not stage or commit.
 - The file must be a Python file ending in .py.
-- Use `git diff -- <file>` as the source of diff truth.
+- Use the working diff for `<file>` as the source of diff truth.
 - Inspect the current file for line numbers and call context.
 - A private helper is a Python function or method whose name starts with exactly one underscore, such as `_helper`, not `__dunder` and not public functions.
 - Include helpers that are newly defined in the diff.
 - Include helpers that existed before but have changed lines in the diff.
-- Treat every function/method not newly defined in the diff as an external call site.
-- External call sites include:
+- External call site: a function/method that calls a newly defined or changed private helper.
+- Include a caller unless it is both newly defined in this diff and a private helper.
+- Equivalently, include the caller if it is not newly defined in this diff OR it is not a private helper.
+- External call sites therefore include:
   - existing public functions
   - existing private helpers
   - newly defined public functions
+- Do not list newly defined private helpers here when they only call other private helpers; cover that in helper summaries instead.
 
 Workflow:
 1. Read the `File:` field from the current message.
 2. Confirm the file path ends in `.py`.
-3. Run `git diff -- <file>`.
-4. If there is no diff for the file, report that and stop.
+3. Build the working diff for `<file>`:
+   - `git diff -- <file>`
+   - `git diff --cached -- <file>`
+   - if `<file>` is untracked and not gitignored, include the full current file as added content
+4. If the file has no working diff (no tracked changes and not an untracked non-ignored file), report that and stop.
 5. Find newly defined helpers from added `def _name` or `async def _name` lines.
 6. Find changed existing helpers by mapping changed diff lines back to enclosing function or method definitions in the current file.
 7. Parse or inspect the current file to determine helper-to-helper calls.
    - Prefer Python AST when practical.
    - Use text search only as a fallback.
-8. Find external call sites: functions or methods not newly defined in this diff that call any newly defined or changed private helper.
+8. Find external call sites: callers of any newly defined or changed private helper that are not both newly defined and private helpers.
 9. For every changed private helper, summarize its role in prose.
    - Include important helper calls inside the role sentence.
    - Do not produce separate generic helper/non-helper call lists.
@@ -52,18 +64,18 @@ For each helper:
 - Summarize what the helper does and how it uses any helper calls.
 - Keep summaries concise.
 
-## Call Sites From Functions Not Newly Defined In This Diff
+## External Call Sites
 
 Group by caller.
 
 For each call site:
 - Link to the call line.
 - Explain when or why the caller invokes the helper.
-- Include existing private callers here too if they are not newly defined in the diff.
+- Include existing private callers, newly defined public callers, and any caller matching the external call site rule above.
 
-## Helper Call Trees For Helpers Called From Non-New Functions
+## Helper Call Trees For Externally Called Helpers
 
-For each helper that is called from an external call site:
+For each helper that is called from an external call site (not only from newly defined private helpers):
 - Render one compact helper-only tree.
 - Prefer Mermaid if the current renderer supports it.
 - If Mermaid does not render cleanly, use the plain-text fallback format below.
