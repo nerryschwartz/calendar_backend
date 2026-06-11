@@ -1,3 +1,15 @@
+from calendar_backend.domain.enums import (
+    CalendarEntryType,
+    CalendarRunStatus,
+    CloneStatus,
+    ConstraintKind,
+    FreeTimeWeekStartDay,
+    LastFailureReason,
+    PlanKind,
+    RepeatMode,
+    SolverStatus,
+)
+from calendar_backend.domain.errors import MessageCode, ServiceMessage, WrongPlanTypeError
 from calendar_backend.domain.ids import (
     CalendarEntryID,
     CalendarRunID,
@@ -14,14 +26,26 @@ from calendar_backend.domain.ids import (
 
 __all__ = [
     "CalendarEntryID",
+    "CalendarEntryType",
     "CalendarRunID",
+    "CalendarRunStatus",
+    "CloneStatus",
+    "ConstraintKind",
     "FreeTimeActivityID",
     "FreeTimeActivityPrerequisiteID",
+    "FreeTimeWeekStartDay",
     "GoalChildChainID",
     "GoalChildChainItemID",
+    "LastFailureReason",
+    "MessageCode",
     "PlanID",
+    "PlanKind",
+    "RepeatMode",
     "RepetitionInstanceID",
+    "ServiceMessage",
+    "SolverStatus",
     "TimeConstraintGroupID",
     "TimeWindowID",
+    "WrongPlanTypeError",
     "new_id",
 ]
