@@ -4,7 +4,8 @@ alwaysApply: true
 ---
 
 For implementation plans:
-- Plans live in .cursor/plans/.
+- Draft plans live in ~/.cursor/plans/.
+- Finalized plans live in docs/plans/.
 - Each plan must be split into small, reviewable slices.
 - Stop after each slice and wait for approval before building the next slice.
 - Do not stop after each individual file edit.

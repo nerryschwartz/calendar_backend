@@ -1,7 +1,7 @@
 Build exactly one approved plan slice.
 
 Before editing:
-- Identify the active plan file in .cursor/plans/.
+- Identify the active finalized plan file in docs/plans/.
 - Identify the exact slice to build.
 - If the slice is ambiguous, ask one concise blocking question and stop.
 - Do not build future slices.

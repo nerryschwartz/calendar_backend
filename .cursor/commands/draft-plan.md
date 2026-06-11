@@ -3,7 +3,8 @@ Draft a Cursor implementation plan.
 Inputs:
 - The updated calendar_backend V1 engineering design document is the source of truth.
 - Use the active conversation instructions and any locked decisions.
-- Store the plan in .cursor/plans/.
+- Store draft plans in ~/.cursor/plans/.
+- After approval, save the finalized plan to docs/plans/.
 - Do not edit source code.
 
 Plan requirements:

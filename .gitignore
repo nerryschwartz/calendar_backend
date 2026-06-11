@@ -15,9 +15,6 @@ htmlcov/
 *.db
 local_data/
 
-# Cursor/editor
-.cursor/plans/*.tmp.md
-
 # OS/editor noise
 .DS_Store
 .vscode/
