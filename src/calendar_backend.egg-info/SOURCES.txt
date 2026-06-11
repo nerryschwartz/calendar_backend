@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/calendar_backend/__init__.py
-src/calendar_backend.egg-info/PKG-INFO
-src/calendar_backend.egg-info/SOURCES.txt
-src/calendar_backend.egg-info/dependency_links.txt
-src/calendar_backend.egg-info/entry_points.txt
-src/calendar_backend.egg-info/requires.txt
-src/calendar_backend.egg-info/top_level.txt

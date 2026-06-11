@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: calendar-backend
-Version: 0.1.0
-Summary: Python service-layer backend for task planning, scheduling, calendar assignment, and free-time allocation.
-Requires-Python: >=3.13
-Description-Content-Type: text/markdown
-Requires-Dist: alembic>=1.13
-Requires-Dist: sqlalchemy>=2.0

@@ -1,2 +1,0 @@
-[console_scripts]
-calendar-backend-dev = tools.dev_cli:main
