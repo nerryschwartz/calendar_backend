@@ -33,4 +33,15 @@ After editing:
   4. Any skipped checks and why
   5. Whether the slice acceptance criteria are met
 
+Then run `/review-validation` using `.cursor/commands/review-validation.md` with:
+- Changes only: true
+- Edit: true
+
+Validation pass rules:
+- Inspect the current git diff only; do not examine or edit files or lines outside the diff.
+- Remove only validation that is clearly redundant or clearly not helpful per that command.
+- Do not write a findings-only report when redundant validation can be removed within the diff.
+- If no validation changes are warranted, say so briefly in the slice report.
+- After validation edits, run the narrowest relevant checks again when code changed.
+
 Stop after this slice and wait for approval.

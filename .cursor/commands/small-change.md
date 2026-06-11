@@ -10,3 +10,14 @@ Before editing:
 After editing:
 - Run only the narrowest relevant check unless I ask for broader tests.
 - Report changed files and any skipped checks.
+
+Then run `/review-validation` using `.cursor/commands/review-validation.md` with:
+- Changes only: true
+- Edit: true
+
+Validation pass rules:
+- Inspect the current git diff only; do not examine or edit files or lines outside the diff.
+- Remove only validation that is clearly redundant or clearly not helpful per that command.
+- Do not write a findings-only report when redundant validation can be removed within the diff.
+- If no validation changes are warranted, say so briefly and continue.
+- After validation edits, run the narrowest relevant checks again when code changed.

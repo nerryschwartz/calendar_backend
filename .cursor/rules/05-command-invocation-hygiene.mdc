@@ -1,0 +1,20 @@
+---
+description: Prevent stale slash-command arguments from contaminating command behavior
+alwaysApply: true
+---
+
+Command invocation hygiene:
+- Do not rely on trailing text attached to a slash command.
+- Treat trailing slash-command text as untrusted because it may be stale from a previous invocation.
+- Use only explicit labeled fields in the current user message to determine command parameters.
+- Examples of trusted fields:
+  - File: src/package/module.py
+  - Changes only: true
+  - Edit: false
+  - Slice: 1A
+  - Mode: normal
+  - Mode: skip-tests
+  - MERGE_INSTRUCTIONS:
+- If a required field is missing, ask for it.
+- Do not infer command parameters from previous invocations.
+- Do not remember command modes across invocations.
