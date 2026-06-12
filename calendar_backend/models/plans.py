@@ -1,10 +1,28 @@
+"""ORM mappings for the plan tree and goal child chains.
+
+Subtype pairing (plan_kind vs detail rows) and tree reachability are enforced
+by services and PlanTreeInvariantService, not by database triggers or ORM.
+"""
+
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Uuid
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from calendar_backend.db.base import Base
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
@@ -12,6 +30,18 @@ from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 
 class Plan(Base):
     __tablename__ = "plan"
+    __table_args__ = (
+        CheckConstraint(
+            "NOT is_master OR plan_kind = 'GOAL'",
+            name="master_is_goal",
+        ),
+        Index(
+            "uq_plan_is_master",
+            "is_master",
+            unique=True,
+            sqlite_where=text("is_master = 1"),
+        ),
+    )
 
     plan_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     plan_kind: Mapped[PlanKind] = mapped_column(
@@ -37,6 +67,29 @@ class Plan(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    parent: Mapped[Plan | None] = relationship(
+        remote_side=[plan_id],
+        back_populates="children",
+        foreign_keys=[parent_id],
+    )
+    children: Mapped[list[Plan]] = relationship(
+        back_populates="parent",
+        foreign_keys=[parent_id],
+    )
+    goal_plan: Mapped[GoalPlan | None] = relationship(
+        back_populates="plan",
+        uselist=False,
+    )
+    task_plan: Mapped[TaskPlan | None] = relationship(
+        back_populates="plan",
+        uselist=False,
+    )
+    repetition_plan: Mapped[RepetitionPlan | None] = relationship(
+        back_populates="plan",
+        uselist=False,
+        foreign_keys="RepetitionPlan.plan_id",
+    )
+
 
 class GoalPlan(Base):
     __tablename__ = "goal_plan"
@@ -46,6 +99,9 @@ class GoalPlan(Base):
         ForeignKey("plan.plan_id"),
         primary_key=True,
     )
+
+    plan: Mapped[Plan] = relationship(back_populates="goal_plan")
+    chains: Mapped[list[GoalChildChain]] = relationship(back_populates="parent_goal")
 
 
 class TaskPlan(Base):
@@ -64,6 +120,8 @@ class TaskPlan(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+
+    plan: Mapped[Plan] = relationship(back_populates="task_plan")
 
 
 class RepetitionPlan(Base):
@@ -93,9 +151,20 @@ class RepetitionPlan(Base):
         nullable=True,
     )
 
+    plan: Mapped[Plan] = relationship(
+        back_populates="repetition_plan",
+        foreign_keys=[plan_id],
+    )
+
 
 class GoalChildChain(Base):
     __tablename__ = "goal_child_chain"
+    __table_args__ = (
+        CheckConstraint(
+            "sort_order >= 0",
+            name="sort_order_non_negative",
+        ),
+    )
 
     goal_child_chain_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -111,9 +180,19 @@ class GoalChildChain(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    parent_goal: Mapped[GoalPlan] = relationship(back_populates="chains")
+    items: Mapped[list[GoalChildChainItem]] = relationship(back_populates="chain")
+
 
 class GoalChildChainItem(Base):
     __tablename__ = "goal_child_chain_item"
+    __table_args__ = (
+        UniqueConstraint("child_plan_id"),
+        CheckConstraint(
+            "position >= 0",
+            name="position_non_negative",
+        ),
+    )
 
     goal_child_chain_item_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -130,3 +209,6 @@ class GoalChildChainItem(Base):
         nullable=False,
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    chain: Mapped[GoalChildChain] = relationship(back_populates="items")
+    child_plan: Mapped[Plan] = relationship(foreign_keys=[child_plan_id])
