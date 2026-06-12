@@ -92,3 +92,41 @@ class RepetitionPlan(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+
+
+class GoalChildChain(Base):
+    __tablename__ = "goal_child_chain"
+
+    goal_child_chain_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+    )
+    parent_goal_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("goal_plan.plan_id"),
+        nullable=False,
+    )
+    is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GoalChildChainItem(Base):
+    __tablename__ = "goal_child_chain_item"
+
+    goal_child_chain_item_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+    )
+    chain_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("goal_child_chain.goal_child_chain_id"),
+        nullable=False,
+    )
+    child_plan_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("plan.plan_id"),
+        nullable=False,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
