@@ -23,12 +23,23 @@ from calendar_backend.domain.ids import (
     TimeWindowID,
     new_id,
 )
+from calendar_backend.domain.results import ServiceResult, fail, ok
+from calendar_backend.domain.time import (
+    Clock,
+    SystemClock,
+    TimeWindow,
+    is_minute_aligned,
+    require_utc,
+    truncate_to_minute,
+    validate_time_window,
+)
 
 __all__ = [
     "CalendarEntryID",
     "CalendarEntryType",
     "CalendarRunID",
     "CalendarRunStatus",
+    "Clock",
     "CloneStatus",
     "ConstraintKind",
     "FreeTimeActivityID",
@@ -43,9 +54,18 @@ __all__ = [
     "RepeatMode",
     "RepetitionInstanceID",
     "ServiceMessage",
+    "ServiceResult",
     "SolverStatus",
+    "SystemClock",
     "TimeConstraintGroupID",
+    "TimeWindow",
     "TimeWindowID",
     "WrongPlanTypeError",
+    "fail",
+    "is_minute_aligned",
     "new_id",
+    "ok",
+    "require_utc",
+    "truncate_to_minute",
+    "validate_time_window",
 ]
