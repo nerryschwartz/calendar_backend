@@ -1,0 +1,32 @@
+---
+description: Package __init__.py re-export policy for calendar_backend layers
+alwaysApply: true
+---
+
+Package re-export policy:
+
+Small infrastructure packages (`db`, `domain`):
+- Re-export every public top-level name from each submodule in `__init__.py`.
+- Maintain an explicit `__all__` listing all re-exported names.
+- Update `__init__.py` in the same change when adding public symbols to a submodule.
+- Submodule imports remain valid; the barrel is convenience, not the only path.
+
+`db/`:
+- Re-export from `base.py` and `session.py` only.
+- Do not re-export `migrations/`, `env.py`, or Alembic versions.
+
+`domain/`:
+- Re-export from `ids.py`, `enums.py`, `errors.py`, `time.py`, and `results.py`.
+
+Large packages (`services`, `models`, `scheduling`, `deletion`, `orchestration`):
+- Keep `__init__.py` empty or docstring-only unless Alembic requires model imports.
+- Do not barrel-export service classes, ORM models, or scheduling implementations.
+- Consumers import from the owning submodule (for example `services.task`, `models.plans`).
+
+Never re-export:
+- Underscore-prefixed names
+- Test-only helpers (for example `FakeClock` in `tests/`)
+- Optional heavy dependency internals at package root
+
+Root `calendar_backend/__init__.py`:
+- No deep re-exports of `db`, `domain`, `services`, or `models`.
