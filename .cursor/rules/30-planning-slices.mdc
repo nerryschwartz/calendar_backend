@@ -32,3 +32,7 @@ Scope during build:
 If implementation reveals the approved plan is wrong, incomplete, or stale vs the repo: stop and ask, or fix within slice scope and report under **Consistency & divergence** in the slice report.
 
 If additional dependencies are necessary, install them with uv as part of the relevant slice.
+
+Migration slices (`/db-revision-preview`, `/db-revision-continue`):
+- If a slice references [`.cursor/commands/db-revision-preview.md`](../commands/db-revision-preview.md) or [`.cursor/commands/db-revision-continue.md`](../commands/db-revision-continue.md), **`/build-plan-slice` must not edit code** — it posts the manual workflow from [build-plan-slice.md](../commands/build-plan-slice.md#migration-slice-manual-workflow) and stops.
+- Autogenerate, manual migration edit, `upgrade head`, and schema commit stay in the db-revision commands; tests and other slice work use [`/small-change`](../commands/small-change.md) in separate turns.

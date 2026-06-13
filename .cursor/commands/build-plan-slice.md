@@ -3,7 +3,8 @@ Build exactly one approved plan slice.
 Before editing:
 - Identify the active finalized plan file in docs/plans/.
 - Identify the exact slice to build.
-- Run **slice preflight** and report 3–5 bullets before editing:
+- **Migration-slice gate:** If the slice text references [`.cursor/commands/db-revision-preview.md`](db-revision-preview.md) and/or [`.cursor/commands/db-revision-continue.md`](db-revision-continue.md) (including `/db-revision-preview` or `/db-revision-continue`), **do not edit any files**. Output the [Migration slice manual workflow](#migration-slice-manual-workflow) below (tailored to that slice), then stop. Do not run review-validation, review-consistency, or implementation checks — there is no diff.
+- Run **slice preflight** and report 3–5 bullets before editing (or before the manual-workflow message when the migration-slice gate applies):
   1. Restate the slice objective in one sentence (spirit, not file list).
   2. Read sibling/completed modules for the same pattern (ORM, tests, services).
   3. Note stale plan assumptions vs current repo (renamed columns, guide §0.1, already-merged slices).
@@ -64,3 +65,58 @@ Consistency pass rules:
 - After consistency edits, run the narrowest relevant checks again when code changed.
 
 Stop after this slice and wait for approval.
+
+## Migration slice manual workflow
+
+Use when the **migration-slice gate** applies. **Do not implement this slice via `/build-plan-slice`.** The db-revision commands own autogenerate, manual migration edit, apply, and commit.
+
+After slice preflight, post a message in this shape (fill in slice-specific names, messages, and step numbers from the plan):
+
+---
+
+### This slice uses Alembic db-revision commands
+
+**Slice:** \<N\> — \<objective one-liner\>  
+**Plan:** `docs/plans/\<plan-file\>.md`
+
+`/build-plan-slice` does not run migration autogenerate or `upgrade head` for this slice. Follow the sequence below.
+
+#### 1. Migration preview — run the command
+
+```
+/db-revision-preview
+```
+
+Include the autogenerate message from the plan (e.g. `Message: create remaining core orm tables` if the plan specifies one).
+
+The agent will wire `env.py` if needed, autogenerate the revision, and post a **review-only** report. **Do not** let `/build-plan-slice` substitute for this step.
+
+#### 2. Manual migration edit — you
+
+Edit the generated file under `calendar_backend/db/migrations/versions/` per the preview report (CHECKs, FK order, enum columns, partial indexes, ruff on the migration file, SQLite `batch_alter_table` for ALTER constraints, etc.).
+
+Stop and approve the migration before continue.
+
+#### 3. Other slice steps — use `/small-change`
+
+Steps that are **not** preview/continue (tests, extra migrations, env fixes, ORM tweaks) should be done in separate `/small-change` turns. Example prompts:
+
+- `/small-change` — "Add `tests/models/test_core_orm_part2_schema.py` per slice \<N\> of `docs/plans/\<plan\>.md`: metadata, CHECK/FK integration, relationship navigation, Alembic smoke test. Post Test catalog."
+- `/small-change` — "Fix ruff/format issues in `calendar_backend/db/migrations/versions/\<revision\>_*.py`."
+- `/small-change` — "Add a follow-up migration for \<constraints/tables\> using SQLite batch mode; add matching tests in `test_plans_schema.py`."
+
+Map each remaining **implementation step** from the plan to a concrete `/small-change` prompt (list them in chat).
+
+#### 4. Apply, verify, commit — run the command
+
+After the migration file is approved and schema tests exist (if the plan requires them before a green continue):
+
+```
+/db-revision-continue
+```
+
+This runs `alembic upgrade head`, pytest, and the commit workflow per [db-revision-continue.md](db-revision-continue.md).
+
+---
+
+Do not proceed with `/build-plan-slice` implementation for db-revision steps. Return to `/build-plan-slice` only for slices that do **not** reference the db-revision commands.
