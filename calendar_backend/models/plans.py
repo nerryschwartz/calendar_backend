@@ -134,6 +134,20 @@ class TaskPlan(Base):
 
 class RepetitionPlan(Base):
     __tablename__ = "repetition_plan"
+    __table_args__ = (
+        CheckConstraint(
+            "repeat_interval_minutes > 0",
+            name="repeat_interval_positive",
+        ),
+        CheckConstraint(
+            "end_time IS NULL OR end_time > start_time",
+            name="end_after_start",
+        ),
+        CheckConstraint(
+            "manual_count IS NULL OR manual_count > 0",
+            name="manual_count_positive_when_set",
+        ),
+    )
 
     plan_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
