@@ -41,6 +41,21 @@ When this guide or a finalized plan in `docs/plans/` conflicts with `docs/calend
 - **`is_critical`** — whether this instance counts toward repetition logical completion (analogous to `GoalChildChain.is_critical`). New instances inherit from `RepetitionPlan.default_instance_critical` at generation; `RepetitionService` may update per instance later.
 - **`sort_order`** — priority within the critical or non-critical bucket under one `RepetitionPlan` (analogous to `GoalChildChain.sort_order`: separate dense 0..n-1 sequences per `(repetition_plan_id, is_critical)`). Affects resolution traversal and assignment priority; **does not** impose scheduling precedence between instances (instances still do not precedence-constrain each other).
 
+### 0.2 ORM and slice consistency
+
+When building ORM or schema slices, **plans guide sequencing and review — they do not cap principled wiring**.
+
+**Defer** an ORM `relationship()` only when the **target mapped class does not exist yet**. When the target exists (same chunk or an earlier merged slice), wire navigation symmetrically with sibling patterns in the repo.
+
+Examples:
+- If `CalendarEntry` has `source_plan_id` → `relationship()` to `Plan`, then `source_free_time_activity_id` → `FreeTimeActivity` once `FreeTimeActivity` exists — not “slice 3 vs slice 4 file lists.”
+- Nullable source FK pairs (`source_plan_id` / `source_free_time_activity_id`) are symmetric by design; both should be navigable when both targets exist.
+- One-way leaf pointers (e.g. `GoalChildChainItem.child_plan`, `RepetitionInstance.root_clone`) are fine without a `Plan` inverse unless a slice objective requires it.
+
+Slice **file lists** name minimum touch points. Completing obvious symmetric wiring in modules the slice already touches is **in scope**, not scope creep.
+
+See also `.cursor/rules/30-planning-slices.mdc` and `/review-consistency` after `/review-validation` on slice builds.
+
 ## 1. How to use Cursor for this project
 
 Use a two-stage workflow for every meaningful change:
@@ -660,6 +675,12 @@ For each suspicious abstraction, report:
 
 Also identify abstractions that are justified and should be kept.
 ```
+
+### 4.6a `.cursor/commands/review-consistency.md`
+
+Runs **after** `/review-validation` in `/build-plan-slice` and `/small-change`. Canonical text lives in `.cursor/commands/review-consistency.md`.
+
+Use to catch symmetric ORM wiring gaps, stale slice deferrals, and pattern drift vs sibling modules (see §0.2). Parameters mirror `/review-validation` (`Changes only`, optional `Edit`, optional `File`).
 
 ### 4.7 `.cursor/commands/commit-changes.md`
 

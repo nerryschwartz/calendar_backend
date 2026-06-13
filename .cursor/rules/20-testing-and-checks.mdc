@@ -6,6 +6,7 @@ alwaysApply: true
 Testing expectations:
 - Add or update tests with each implementation slice when behavior changes.
 - When a slice's primary deliverable is tests for recently implemented code, cover **everything introduced in that implementation chunk** (schema elements, constraints, relationships, service behavior, etc.) — not only the examples listed in the plan slice. Plan test bullets are illustrative minimums, not exhaustive scope.
+- When building an ORM, schema, or service slice, plan **implementation steps and file lists** are likewise illustrative. Deliver what the slice **objective** implies in the chunk — compare to sibling modules and `docs/cursor_implementation_guide.md` §0.2, not only the examples in the slice text.
 - Invariant tests should come before complex scheduling implementation.
 - Prefer small service/invariant tests over broad end-to-end tests until the service layer is stable.
 - Use integration tests for refresh_schedule and cross-service persistence behavior.
