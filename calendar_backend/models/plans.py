@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -26,6 +27,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from calendar_backend.db.base import Base
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
+
+if TYPE_CHECKING:
+    from calendar_backend.models.constraints import TimeConstraintGroup
 
 
 class Plan(Base):
@@ -88,6 +92,9 @@ class Plan(Base):
         back_populates="plan",
         uselist=False,
         foreign_keys="RepetitionPlan.plan_id",
+    )
+    constraint_groups: Mapped[list[TimeConstraintGroup]] = relationship(
+        back_populates="plan",
     )
 
 
