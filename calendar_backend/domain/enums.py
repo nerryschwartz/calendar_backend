@@ -40,10 +40,7 @@ class CalendarRunStatus(StrEnum):
 class SolverStatus(StrEnum):
     OPTIMAL = "OPTIMAL"
     FEASIBLE = "FEASIBLE"
-    FEASIBLE_NOT_PROVEN_OPTIMAL = "FEASIBLE_NOT_PROVEN_OPTIMAL"
-    HEURISTIC_FEASIBLE = "HEURISTIC_FEASIBLE"
     INFEASIBLE = "INFEASIBLE"
-    LIMIT_REACHED = "LIMIT_REACHED"
 
 
 class LastFailureReason(StrEnum):
