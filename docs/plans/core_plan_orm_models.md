@@ -221,6 +221,7 @@ uv run pyright
 4. **Migration smoke test:** `alembic upgrade head` on temp DB URL; assert tables exist via `inspect(engine).get_table_names()`.
 5. Use minimal fixture data factories **inside test file** (inline UUIDs, required fields only) — no shared test factory module unless duplication is painful.
 6. Do **not** test service tree rules, master bootstrap, or subtype pairing completeness.
+7. After build, post a **Test catalog** in chat (see [§9 Test-creation slice convention](../cursor_implementation_guide.md#test-creation-slice-convention)): every new test function with one line describing the behavior under test.
 
 **Tests/checks:**
 ```bash
@@ -234,6 +235,7 @@ uv run pytest -m "not slow and not failure_expected"
 - All new model/schema tests pass.
 - Existing [`tests/db/test_session.py`](../../tests/db/test_session.py) and [`tests/domain/`](../../tests/domain/) continue to pass.
 - Tests demonstrate Appendix §12-relevant column types (timezone-aware datetime columns exist) at schema level only.
+- Chat report includes a **Test catalog** listing every test added and the behavior each covers.
 
 **Risks/edge cases:**
 - Use temp-file SQLite (not `:memory:`) if Alembic and session tests need persistent connections across calls.

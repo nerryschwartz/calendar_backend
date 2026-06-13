@@ -516,6 +516,7 @@ Files expected to change:
 Implementation steps:
 Tests/checks:
 Acceptance criteria:
+  - For test-creation slices: post a **Test catalog** in chat after build (see §9 Test-creation slice convention).
 Risks/edge cases:
 
 ## Abstraction check
@@ -590,6 +591,7 @@ After editing:
   3. Tests/checks run
   4. Any skipped checks and why
   5. Whether the slice acceptance criteria are met
+  6. For test-creation slices: **Test catalog** — detailed list of every test function added or changed, with one line per test describing behavior under test (see §9 Test-creation slice convention)
 
 Stop after this slice and wait for approval.
 ```
@@ -1201,6 +1203,20 @@ Use these prompts sequentially. Each prompt should produce a finalized plan in `
 
 These prompts intentionally split the design into more granular plans than the high-level roadmap.
 
+### Test-creation slice convention
+
+Any slice whose primary deliverable is **new or materially updated tests** must, when built via `/build-plan-slice`, end the chat report with a **Test catalog**:
+
+- List **every test function** added or materially changed (`tests/<path>::test_<name>` or equivalent).
+- One line per test stating the **behavior under test** (not implementation detail).
+- Group by file or category if helpful; include markers (`integration`, `failure_expected`) when used.
+
+Apply to slices named or scoped for tests (schema tests, service tests, invariant tests, smoke tests, etc.). Non-test slices do not require a Test catalog.
+
+When tests cover a recently implemented chunk, they must exercise **all behavior, schema, and constraints introduced in that chunk** — plan slice test bullets are minimum examples, not the full scope (see `.cursor/rules/20-testing-and-checks.mdc`).
+
+Finalized plans should repeat this requirement on each test-creation slice (acceptance criteria or implementation steps).
+
 ### Prompt 1: Repository skeleton and tooling
 
 ```text
@@ -1220,7 +1236,7 @@ The plan should be split into small slices:
 1. pyproject/dependency/tooling baseline
 2. package directory skeleton
 3. Cursor rules/commands/scripts
-4. initial smoke tests/checks
+4. initial smoke tests/checks (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1245,7 +1261,7 @@ Split into slices:
 1. SQLAlchemy Base and metadata conventions
 2. session/engine helpers and SQLite FK behavior
 3. Alembic initialization/configuration
-4. database infrastructure tests
+4. database infrastructure tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1268,7 +1284,7 @@ Split into slices:
 2. enums and error/message codes
 3. time window dataclasses, UTC/minute-alignment helpers, clock abstraction
 4. ServiceResult and common result helpers
-5. tests for domain validation and time helpers
+5. tests for domain validation and time helpers (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1294,7 +1310,7 @@ Split into slices:
 2. goal child chain tables
 3. relationships and basic constraints
 4. initial Alembic migration
-5. model/schema tests
+5. model/schema tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1322,7 +1338,7 @@ Split into slices:
 3. calendar entry table
 4. free-time tables
 5. settings and run metadata tables
-6. Alembic migration and schema tests
+6. Alembic migration and schema tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1345,11 +1361,11 @@ Context:
 - Add invariant and service tests.
 
 Split into slices:
-1. service test fixtures and transaction test helpers
+1. service test fixtures and transaction test helpers (post Test catalog in chat for new helpers/fixtures used by tests)
 2. MasterPlanService
 3. AppSettingsService
 4. MasterHorizonService
-5. invariant/service tests
+5. invariant/service tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1374,7 +1390,7 @@ Split into slices:
 2. constraint validation and normalization helpers
 3. system-owned constraint edit rejection
 4. invariant diagnostics
-5. tests
+5. tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1401,7 +1417,7 @@ Split into slices:
 2. move/rename operations
 3. deletion preview foundations
 4. real deletion and cascade parity
-5. tests for tree invariants and deletion behavior
+5. tests for tree invariants and deletion behavior (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1425,7 +1441,7 @@ Split into slices:
 1. task scheduling field validation/update
 2. mark_complete/reopen
 3. clone detachment hooks/primitives
-4. service tests
+4. service tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1451,8 +1467,8 @@ Split into slices:
 2. initial instance generation
 3. shifted constraint materialization
 4. refresh existing instances without overwriting detached clones
-5. detachment behavior tests
-6. horizon expansion tests
+5. detachment behavior tests (post Test catalog in chat)
+6. horizon expansion tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1478,7 +1494,7 @@ Split into slices:
 3. effective constraint intersection
 4. precedence constraint extraction
 5. invalid incomplete task blocking metadata
-6. tests
+6. tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1501,9 +1517,9 @@ Context:
 Split into slices:
 1. pure deletion preview data structures
 2. service-facing preview_delete
-3. parity tests between preview and real deletion
+3. parity tests between preview and real deletion (post Test catalog in chat)
 4. conflict deletion candidate generation
-5. ranking tests
+5. ranking tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1529,7 +1545,7 @@ Split into slices:
 2. assignment input DTOs for scheduling package
 3. hard feasibility validator
 4. deterministic heuristic algorithm
-5. heuristic tests
+5. heuristic tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1555,7 +1571,7 @@ Split into slices:
 2. integration with heuristic solver
 3. atomic future TASK entry replacement
 4. failure behavior and conflict analysis
-5. tests for success/failure/no-calendar-replacement
+5. tests for success/failure/no-calendar-replacement (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1584,7 +1600,7 @@ Split into slices:
 3. real_fraction calculation
 4. free-time gap discovery around TASK blockers
 5. deterministic free-time assignment
-6. tests
+6. tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1609,8 +1625,8 @@ Split into slices:
 2. refresh_schedule happy path
 3. assignment failure path
 4. free-time failure/partial behavior
-5. CalendarRun and ActiveCalendarState tests
-6. end-to-end integration tests
+5. CalendarRun and ActiveCalendarState tests (post Test catalog in chat)
+6. end-to-end integration tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1638,7 +1654,7 @@ Split into slices:
 4. lexicographic objective support
 5. solver status/warning mapping
 6. integration with TaskAssignmentService fallback
-7. tests with small deterministic cases
+7. tests with small deterministic cases (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1662,7 +1678,7 @@ Split into slices:
 2. database initialization/status command
 3. simple master/settings inspection commands
 4. optional refresh_schedule command once services support it
-5. smoke tests
+5. smoke tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1679,16 +1695,17 @@ Context:
 - Add missing invariant, domain validation, repetition, resolution, assignment, free-time, deletion, and integration tests.
 - Do not change production behavior unless a test exposes a real bug.
 - Keep tests readable and deterministic.
+- Each slice build posts a Test catalog in chat (see §9 Test-creation slice convention).
 
 Split into slices by test category:
-1. invariant tests
-2. domain validation tests
-3. repetition tests
-4. resolution tests
-5. assignment tests
-6. free-time tests
-7. deletion tests
-8. integration tests
+1. invariant tests (post Test catalog in chat)
+2. domain validation tests (post Test catalog in chat)
+3. repetition tests (post Test catalog in chat)
+4. resolution tests (post Test catalog in chat)
+5. assignment tests (post Test catalog in chat)
+6. free-time tests (post Test catalog in chat)
+7. deletion tests (post Test catalog in chat)
+8. integration tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
