@@ -6,20 +6,16 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 
-import calendar_backend.models.plans  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import calendar_backend.models.constraints  # pyright: ignore[reportUnusedImport]
+import calendar_backend.models.repetitions  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import pytest
 from alembic import command
 from alembic.config import Config
 from calendar_backend.db.base import Base
 from calendar_backend.db.session import create_engine_for_url, create_session_factory, transaction
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
-from calendar_backend.models.plans import (
-    GoalChildChain,
-    GoalChildChainItem,
-    GoalPlan,
-    Plan,
-    TaskPlan,
-)
+from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.models.plans import GoalPlan, Plan, TaskPlan
 from sqlalchemy import CheckConstraint, DateTime, UniqueConstraint, insert, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
