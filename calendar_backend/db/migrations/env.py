@@ -6,6 +6,7 @@ import calendar_backend.db.session  # noqa: F401  # pyright: ignore[reportUnused
 from alembic import context
 from calendar_backend.db.base import Base
 from calendar_backend.db.session import DEFAULT_DATABASE_URL, create_engine_for_url
+from calendar_backend.models import plans  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 config = context.config
 

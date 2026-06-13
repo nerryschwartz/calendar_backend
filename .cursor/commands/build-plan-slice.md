@@ -32,6 +32,7 @@ After editing:
   3. Tests/checks run
   4. Any skipped checks and why
   5. Whether the slice acceptance criteria are met
+  6. For test-creation slices: **Test catalog** — detailed list of every test function added or changed, with one line per test describing behavior under test (see docs/cursor_implementation_guide.md §9 Test-creation slice convention)
 
 Then run `/review-validation` using `.cursor/commands/review-validation.md` with:
 - Changes only: true
