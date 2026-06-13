@@ -1118,7 +1118,7 @@ A typical target:
 from calendar_backend.db.base import Base
 
 # Import model modules so SQLAlchemy registers their tables.
-from calendar_backend.models import calendar, constraints, free_time, plans, repetitions, runs, settings  # noqa: F401
+from calendar_backend.models import calendar, chains, constraints, free_time, plans, repetitions, runs, settings  # noqa: F401
 
 target_metadata = Base.metadata
 ```

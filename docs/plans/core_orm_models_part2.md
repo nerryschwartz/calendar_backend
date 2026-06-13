@@ -8,8 +8,8 @@ Implement Prompt 5 from [docs/cursor_implementation_guide.md](../cursor_implemen
 
 Design constraints:
 - [`calendar_backend/models/`](../../calendar_backend/models/) owns SQLAlchemy table mappings only — **no public mutation behavior** (design §4, §11).
-- **Module layout:** separate model modules matching guide §8.5 (`constraints`, `repetitions`, `calendar`, `free_time`, `runs`, `settings`, plus existing `plans`).
-- [`calendar_backend/models/plans.py`](../../calendar_backend/models/plans.py) already holds the six plan/chain tables from Prompt 4; keep it as the `plans` module (no further split required).
+- **Module layout:** separate model modules matching guide §8.5 (`chains`, `constraints`, `repetitions`, `calendar`, `free_time`, `runs`, `settings`, plus `plans` for the plan tree and subtype detail tables).
+- [`calendar_backend/models/plans.py`](../../calendar_backend/models/plans.py) holds `Plan` and subtype detail tables; [`calendar_backend/models/chains.py`](../../calendar_backend/models/chains.py) holds `GoalChildChain` and `GoalChildChainItem` (same pattern as `repetitions.py` for child collections).
 - Reuse domain enums from [`calendar_backend/domain/enums.py`](../../calendar_backend/domain/enums.py) and UUID storage conventions from Prompt 4.
 - [`calendar_backend/domain/ids.py`](../../calendar_backend/domain/ids.py) NewTypes are for **service boundaries** only; ORM columns use `Uuid(as_uuid=True)` / `uuid.UUID`.
 - **Domain `TimeWindow` dataclass** ([`calendar_backend/domain/time.py`](../../calendar_backend/domain/time.py)) is separate from ORM `TimeWindow` rows — no naming collision in Python if ORM class lives in `models/constraints.py`.
@@ -18,7 +18,7 @@ Design constraints:
 
 Current repo state:
 - Prompt 4 plan complete: [`plans.py`](../../calendar_backend/models/plans.py), migration [`be7d178b7c5a`](../../calendar_backend/db/migrations/versions/be7d178b7c5a_create_plan_and_child_chain_tables.py), [`tests/models/test_plans_schema.py`](../../tests/models/test_plans_schema.py).
-- [`calendar_backend/db/migrations/env.py`](../../calendar_backend/db/migrations/env.py) imports `plans` only.
+- [`calendar_backend/db/migrations/env.py`](../../calendar_backend/db/migrations/env.py) imports all model modules (see guide §8.5).
 - Domain primitives (IDs, enums including `ConstraintKind`, `CalendarEntryType`, `CalendarRunStatus`, `SolverStatus`, `LastFailureReason`, `FreeTimeWeekStartDay`) are implemented.
 
 Build workflow: use `/build-plan-slice` per slice against this file; stop after each slice for approval.
@@ -212,7 +212,7 @@ uv run pyright
 4. Optional CHECK: `singleton_id = 1` on singleton tables.
 5. Finalize `env.py` imports to match guide §8.5:
    ```python
-   from calendar_backend.models import calendar, constraints, free_time, plans, repetitions, runs, settings  # noqa: F401
+   from calendar_backend.models import calendar, chains, constraints, free_time, plans, repetitions, runs, settings  # noqa: F401
    ```
 
 **Tests/checks:**

@@ -37,7 +37,7 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 
 ## Locked assumptions
 
-- **Module layout:** single [`calendar_backend/models/plans.py`](../../calendar_backend/models/plans.py) for all six tables; empty [`calendar_backend/models/__init__.py`](../../calendar_backend/models/__init__.py) (per [`.cursor/rules/25-package-re-exports.mdc`](../../.cursor/rules/25-package-re-exports.mdc) — no model barrel exports).
+- **Module layout:** [`calendar_backend/models/plans.py`](../../calendar_backend/models/plans.py) for `Plan` and subtype detail tables; [`calendar_backend/models/chains.py`](../../calendar_backend/models/chains.py) for `GoalChildChain` and `GoalChildChainItem` (split from Prompt 4’s original single-file layout to match `repetitions.py`); empty [`calendar_backend/models/__init__.py`](../../calendar_backend/models/__init__.py) (per [`.cursor/rules/25-package-re-exports.mdc`](../../.cursor/rules/25-package-re-exports.mdc) — no model barrel exports).
 - **Table names:** snake_case matching design (`plan`, `goal_plan`, `task_plan`, `repetition_plan`, `goal_child_chain`, `goal_child_chain_item`).
 - **UUID columns:** SQLAlchemy 2 `Uuid(as_uuid=True)` mapped to Python `uuid.UUID`.
 - **Enums:** SQLAlchemy `Enum(..., native_enum=False, values_callable=...)` backed by domain `StrEnum` values (SQLite/Postgres portable).
@@ -165,11 +165,11 @@ uv run pyright
 - [`calendar_backend/db/migrations/versions/<revision>_create_plan_tables.py`](../../calendar_backend/db/migrations/versions/) (new)
 
 **Implementation steps:**
-1. Import plan models in `env.py` so tables register on `Base.metadata`:
+1. Import plan and chain models in `env.py` so tables register on `Base.metadata`:
    ```python
-   from calendar_backend.models import plans  # noqa: F401
+   from calendar_backend.models import chains, plans  # noqa: F401
    ```
-   (Only `plans` for this plan — not future Prompt 5 modules.)
+   (`chains` must import after `plans` because chain FKs target `goal_plan` / `plan`.)
 2. Run autogenerate against temp/dev DB:
    ```bash
    uv run alembic revision --autogenerate -m "create plan and child chain tables"
@@ -251,7 +251,7 @@ uv run pytest -m "not slow and not failure_expected"
 | Repository / DAO layer | No | Services talk to Session directly per design |
 | Polymorphic inheritance mapper | No | Conflicts with explicit subtype table pattern |
 | Base model mixin / TimestampMixin | No | Only two tables have created/updated; YAGNI |
-| Separate `models/chains.py` module | No | Prompt 4 scope fits one `plans.py`; split only if file grows unwieldy in implementation |
+| Separate `models/chains.py` module | Yes | Child-collection tables split from `plans.py`; mirrors `repetitions.py` |
 
 No new domain types — reuse existing enums; map ORM rows to domain at service layer later.
 
@@ -274,3 +274,4 @@ None blocking implementation.
 - Updated **Current repo state** to reflect completed database and domain primitive plans.
 - Fixed slice 1 acceptance criteria: four tables for four mapped classes (not “six logical tables”).
 - Clarified slice 2 acceptance: six plan/chain tables total after chain tables are added.
+- **Post-implementation:** `GoalChildChain` / `GoalChildChainItem` moved to [`chains.py`](../../calendar_backend/models/chains.py); update `env.py` and imports accordingly.
