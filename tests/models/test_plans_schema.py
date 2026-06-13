@@ -6,20 +6,16 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 
-import calendar_backend.models.plans  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import calendar_backend.models.constraints  # pyright: ignore[reportUnusedImport]
+import calendar_backend.models.repetitions  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import pytest
 from alembic import command
 from alembic.config import Config
 from calendar_backend.db.base import Base
 from calendar_backend.db.session import create_engine_for_url, create_session_factory, transaction
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
-from calendar_backend.models.plans import (
-    GoalChildChain,
-    GoalChildChainItem,
-    GoalPlan,
-    Plan,
-    TaskPlan,
-)
+from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.models.plans import GoalPlan, Plan, TaskPlan
 from sqlalchemy import CheckConstraint, DateTime, UniqueConstraint, insert, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -206,6 +202,7 @@ def test_plan_metadata_table_check_constraints() -> None:
         "plan": "ck_plan_master_is_goal",
         "goal_child_chain": "ck_goal_child_chain_sort_order_non_negative",
         "goal_child_chain_item": "ck_goal_child_chain_item_position_non_negative",
+        "repetition_plan": "ck_repetition_plan_repeat_interval_positive",
     }
 
     for table_name, check_name in expected.items():
@@ -216,6 +213,14 @@ def test_plan_metadata_table_check_constraints() -> None:
             if isinstance(constraint, CheckConstraint)
         }
         assert check_name in check_names
+
+    repetition_plan_checks = {
+        constraint.name
+        for constraint in Base.metadata.tables["repetition_plan"].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert "ck_repetition_plan_end_after_start" in repetition_plan_checks
+    assert "ck_repetition_plan_manual_count_positive_when_set" in repetition_plan_checks
 
 
 def test_plan_metadata_unique_child_plan_id_constraint() -> None:
@@ -491,6 +496,88 @@ def test_foreign_key_invalid_chain_item_child_plan_id_rejected(
 
 
 @pytest.mark.integration
+def test_check_repetition_plan_repeat_interval_positive(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    repetition_plan = Base.metadata.tables["repetition_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(template_id, is_master=True)))
+            txn.execute(
+                insert(Base.metadata.tables["goal_plan"]).values(_goal_plan_row(template_id))
+            )
+            txn.execute(
+                insert(plan).values(_plan_row(repetition_id, plan_kind=PlanKind.REPETITION))
+            )
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _repetition_plan_row(repetition_id, template_id)
+            row["repeat_interval_minutes"] = 0
+            txn.execute(insert(repetition_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_repetition_plan_end_after_start(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    repetition_plan = Base.metadata.tables["repetition_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+    now = _now()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(template_id, is_master=True)))
+            txn.execute(
+                insert(Base.metadata.tables["goal_plan"]).values(_goal_plan_row(template_id))
+            )
+            txn.execute(
+                insert(plan).values(_plan_row(repetition_id, plan_kind=PlanKind.REPETITION))
+            )
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _repetition_plan_row(repetition_id, template_id)
+            row["start_time"] = now
+            row["end_time"] = now
+            txn.execute(insert(repetition_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_repetition_plan_manual_count_positive_when_set(
+    plan_schema_engine: Engine,
+) -> None:
+    plan = Base.metadata.tables["plan"]
+    repetition_plan = Base.metadata.tables["repetition_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(template_id, is_master=True)))
+            txn.execute(
+                insert(Base.metadata.tables["goal_plan"]).values(_goal_plan_row(template_id))
+            )
+            txn.execute(
+                insert(plan).values(_plan_row(repetition_id, plan_kind=PlanKind.REPETITION))
+            )
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _repetition_plan_row(repetition_id, template_id)
+            row["manual_count"] = 0
+            txn.execute(insert(repetition_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
 def test_relationships_navigate_goal_to_chain_item(plan_schema_engine: Engine) -> None:
     session = create_session_factory(plan_schema_engine)()
     master_id = uuid.uuid4()
@@ -593,3 +680,46 @@ def test_alembic_upgrade_creates_plan_tables(
         engine.dispose()
 
     assert table_names >= PLAN_TABLE_NAMES
+
+
+@pytest.mark.integration
+def test_alembic_upgrade_enforces_repetition_plan_repeat_interval_check(
+    temp_sqlite_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_create_engine_for_url = create_engine_for_url
+
+    def _engine_for_migration(url: str = temp_sqlite_url) -> Engine:
+        del url
+        return real_create_engine_for_url(temp_sqlite_url)
+
+    monkeypatch.setattr(
+        "calendar_backend.db.session.create_engine_for_url",
+        _engine_for_migration,
+    )
+
+    command.upgrade(Config("alembic.ini"), "head")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    session = create_session_factory(engine)()
+    plan = Base.metadata.tables["plan"]
+    goal_plan = Base.metadata.tables["goal_plan"]
+    repetition_plan = Base.metadata.tables["repetition_plan"]
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(template_id, is_master=True)))
+            txn.execute(insert(goal_plan).values(_goal_plan_row(template_id)))
+            txn.execute(
+                insert(plan).values(_plan_row(repetition_id, plan_kind=PlanKind.REPETITION))
+            )
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _repetition_plan_row(repetition_id, template_id)
+            row["repeat_interval_minutes"] = 0
+            txn.execute(insert(repetition_plan).values(row))
+    finally:
+        session.close()
+        engine.dispose()

@@ -26,6 +26,36 @@ Use these decisions throughout the project:
 - Avoid MCPs, custom subagents, and skills unless a specific later bottleneck creates a massive benefit.
 - Favor deterministic scripts over agentic repo operations whenever practical.
 
+## 0.1 Guide vs engineering design PDF
+
+When this guide or a finalized plan in `docs/plans/` conflicts with `docs/calendar_backend_v1_engineering_design_updated.pdf` on the topics below, **this guide and finalized plans take precedence**. The PDF is not updated for these deviations.
+
+### TimeConstraintGroup
+
+- **No `group_order` column.** AND constraint groups are unordered for scheduling semantics (intersection is commutative). Groups are distinguished by `time_constraint_group_id` only.
+
+### RepetitionInstance
+
+- **`is_critical` + `sort_order`**, not PDF §6 `is_effectively_critical` alone.
+- **`instance_index`** — occurrence slot for cloning, constraint shifting, and generation identity (`start_time + n * repeat_interval`). Not a priority field.
+- **`is_critical`** — whether this instance counts toward repetition logical completion (analogous to `GoalChildChain.is_critical`). New instances inherit from `RepetitionPlan.default_instance_critical` at generation; `RepetitionService` may update per instance later.
+- **`sort_order`** — priority within the critical or non-critical bucket under one `RepetitionPlan` (analogous to `GoalChildChain.sort_order`: separate dense 0..n-1 sequences per `(repetition_plan_id, is_critical)`). Affects resolution traversal and assignment priority; **does not** impose scheduling precedence between instances (instances still do not precedence-constrain each other).
+
+### 0.2 ORM and slice consistency
+
+When building ORM or schema slices, **plans guide sequencing and review — they do not cap principled wiring**.
+
+**Defer** an ORM `relationship()` only when the **target mapped class does not exist yet**. When the target exists (same chunk or an earlier merged slice), wire navigation symmetrically with sibling patterns in the repo.
+
+Examples:
+- If `CalendarEntry` has `source_plan_id` → `relationship()` to `Plan`, then `source_free_time_activity_id` → `FreeTimeActivity` once `FreeTimeActivity` exists — not “slice 3 vs slice 4 file lists.”
+- Nullable source FK pairs (`source_plan_id` / `source_free_time_activity_id`) are symmetric by design; both should be navigable when both targets exist.
+- One-way leaf pointers (e.g. `GoalChildChainItem.child_plan`, `RepetitionInstance.root_clone`) are fine without a `Plan` inverse unless a slice objective requires it.
+
+Slice **file lists** name minimum touch points. Completing obvious symmetric wiring in modules the slice already touches is **in scope**, not scope creep.
+
+See also `.cursor/rules/30-planning-slices.mdc` and `/review-consistency` after `/review-validation` on slice builds.
+
 ## 1. How to use Cursor for this project
 
 Use a two-stage workflow for every meaningful change:
@@ -646,6 +676,12 @@ For each suspicious abstraction, report:
 Also identify abstractions that are justified and should be kept.
 ```
 
+### 4.6a `.cursor/commands/review-consistency.md`
+
+Runs **after** `/review-validation` in `/build-plan-slice` and `/small-change`. Canonical text lives in `.cursor/commands/review-consistency.md`.
+
+Use to catch symmetric ORM wiring gaps, stale slice deferrals, and pattern drift vs sibling modules (see §0.2). Parameters mirror `/review-validation` (`Changes only`, optional `Edit`, optional `File`).
+
 ### 4.7 `.cursor/commands/commit-changes.md`
 
 Use once a slice or logical group of slices is ready to commit.
@@ -1082,28 +1118,39 @@ A typical target:
 from calendar_backend.db.base import Base
 
 # Import model modules so SQLAlchemy registers their tables.
-from calendar_backend.models import calendar, constraints, free_time, plans, repetitions, runs, settings  # noqa: F401
+from calendar_backend.models import calendar, chains, constraints, free_time, plans, repetitions, runs, settings  # noqa: F401
 
 target_metadata = Base.metadata
 ```
 
 If models are not imported, Alembic may see an empty metadata object and generate empty migrations.
 
+In agent-driven schema work, wire imports and autogenerate via [`/db-revision-preview`](../../.cursor/commands/db-revision-preview.md) (see §8.11) instead of ad hoc shell steps.
+
 ### 8.6 Create a migration
 
-After models exist or change:
+After model changes exist in the working tree, run:
 
-```bash
-uv run alembic revision --autogenerate -m "create core tables"
+```text
+/db-revision-preview
 ```
 
-Then review the generated file in:
+Provide a short `-m` message when prompted (for example `create remaining core orm tables`).
+
+The command:
+
+1. Ensures `env.py` imports every ORM module that should register on `Base.metadata`.
+2. Runs ruff format, ruff check, and pyright.
+3. Runs `uv run alembic revision --autogenerate -m "<message>"`.
+4. Produces a structured migration review (report only — **does not edit** the generated revision).
+
+Generated files land under:
 
 ```text
 calendar_backend/db/migrations/versions/
 ```
 
-Review every generated migration. Check:
+**Manual review checklist** (also used by the preview report):
 
 - Are all expected tables present?
 - Are unexpected tables absent?
@@ -1114,13 +1161,25 @@ Review every generated migration. Check:
 - Are indexes necessary now, or speculative?
 - Does downgrade reverse the migration?
 
+Edit the migration file manually based on the preview report, then run [`/db-revision-continue`](../../.cursor/commands/db-revision-continue.md).
+
 ### 8.7 Apply migrations
+
+After preview approval and manual migration edits, run:
+
+```text
+/db-revision-continue
+```
+
+This applies `uv run alembic upgrade head`, runs pytest, then follows the [`/commit-changes`](../../.cursor/commands/commit-changes.md) workflow (with checks skipped because preview/continue already ran them).
+
+For manual inspection only (outside the continue command):
 
 ```bash
 uv run alembic upgrade head
 ```
 
-This applies all migrations to the local database.
+This applies all pending migrations to the local database.
 
 ### 8.8 Check current revision and history
 
@@ -1166,33 +1225,29 @@ Do not over-optimize for Postgres in V1, but avoid SQLite-only assumptions when 
 
 ### 8.11 Recommended migration workflow
 
-For each schema slice:
+For each schema slice (after ORM model changes are in the working tree):
 
-```bash
-# 1. Edit SQLAlchemy models.
-uv run ruff format .
-uv run ruff check .
-uv run pyright
+```text
+# 1. Generate draft migration + structured review (does not apply or edit migration).
+/db-revision-preview
 
-# 2. Generate migration.
-uv run alembic revision --autogenerate -m "<message>"
+# 2. Edit calendar_backend/db/migrations/versions/<revision>.py manually per preview report.
 
-# 3. Review generated migration manually.
-
-# 4. Apply migration.
-uv run alembic upgrade head
-
-# 5. Run tests.
-uv run pytest -m "not slow and not failure_expected"
+# 3. Apply migration, run pytest, and commit (see db-revision-continue for full steps).
+/db-revision-continue
 ```
+
+See [`.cursor/commands/db-revision-preview.md`](../../.cursor/commands/db-revision-preview.md) and [`.cursor/commands/db-revision-continue.md`](../../.cursor/commands/db-revision-continue.md).
+
+During `/build-plan-slice`, stop after preview and wait for migration approval before running continue — same as [`build-plan-slice`](../../.cursor/commands/build-plan-slice.md) slice boundaries.
 
 ### 8.12 Common Alembic mistakes
 
 | Mistake | Symptom | Fix |
 |---|---|---|
-| Forgot to import models in `env.py` | Empty autogenerate migration | Import all model modules before setting metadata. |
+| Forgot to import models in `env.py` | Empty autogenerate migration | `/db-revision-preview` wires imports; verify preview report and `env.py` section. |
 | Multiple Base objects | Alembic sees only some tables | Ensure every model inherits from the same `Base`. |
-| Did not review autogenerate | Bad nullable/FK/index choices | Treat autogenerated migration as a draft. |
+| Did not review autogenerate | Bad nullable/FK/index choices | Use `/db-revision-preview`; treat output as a draft; edit before `/db-revision-continue`. |
 | Renamed a column | Alembic generates drop/add | Manually edit migration to rename when preserving data matters. |
 | SQLite foreign keys disabled | Relationship tests pass incorrectly or fail inconsistently | Enable `PRAGMA foreign_keys=ON` on connection. |
 | Migration depends on app services | Migration breaks outside app runtime | Keep migrations schema/data focused and self-contained. |
@@ -1323,9 +1378,9 @@ Use /request-questions first.
 Create a Cursor implementation plan for the remaining core ORM models.
 
 Context:
-- Follow the updated V1 data model.
-- Implement TimeConstraintGroup and TimeWindow with constraint_kind.
-- Implement RepetitionInstance.
+- Follow the updated V1 data model (see §0.1 for PDF deviations).
+- Implement TimeConstraintGroup and TimeWindow with constraint_kind (no group_order on groups).
+- Implement RepetitionInstance with is_critical, sort_order, and instance_index (see §0.1).
 - Implement CalendarEntry with TASK/FREE_TIME entry types and denormalized display_label.
 - Implement FreeTimeActivity and FreeTimeActivityPrerequisite.
 - Implement CalendarRun, ActiveCalendarState, and AppSettings.
@@ -1455,6 +1510,7 @@ Create a Cursor implementation plan for RepetitionService.
 
 Context:
 - Implement repetition creation, generation, refresh, clone propagation, descendant-only detachment rules, and materialized SYSTEM_REPETITION_WINDOW constraints.
+- RepetitionInstance rows use is_critical and sort_order (critical-first, then sort_order within bucket) per §0.1; set is_critical from default_instance_critical at generation; assign sort_order in RepetitionService.
 - Template subtree is unscheduled.
 - Instance 0 is a scheduled clone shifted by 0 * repeat_interval.
 - After generation, mode/start_time/repeat_interval are locked.
@@ -1482,6 +1538,7 @@ Create a Cursor implementation plan for TaskResolutionService.
 
 Context:
 - resolve_tasks(run_started_at) refreshes master horizon and repetitions, then reads the current master tree.
+- Traverse repetitions in critical-first instance order (is_critical, then sort_order within bucket), analogous to goal child chains.
 - Output task buckets: valid/invalid and complete/incomplete as specified by the design.
 - Include inherited effective constraints and constraint sources.
 - Completed predecessors should be ignored.

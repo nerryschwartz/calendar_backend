@@ -11,11 +11,28 @@ For implementation plans:
 - Do not stop after each individual file edit.
 - Each slice must include:
   - objective
-  - files expected to change
+  - files expected to change (minimum touch points — not a maximum)
+  - may also change (optional — prior modules when completing symmetric wiring)
   - implementation steps
   - tests/checks
   - acceptance criteria
   - risks/edge cases
-- Do not broaden scope during build.
-- If implementation reveals a need to change the approved plan, stop and ask.
-- If additional dependencies are necessary, install them with uv as part of the relevant slice.
+
+Authority when building a slice (highest first):
+1. V1 engineering design + `docs/cursor_implementation_guide.md` (including §0.1–§0.2)
+2. Existing codebase patterns (sibling modules, completed slices)
+3. Plan slice **objective and acceptance criteria**
+4. Plan **implementation steps and file lists** — operational hints, not an exhaustive cap
+
+Scope during build:
+- Do not implement **future plan slices** or unrelated features.
+- **Do** complete obvious **consistency and deferred wiring** required by the slice objective when target modules already exist (symmetric ORM relationships, env imports, matching CHECKs).
+- Invalid rationale: deferring work only because another slice number names a different file (e.g. leaving `source_free_time_activity` unwired while `source_plan` is wired after `FreeTimeActivity` exists).
+
+If implementation reveals the approved plan is wrong, incomplete, or stale vs the repo: stop and ask, or fix within slice scope and report under **Consistency & divergence** in the slice report.
+
+If additional dependencies are necessary, install them with uv as part of the relevant slice.
+
+Migration slices (`/db-revision-preview`, `/db-revision-continue`):
+- If a slice references [`.cursor/commands/db-revision-preview.md`](../commands/db-revision-preview.md) or [`.cursor/commands/db-revision-continue.md`](../commands/db-revision-continue.md), **`/build-plan-slice` must not edit code** — it posts the manual workflow from [build-plan-slice.md](../commands/build-plan-slice.md#migration-slice-manual-workflow) and stops.
+- Autogenerate, manual migration edit, `upgrade head`, and schema commit stay in the db-revision commands; tests and other slice work use [`/small-change`](../commands/small-change.md) in separate turns.

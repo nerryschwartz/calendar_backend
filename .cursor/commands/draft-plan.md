@@ -33,8 +33,9 @@ For each slice:
 
 ### Slice <number>: <name>
 Objective:
-Files expected to change:
-Implementation steps:
+Files expected to change: (minimum touch points — not a maximum)
+May also change: (optional — prior modules when completing symmetric wiring, env imports, stale plan fixes)
+Implementation steps: (illustrative — match slice objective and sibling repo patterns, not only these bullets)
 Tests/checks:
 Acceptance criteria:
 Risks/edge cases:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 
 import pytest
-from calendar_backend.domain.enums import PlanKind
+from calendar_backend.domain.enums import PlanKind, SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage, WrongPlanTypeError
 
 
@@ -35,6 +35,16 @@ def test_message_code_conflict_example_exists() -> None:
 
 def test_message_code_solver_warning_example_exists() -> None:
     assert MessageCode.SOLVER_LIMIT_REACHED.value == "SOLVER_LIMIT_REACHED"
+    assert MessageCode.FEASIBLE_NOT_PROVEN_OPTIMAL.value == "FEASIBLE_NOT_PROVEN_OPTIMAL"
+    assert MessageCode.HEURISTIC_FEASIBLE.value == "HEURISTIC_FEASIBLE"
+
+
+def test_solver_status_is_mutually_exclusive_outcome() -> None:
+    assert set(SolverStatus) == {
+        SolverStatus.OPTIMAL,
+        SolverStatus.FEASIBLE,
+        SolverStatus.INFEASIBLE,
+    }
 
 
 def test_service_message_is_frozen() -> None:
