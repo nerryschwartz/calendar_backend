@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from calendar_backend.db.base import Base
 from calendar_backend.domain.enums import CalendarEntryType
+from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan
 
 
@@ -52,3 +53,6 @@ class CalendarEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     source_plan: Mapped[Plan | None] = relationship(foreign_keys=[source_plan_id])
+    source_free_time_activity: Mapped[FreeTimeActivity | None] = relationship(
+        foreign_keys=[source_free_time_activity_id]
+    )
