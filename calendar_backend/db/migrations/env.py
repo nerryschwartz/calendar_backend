@@ -12,6 +12,8 @@ from calendar_backend.models import (
     free_time,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     plans,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     repetitions,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+    runs,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+    settings,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 
 config = context.config

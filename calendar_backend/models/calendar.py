@@ -12,6 +12,7 @@ from calendar_backend.db.base import Base
 from calendar_backend.domain.enums import CalendarEntryType
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan
+from calendar_backend.models.runs import CalendarRun
 
 
 class CalendarEntry(Base):
@@ -55,4 +56,8 @@ class CalendarEntry(Base):
     source_plan: Mapped[Plan | None] = relationship(foreign_keys=[source_plan_id])
     source_free_time_activity: Mapped[FreeTimeActivity | None] = relationship(
         foreign_keys=[source_free_time_activity_id]
+    )
+    calendar_run: Mapped[CalendarRun | None] = relationship(
+        back_populates="calendar_entries",
+        foreign_keys=[calendar_run_id],
     )
