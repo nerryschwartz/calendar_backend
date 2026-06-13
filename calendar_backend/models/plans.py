@@ -30,6 +30,7 @@ from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 
 if TYPE_CHECKING:
     from calendar_backend.models.constraints import TimeConstraintGroup
+    from calendar_backend.models.repetitions import RepetitionInstance
 
 
 class Plan(Base):
@@ -162,6 +163,7 @@ class RepetitionPlan(Base):
         back_populates="repetition_plan",
         foreign_keys=[plan_id],
     )
+    instances: Mapped[list[RepetitionInstance]] = relationship(back_populates="repetition_plan")
 
 
 class GoalChildChain(Base):

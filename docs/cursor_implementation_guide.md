@@ -26,6 +26,21 @@ Use these decisions throughout the project:
 - Avoid MCPs, custom subagents, and skills unless a specific later bottleneck creates a massive benefit.
 - Favor deterministic scripts over agentic repo operations whenever practical.
 
+## 0.1 Guide vs engineering design PDF
+
+When this guide or a finalized plan in `docs/plans/` conflicts with `docs/calendar_backend_v1_engineering_design_updated.pdf` on the topics below, **this guide and finalized plans take precedence**. The PDF is not updated for these deviations.
+
+### TimeConstraintGroup
+
+- **No `group_order` column.** AND constraint groups are unordered for scheduling semantics (intersection is commutative). Groups are distinguished by `time_constraint_group_id` only.
+
+### RepetitionInstance
+
+- **`is_critical` + `sort_order`**, not PDF §6 `is_effectively_critical` alone.
+- **`instance_index`** — occurrence slot for cloning, constraint shifting, and generation identity (`start_time + n * repeat_interval`). Not a priority field.
+- **`is_critical`** — whether this instance counts toward repetition logical completion (analogous to `GoalChildChain.is_critical`). New instances inherit from `RepetitionPlan.default_instance_critical` at generation; `RepetitionService` may update per instance later.
+- **`sort_order`** — priority within the critical or non-critical bucket under one `RepetitionPlan` (analogous to `GoalChildChain.sort_order`: separate dense 0..n-1 sequences per `(repetition_plan_id, is_critical)`). Affects resolution traversal and assignment priority; **does not** impose scheduling precedence between instances (instances still do not precedence-constrain each other).
+
 ## 1. How to use Cursor for this project
 
 Use a two-stage workflow for every meaningful change:
@@ -1342,9 +1357,9 @@ Use /request-questions first.
 Create a Cursor implementation plan for the remaining core ORM models.
 
 Context:
-- Follow the updated V1 data model.
-- Implement TimeConstraintGroup and TimeWindow with constraint_kind.
-- Implement RepetitionInstance.
+- Follow the updated V1 data model (see §0.1 for PDF deviations).
+- Implement TimeConstraintGroup and TimeWindow with constraint_kind (no group_order on groups).
+- Implement RepetitionInstance with is_critical, sort_order, and instance_index (see §0.1).
 - Implement CalendarEntry with TASK/FREE_TIME entry types and denormalized display_label.
 - Implement FreeTimeActivity and FreeTimeActivityPrerequisite.
 - Implement CalendarRun, ActiveCalendarState, and AppSettings.
@@ -1474,6 +1489,7 @@ Create a Cursor implementation plan for RepetitionService.
 
 Context:
 - Implement repetition creation, generation, refresh, clone propagation, descendant-only detachment rules, and materialized SYSTEM_REPETITION_WINDOW constraints.
+- RepetitionInstance rows use is_critical and sort_order (critical-first, then sort_order within bucket) per §0.1; set is_critical from default_instance_critical at generation; assign sort_order in RepetitionService.
 - Template subtree is unscheduled.
 - Instance 0 is a scheduled clone shifted by 0 * repeat_interval.
 - After generation, mode/start_time/repeat_interval are locked.
@@ -1501,6 +1517,7 @@ Create a Cursor implementation plan for TaskResolutionService.
 
 Context:
 - resolve_tasks(run_started_at) refreshes master horizon and repetitions, then reads the current master tree.
+- Traverse repetitions in critical-first instance order (is_critical, then sort_order within bucket), analogous to goal child chains.
 - Output task buckets: valid/invalid and complete/incomplete as specified by the design.
 - Include inherited effective constraints and constraint sources.
 - Completed predecessors should be ignored.

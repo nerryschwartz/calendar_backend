@@ -9,6 +9,7 @@ from calendar_backend.db.session import DEFAULT_DATABASE_URL, create_engine_for_
 from calendar_backend.models import (
     constraints,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     plans,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+    repetitions,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 
 config = context.config

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Integer, Uuid
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from calendar_backend.db.base import Base
@@ -15,12 +15,6 @@ from calendar_backend.models.plans import Plan
 
 class TimeConstraintGroup(Base):
     __tablename__ = "time_constraint_group"
-    __table_args__ = (
-        CheckConstraint(
-            "group_order >= 0",
-            name="group_order_non_negative",
-        ),
-    )
 
     time_constraint_group_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -31,7 +25,6 @@ class TimeConstraintGroup(Base):
         ForeignKey("plan.plan_id"),
         nullable=False,
     )
-    group_order: Mapped[int] = mapped_column(Integer, nullable=False)
     constraint_kind: Mapped[ConstraintKind] = mapped_column(
         Enum(ConstraintKind, native_enum=False),
         nullable=False,

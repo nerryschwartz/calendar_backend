@@ -59,13 +59,12 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 
 **Implementation steps:**
 1. Create `models/constraints.py` with mapped classes:
-   - **`TimeConstraintGroup`:** `time_constraint_group_id` (UUID PK), `plan_id` (FK → `plan.plan_id`), `group_order` (int), `constraint_kind` (`ConstraintKind` enum).
+   - **`TimeConstraintGroup`:** `time_constraint_group_id` (UUID PK), `plan_id` (FK → `plan.plan_id`), `constraint_kind` (`ConstraintKind` enum).
    - **`TimeWindow`:** `time_window_id` (UUID PK), `group_id` (FK → `time_constraint_group.time_constraint_group_id`), `start_time`, `end_time` (`DateTime(timezone=True)`).
 2. Add relationships:
    - `Plan` ↔ constraint groups (extend [`plans.py`](../../calendar_backend/models/plans.py) with `constraint_groups` on `Plan` and `plan` back-reference on group — minimal cross-module relationship wiring).
    - `TimeConstraintGroup` ↔ `TimeWindow` (`windows` list / `group` back-reference).
 3. Add `__table_args__` CHECKs where straightforward:
-   - `group_order >= 0` on `time_constraint_group`.
    - `start_time < end_time` on `time_window`.
 4. Wire `from calendar_backend.models import constraints  # noqa: F401` in `env.py`.
 5. Persistence-only — no constraint merge/normalization helpers.
@@ -100,11 +99,11 @@ uv run pyright
 
 **Implementation steps:**
 1. Create `models/repetitions.py`:
-   - **`RepetitionInstance`:** `repetition_instance_id` (UUID PK), `repetition_plan_id` (FK → `repetition_plan.plan_id`), `instance_index` (int), `root_clone_id` (FK → `plan.plan_id`), `instance_start_time` (`DateTime(timezone=True)`), `is_effectively_critical` (bool).
+   - **`RepetitionInstance`:** `repetition_instance_id` (UUID PK), `repetition_plan_id` (FK → `repetition_plan.plan_id`), `instance_index` (int — occurrence slot for cloning/constraint shifting, not priority), `root_clone_id` (FK → `plan.plan_id`), `instance_start_time` (`DateTime(timezone=True)`), `is_critical` (bool), `sort_order` (int — priority within the critical or non-critical bucket, analogous to `GoalChildChain.sort_order`).
 2. Relationships:
    - `RepetitionInstance` → `RepetitionPlan`, `RepetitionInstance` → `Plan` (`root_clone`).
    - Optional back-reference `RepetitionPlan.instances`.
-3. Practical CHECKs: `instance_index >= 0` if straightforward.
+3. Practical CHECKs: `instance_index >= 0`, `sort_order >= 0` (dense/unique ordering within each `(repetition_plan_id, is_critical)` partition deferred to services, same as goal child chains).
 4. Add `repetitions` import to `env.py`.
 
 **Tests/checks:**
@@ -115,12 +114,13 @@ uv run pyright
 ```
 
 **Acceptance criteria:**
-- Table on `Base.metadata` with columns/nullability per design §6.
+- Table on `Base.metadata` with columns per [implementation guide §0.1](../cursor_implementation_guide.md#01-guide-vs-engineering-design-pdf) (not PDF §6 `is_effectively_critical`).
 - FK to `repetition_plan.plan_id` (not bare `plan`).
 - pyright passes.
 
 **Risks/edge cases:**
 - `root_clone_id` points at generated clone subtree root — FK to `plan` only at schema level; clone/template semantics are service-owned.
+- `sort_order` affects resolution priority and logical completion ordering (critical instances first, then non-critical); instances still do not impose scheduling precedence on each other (unlike chain item `position`).
 
 ---
 
