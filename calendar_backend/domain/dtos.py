@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from calendar_backend.domain.enums import FreeTimeWeekStartDay
-from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.ids import PlanID, TimeConstraintGroupID, TimeWindowID
 from calendar_backend.models.plans import Plan
 from calendar_backend.models.settings import AppSettings
 
@@ -53,3 +53,11 @@ def app_settings_dto_from_row(row: AppSettings) -> AppSettingsDTO:
         free_time_week_start_day=row.free_time_week_start_day,
         updated_at=row.updated_at,
     )
+
+
+@dataclass(frozen=True)
+class MasterHorizonDTO:
+    horizon_start: datetime
+    horizon_end: datetime
+    constraint_group_id: TimeConstraintGroupID
+    time_window_id: TimeWindowID

@@ -211,7 +211,7 @@ uv run pyright
 - Horizon end uses settings duration at refresh time.
 
 **Risks/edge cases:**
-- If multiple stale `SYSTEM_MASTER_HORIZON` groups exist (manual DB edit), refresh should converge to one group or fail loudly — prefer delete extras during refresh with test coverage in slice 5.
+- If multiple stale `SYSTEM_MASTER_HORIZON` groups exist (manual DB edit), partial unique index on `(plan_id)` WHERE `constraint_kind = SYSTEM_MASTER_HORIZON` rejects a second row (ORM in place; Alembic migration follow-up). Service no longer deletes duplicate groups.
 - Window must satisfy ORM CHECK `start_time < end_time` — ensure duration > 0 (validate settings on bootstrap/update).
 
 ---
