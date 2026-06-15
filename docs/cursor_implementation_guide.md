@@ -44,6 +44,8 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 |---|---|---|
 | Service bootstrap defaults | PDF §4 separate static defaults package; guide §2.3 `calendar_backend/settings/` placeholder | **§1** — colocate `DEFAULT_*` with the mutating service module (e.g. `app_settings.py`, `master_plan.py`) |
 | Pre-transaction service reads | Informal outer-read “fast path” before `transaction()` | **§2** — mutating service methods read persistence only inside `transaction(session)` |
+| ORM navigation vs explicit SQL in services | Generic “use relationships in services” without read/write distinction | **§3** — relationships for graph reads/validation; explicit `select`/`delete`/`get` for filtered writes and upserts |
+| Alembic revision style | Raw autogenerate output (`typing.Union`, single-line ops, direct ALTER on SQLite) | **§4** — `from __future__ import annotations`, `collections.abc.Sequence`, `batch_alter_table` for SQLite table alters |
 
 ### TimeConstraintGroup
 
@@ -70,6 +72,8 @@ Examples:
 Slice **file lists** name minimum touch points. Completing obvious symmetric wiring in modules the slice already touches is **in scope**, not scope creep.
 
 See also `.cursor/rules/30-planning-slices.mdc` and `/review-consistency` after `/review-validation` on slice builds.
+
+In **services**, follow [repo convention §3](../.cursor/repo_conventions.md): use relationship navigation for read/traverse/validate paths; use explicit SQL for filtered mutations (see `MasterHorizonService`, `MasterPlanService`, `AppSettingsService`).
 
 ## 1. How to use Cursor for this project
 
@@ -1232,11 +1236,11 @@ SQLite is good for V1, but migrations have constraints:
 For SQLite batch migrations, Alembic can use:
 
 ```python
-with op.batch_alter_table("some_table") as batch_op:
+with op.batch_alter_table("some_table", schema=None) as batch_op:
     batch_op.add_column(...)
 ```
 
-Do not over-optimize for Postgres in V1, but avoid SQLite-only assumptions when easy.
+See [repo convention §4](../.cursor/repo_conventions.md) for full revision-file style (imports, when to use batch vs top-level `op`, data migrations).
 
 ### 8.11 Recommended migration workflow
 
@@ -1266,6 +1270,7 @@ During `/build-plan-slice`, stop after preview and wait for migration approval b
 | Renamed a column | Alembic generates drop/add | Manually edit migration to rename when preserving data matters. |
 | SQLite foreign keys disabled | Relationship tests pass incorrectly or fail inconsistently | Enable `PRAGMA foreign_keys=ON` on connection. |
 | Migration depends on app services | Migration breaks outside app runtime | Keep migrations schema/data focused and self-contained. |
+| Autogenerate style drift | `typing.Union`, missing `from __future__`, direct ALTER on SQLite | Normalize per [repo convention §4](../.cursor/repo_conventions.md) during manual review. |
 
 ## 9. Implementation plan prompts
 

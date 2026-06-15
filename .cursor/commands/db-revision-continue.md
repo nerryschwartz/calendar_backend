@@ -3,7 +3,7 @@ Apply an approved Alembic migration, verify, then commit.
 Use only after `/db-revision-preview` and manual approval of the migration file.
 
 Before applying:
-- Confirm the migration file in `calendar_backend/db/migrations/versions/` has been reviewed and edited as needed.
+- Confirm the migration file in `calendar_backend/db/migrations/versions/` has been reviewed, normalized to [repo convention §4](../repo_conventions.md), and edited as needed.
 - If approval is unclear, ask one focused question and stop.
 
 Apply and verify:

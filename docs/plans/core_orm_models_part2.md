@@ -43,7 +43,7 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 - **`real_fraction`:** SQLAlchemy `Numeric` (fixed precision, e.g. `Numeric(18, 9)`), not float.
 - **Singleton rows:** `app_settings` and `active_calendar_state` use `singleton_id int` PK; optional `CHECK (singleton_id = 1)` when straightforward.
 - **FK delete behavior:** conservative (no cascades that could delete master or orphan calendar data unexpectedly); deletion semantics are service-owned.
-- **Relationships:** add `relationship()` in the same slice as each table group (read-oriented; no `cascade="all, delete-orphan"` on plan/calendar trees).
+- **Relationships:** add `relationship()` in the same slice as each table group (read-oriented; no `cascade="all, delete-orphan"` on plan/calendar trees). In services, use navigation per [repo convention §3](../../.cursor/repo_conventions.md) (graph reads/validation), not as the primary mutate API.
 - **Migration:** second revision via [`/db-revision-preview`](../../.cursor/commands/db-revision-preview.md) then manual edit and [`/db-revision-continue`](../../.cursor/commands/db-revision-continue.md); extend `env.py` imports incrementally from slice 1 (preview verifies wiring before autogenerate).
 - **Tests:** slices 1–5 run ruff + pyright; slice 6 adds pytest. Slice 6 must cover **everything introduced in this chunk** (per [`.cursor/rules/20-testing-and-checks.mdc`](../../.cursor/rules/20-testing-and-checks.mdc)), not only examples below; post **Test catalog** in chat.
 
@@ -281,7 +281,7 @@ uv run pytest -m "not slow and not failure_expected"
 | Introduced item | Needed now? | Justification |
 |-----------------|-------------|---------------|
 | Mapped classes (10 tables across 6 modules) | Yes | Design §6 ORM tables |
-| SQLAlchemy `relationship()` | Yes | Slice acceptance; enables navigation in tests and later services |
+| SQLAlchemy `relationship()` | Yes | Slice acceptance; enables navigation in tests and read/validate paths in services ([repo convention §3](../../.cursor/repo_conventions.md)) |
 | Cross-module `Plan.constraint_groups` | Yes | Design links constraints to plans |
 | Test inline row helpers | Yes | Same pattern as Prompt 4 slice 5; no shared factory |
 | Repository / DAO / mixin layers | No | Services use Session directly per design |
