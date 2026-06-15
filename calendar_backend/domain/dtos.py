@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from calendar_backend.domain.enums import FreeTimeWeekStartDay
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.models.plans import Plan
+from calendar_backend.models.settings import AppSettings
 
 
 @dataclass(frozen=True)
@@ -27,4 +29,27 @@ def goal_plan_dto_from_plan(plan: Plan) -> GoalPlanDTO:
         parent_id=PlanID(plan.parent_id) if plan.parent_id is not None else None,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
+    )
+
+
+@dataclass(frozen=True)
+class AppSettingsDTO:
+    local_timezone: str
+    master_horizon_duration_minutes: int
+    exact_solver_time_limit_seconds: int
+    exact_solver_model_size_limit: int
+    heuristic_enabled: bool
+    free_time_week_start_day: FreeTimeWeekStartDay
+    updated_at: datetime
+
+
+def app_settings_dto_from_row(row: AppSettings) -> AppSettingsDTO:
+    return AppSettingsDTO(
+        local_timezone=row.local_timezone,
+        master_horizon_duration_minutes=row.master_horizon_duration_minutes,
+        exact_solver_time_limit_seconds=row.exact_solver_time_limit_seconds,
+        exact_solver_model_size_limit=row.exact_solver_model_size_limit,
+        heuristic_enabled=row.heuristic_enabled,
+        free_time_week_start_day=row.free_time_week_start_day,
+        updated_at=row.updated_at,
     )
