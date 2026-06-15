@@ -1364,8 +1364,7 @@ Split into slices:
 1. Plan and subtype tables
 2. goal child chain tables
 3. relationships and basic constraints
-4. initial Alembic migration
-5. model/schema tests (post Test catalog in chat)
+4. model/schema tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1385,7 +1384,7 @@ Context:
 - Implement FreeTimeActivity and FreeTimeActivityPrerequisite.
 - Implement CalendarRun, ActiveCalendarState, and AppSettings.
 - Models are persistence records only.
-- Add migrations and schema tests.
+- Add schema tests where the plan specifies them.
 
 Split into slices:
 1. constraints tables
@@ -1393,7 +1392,7 @@ Split into slices:
 3. calendar entry table
 4. free-time tables
 5. settings and run metadata tables
-6. Alembic migration and schema tests (post Test catalog in chat)
+6. schema tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1777,12 +1776,12 @@ Create a Cursor implementation plan for a final V1 design conformance audit.
 Context:
 - Compare the implemented code against the updated V1 engineering design document.
 - Do not add new features.
-- Identify missing behavior, accidental non-goals, layer violations, unnecessary abstractions, weak tests, and migration issues.
+- Identify missing behavior, accidental non-goals, layer violations, unnecessary abstractions, weak tests, and schema drift issues.
 - Produce a plan split into audit/fix slices.
 
 Split into slices:
 1. package/layer boundary audit
-2. data model and migration audit
+2. data model and schema audit
 3. service behavior audit
 4. algorithm behavior audit
 5. test coverage audit
