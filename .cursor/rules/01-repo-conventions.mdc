@@ -1,0 +1,19 @@
+---
+description: Repository code conventions — highest precedence for implementation style
+alwaysApply: true
+---
+
+# Repository code conventions
+
+Read [`.cursor/repo_conventions.md`](../repo_conventions.md) before implementing or refactoring service-layer code.
+
+**Precedence (highest first):**
+1. `.cursor/repo_conventions.md` (this list)
+2. Other `.cursor/rules/*.mdc`
+3. `docs/cursor_implementation_guide.md` and finalized plans in `docs/plans/`
+4. `docs/calendar_backend_v1_engineering_design_updated.pdf`
+5. Existing code (update to match conventions when a convention is added or invoked)
+
+When a convention conflicts with the PDF, guide, plans, or code, **follow the convention** and update downstream docs/code per `/add-repo-convention`.
+
+Add conventions only via `/add-repo-convention` — do not append to `repo_conventions.md` ad hoc.

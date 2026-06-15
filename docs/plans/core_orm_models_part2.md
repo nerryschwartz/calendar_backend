@@ -31,7 +31,7 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 - Persisting renormalized free-time fractions or conflict payloads on `CalendarRun`.
 - Production HTTP/API or CLI beyond schema tests.
 - OR-Tools / scheduling code.
-- Refactoring [`calendar_backend/settings/`](../../calendar_backend/settings/) service package (empty today); ORM `AppSettings` lives under `models/settings.py`.
+- Refactoring service-layer app settings (ORM `AppSettings` lives under `models/settings.py`; bootstrap defaults in `services/app_settings.py` per repo convention §1).
 
 ## Locked assumptions
 
@@ -229,7 +229,7 @@ uv run pyright
 - pyright passes.
 
 **Risks/edge cases:**
-- Do not confuse ORM `models/settings.py` with service package `calendar_backend/settings/`.
+- Do not confuse ORM `models/settings.py` with service bootstrap defaults in `services/app_settings.py` (repo convention §1).
 - `ActiveCalendarState` tracks refresh failure, not plan-tree staleness (design §6, §13).
 
 ---

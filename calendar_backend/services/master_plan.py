@@ -22,10 +22,6 @@ class MasterPlanService:
         self._clock = clock or SystemClock()
 
     def ensure_master_exists(self) -> ServiceResult[GoalPlanDTO]:
-        existing = self._session.scalar(select(Plan).where(Plan.is_master.is_(True)))
-        if existing is not None:
-            return ok(goal_plan_dto_from_plan(existing))
-
         with transaction(self._session) as txn:
             existing = txn.scalar(select(Plan).where(Plan.is_master.is_(True)))
             if existing is not None:

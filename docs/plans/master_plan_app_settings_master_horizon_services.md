@@ -11,10 +11,10 @@ Design constraints:
 - Public methods return **`ServiceResult[T]`** via [`calendar_backend/domain/results.py`](../../calendar_backend/domain/results.py); mutations run inside [`transaction(session)`](../../calendar_backend/db/session.py).
 - ORM models in [`calendar_backend/models/`](../../calendar_backend/models/) are persistence records only — services own bootstrap and updates.
 - **`Clock` protocol** ([`calendar_backend/domain/time.py`](../../calendar_backend/domain/time.py)) stamps `created_at` / `updated_at`; services inject `Clock` (default `SystemClock`).
-- **`calendar_backend/settings/defaults.py`** owns **static default constants** only (design §4); persisted settings mutation goes through `AppSettingsService`.
+- **Service bootstrap defaults** live in the mutating service module ([repo convention §1](../../.cursor/repo_conventions.md)); e.g. `DEFAULT_*` in [`app_settings.py`](../../calendar_backend/services/app_settings.py), `MASTER_PLAN_NAME` in [`master_plan.py`](../../calendar_backend/services/master_plan.py).
 - **Master plan:** normal `GoalPlan` row with `name="master"`, `parent_id=NULL`, `is_master=True`, generated UUID (design §5 / Section 6 master plan notes).
 - **Master horizon:** `[run_started_at, run_started_at + master_horizon_duration_minutes)` as half-open UTC window; materialized as **exactly one** `SYSTEM_MASTER_HORIZON` constraint group with **exactly one window** on the master plan; updated only via `MasterHorizonService` (design §5.5, §7, Section 8 assignment intent).
-- **App settings:** singleton row (`singleton_id=1`); **`scheduling_granularity_minutes` locked to 1** in V1 (design §11); `local_timezone` is IANA string for local-period logic.
+- **App settings:** singleton row (`singleton_id=1`); `local_timezone` is IANA string for local-period logic. V1 has no configurable scheduling granularity setting (removed from ORM).
 - **Prompt 7 boundary:** `TimeConstraintService` rejects direct edits to system constraints; this plan implements the legitimate writer (`MasterHorizonService`) but not user-edit rejection tests (note in slice 5).
 
 **Locked clarification:** Slice 3 implements the **full** `AppSettingsService` (`get_settings`, `update_settings`), not bootstrap/read-only.
@@ -22,7 +22,7 @@ Design constraints:
 Current repo state:
 - ORM complete through Prompt 5 ([`core_plan_orm_models_part2.md`](core_orm_models_part2.md)): plans, constraints, settings, etc.
 - Domain primitives complete ([`domain_primitives.md`](domain_primitives.md)): IDs, enums, errors, time helpers, `ServiceResult`.
-- [`calendar_backend/services/`](../../calendar_backend/services/) and [`calendar_backend/settings/`](../../calendar_backend/settings/) packages **do not exist yet** (guide §2.3 placeholders never created).
+- [`calendar_backend/services/`](../../calendar_backend/services/) exists (`master_plan.py`, `app_settings.py`); `master_horizon.py` deferred to slice 4.
 - DB layer: [`tests/db/test_session.py`](../../tests/db/test_session.py) covers `transaction()`; service-layer test fixtures deferred to this plan slice 1.
 
 Build workflow: use `/build-plan-slice` per slice against this file; stop after each slice for approval.
@@ -45,25 +45,20 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
   - [`calendar_backend/services/app_settings.py`](../../calendar_backend/services/app_settings.py)
   - [`calendar_backend/services/master_horizon.py`](../../calendar_backend/services/master_horizon.py)
   - [`calendar_backend/services/__init__.py`](../../calendar_backend/services/__init__.py) — docstring only (large-package rule: no barrel re-exports).
-- **Defaults module:** [`calendar_backend/settings/defaults.py`](../../calendar_backend/settings/defaults.py) with named constants (no env secrets):
-  - `DEFAULT_LOCAL_TIMEZONE = "UTC"`
-  - `DEFAULT_MASTER_HORIZON_DURATION_MINUTES = 1_051_200` (two × 365-day years in minutes)
-  - `DEFAULT_SCHEDULING_GRANULARITY_MINUTES = 1` (V1 locked)
-  - `DEFAULT_EXACT_SOLVER_TIME_LIMIT_SECONDS = 30`
-  - `DEFAULT_EXACT_SOLVER_MODEL_SIZE_LIMIT = 1000`
-  - `DEFAULT_HEURISTIC_ENABLED = True`
-  - `DEFAULT_FREE_TIME_WEEK_START_DAY = FreeTimeWeekStartDay.MONDAY`
+- **Bootstrap defaults in service modules** ([repo convention §1](../../.cursor/repo_conventions.md)):
+  - [`master_plan.py`](../../calendar_backend/services/master_plan.py): `MASTER_PLAN_NAME = "master"`
+  - [`app_settings.py`](../../calendar_backend/services/app_settings.py): `DEFAULT_LOCAL_TIMEZONE = "UTC"`, `DEFAULT_MASTER_HORIZON_DURATION_MINUTES = 1_051_200` (two × 365-day years in minutes), `DEFAULT_EXACT_SOLVER_TIME_LIMIT_SECONDS = 30`, `DEFAULT_EXACT_SOLVER_MODEL_SIZE_LIMIT = 1000`, `DEFAULT_HEURISTIC_ENABLED = True`, `DEFAULT_FREE_TIME_WEEK_START_DAY = FreeTimeWeekStartDay.MONDAY`
 - **DTOs:** frozen dataclasses in [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) (new), added incrementally per slice:
   - `GoalPlanDTO` — `plan_id: PlanID`, `name`, `is_master`, `parent_id`, `created_at`, `updated_at`
   - `AppSettingsDTO` — all persisted settings fields + `updated_at`
   - `MasterHorizonDTO` — `horizon_start`, `horizon_end`, `constraint_group_id: TimeConstraintGroupID`, `time_window_id: TimeWindowID`
-- **`MasterPlanService.ensure_master_exists()`** — idempotent; creates `Plan` (`GOAL`, `is_master=True`, `name="master"`, `parent_id=None`, `CloneStatus.ORIGINAL`) + `GoalPlan` row if absent; returns existing master otherwise; does **not** create horizon constraints.
+- **`MasterPlanService.ensure_master_exists()`** — idempotent; reads master inside `transaction(session)` only ([repo convention §2](../../.cursor/repo_conventions.md)); creates `Plan` (`GOAL`, `is_master=True`, `name="master"`, `parent_id=None`, `CloneStatus.NOT_CLONED`) + `GoalPlan` row if absent; returns existing master otherwise; does **not** create horizon constraints.
 - **`AppSettingsService.get_settings()`** — if singleton row missing, insert defaults inside transaction (lazy bootstrap), then return DTO.
-- **`AppSettingsService.update_settings(...)`** — keyword-only optional fields; validate; reject `scheduling_granularity_minutes != 1`; stamp `updated_at` via `Clock`; return updated DTO.
+- **`AppSettingsService.update_settings(...)`** — keyword-only optional fields; validate positive ints and `local_timezone` via `zoneinfo.ZoneInfo`; stamp `updated_at` via `Clock`; return updated DTO.
 - **`MasterHorizonService.refresh_master_horizon(run_started_at)`** — validate `run_started_at` (UTC + minute-aligned, reject not truncate); call `MasterPlanService.ensure_master_exists()` and load settings (bootstrap via `get_settings`); upsert **one** `SYSTEM_MASTER_HORIZON` group on master; replace its windows with single `[run_started_at, run_started_at + duration)` window; return `MasterHorizonDTO`.
 - **Slice checks:** slices 1–4 → ruff format, ruff check, pyright only; slice 5 adds pytest + Test catalog.
 - **Test DB:** temp-file SQLite, import all model modules, `Base.metadata.create_all(engine)` (same pattern as schema tests; avoid `:memory:` FK isolation pitfalls).
-- **Service construction:** `__init__(self, session: Session, clock: Clock | None = None)`; public methods that mutate wrap body in `with transaction(self._session):`.
+- **Service construction:** `__init__(self, session: Session, clock: Clock | None = None)`; mutating methods perform persistence reads and writes inside `with transaction(self._session)` ([repo convention §2](../../.cursor/repo_conventions.md)).
 
 ## Slices
 
@@ -145,21 +140,18 @@ uv run pyright
 
 ### Slice 3: AppSettingsService
 
-**Objective:** Implement static defaults module and full `AppSettingsService` (`get_settings`, `update_settings`).
+**Objective:** Implement full `AppSettingsService` (`get_settings`, `update_settings`) with module-level bootstrap defaults.
 
 **Files expected to change:**
-- [`calendar_backend/settings/__init__.py`](../../calendar_backend/settings/__init__.py) (new)
-- [`calendar_backend/settings/defaults.py`](../../calendar_backend/settings/defaults.py) (new)
 - [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) (add `AppSettingsDTO`)
 - [`calendar_backend/services/app_settings.py`](../../calendar_backend/services/app_settings.py) (new)
 
 **Implementation steps:**
-1. Add `defaults.py` constants per locked assumptions (single source for bootstrap values).
-2. Add frozen `AppSettingsDTO` mirroring [`AppSettings`](../../calendar_backend/models/settings.py) columns.
+1. Add `DEFAULT_*` constants at module top in `app_settings.py` (repo convention §1).
+2. Add frozen `AppSettingsDTO` mirroring persisted [`AppSettings`](../../calendar_backend/models/settings.py) fields exposed to callers.
 3. Implement `AppSettingsService`:
    - `get_settings()` — within transaction, select singleton row; if missing insert row with defaults + `singleton_id=1` + `updated_at=clock.now_utc()`; return DTO.
    - `update_settings(...)` — keyword-only optional params for each editable field; load row (bootstrap if needed); validate:
-     - `scheduling_granularity_minutes` must be `1` if provided (else reject with `MessageCode.INVALID_DURATION`)
      - positive integer checks for duration/limits where applicable
      - `local_timezone` parses via `zoneinfo.ZoneInfo`
      - `free_time_week_start_day` is valid enum
@@ -176,7 +168,6 @@ uv run pyright
 **Acceptance criteria:**
 - `get_settings()` bootstraps exactly one row with defaults on empty DB.
 - `update_settings` is the only service path that mutates persisted settings.
-- Rejects non-1 scheduling granularity with structured error.
 - Returns `ServiceResult[AppSettingsDTO]` for both methods.
 
 **Risks/edge cases:**
@@ -237,7 +228,7 @@ uv run pyright
 
 **Implementation steps:**
 1. **`test_master_plan_service.py`:** idempotent ensure; master field invariants (`name`, `is_master`, `parent_id`, `plan_kind`); returns `GoalPlanDTO`.
-2. **`test_app_settings_service.py`:** bootstrap defaults match `defaults.py`; get after bootstrap; update each field; reject bad timezone / granularity != 1 / non-positive limits; `updated_at` advances with `FakeClock`.
+2. **`test_app_settings_service.py`:** bootstrap defaults match `app_settings.py` module constants; get after bootstrap; update each field; reject bad timezone / non-positive limits; `updated_at` advances with `FakeClock`.
 3. **`test_master_horizon_service.py`:** refresh after bootstrap; window bounds; single group/window; second refresh replaces bounds; reject naive/non-minute `run_started_at`; horizon end tracks updated `master_horizon_duration_minutes`.
 4. **`test_foundational_invariants.py`:** empty DB → ensure master + get settings + refresh horizon succeeds; SYSTEM constraint visible on master via ORM navigation; note Prompt 7 will add user-edit rejection.
 5. Mark integration tests `@pytest.mark.integration` where they use engine/session boundaries.
@@ -268,7 +259,7 @@ uv run pytest tests/services/ -m "not slow and not failure_expected"
 | `AppSettingsService` | Yes | Design §7 sole settings mutation path |
 | `MasterHorizonService` | Yes | Design §7 sole system horizon writer |
 | `GoalPlanDTO`, `AppSettingsDTO`, `MasterHorizonDTO` | Yes | Design §7–§8.2 public service return types |
-| `calendar_backend/settings/defaults.py` | Yes | Design §4 separates static defaults from persisted mutation |
+| Module-level `DEFAULT_*` in service files | Yes | Repo convention §1; design bootstrap values colocated with mutator |
 | `FakeClock` in tests | Yes | Testing seam for deterministic timestamps (abstraction rule #4) |
 | Repository / DAO / service base class | No | Design: services use `Session` directly |
 | Generic `BootstrapService` | No | Two ensure/bootstrap paths remain explicit |

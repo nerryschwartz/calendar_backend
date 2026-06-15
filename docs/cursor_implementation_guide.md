@@ -28,7 +28,22 @@ Use these decisions throughout the project:
 
 ## 0.1 Guide vs engineering design PDF
 
-When this guide or a finalized plan in `docs/plans/` conflicts with `docs/calendar_backend_v1_engineering_design_updated.pdf` on the topics below, **this guide and finalized plans take precedence**. The PDF is not updated for these deviations.
+When this guide or a finalized plan in `docs/plans/` conflicts with `docs/calendar_backend_v1_engineering_design_updated.pdf` on the topics below, **this guide and finalized plans take precedence**. The PDF is not updated for these deviations (update the PDF manually when desired).
+
+## 0.3 Repository code conventions
+
+**Highest precedence:** numbered conventions in [`.cursor/repo_conventions.md`](../.cursor/repo_conventions.md), enforced by [`.cursor/rules/01-repo-conventions.mdc`](../.cursor/rules/01-repo-conventions.mdc).
+
+Add or change conventions only via [`/add-repo-convention`](../.cursor/commands/add-repo-convention.md).
+
+When a repo convention conflicts with this guide, a finalized plan, the PDF, or existing code, **follow the convention** and update downstream docs/code per the command workflow. Do not edit the PDF in automation; record superseded PDF points here instead.
+
+### Convention supersessions (PDF / guide)
+
+| Topic | Superseded guidance | Repo convention |
+|---|---|---|
+| Service bootstrap defaults | PDF §4 separate static defaults package; guide §2.3 `calendar_backend/settings/` placeholder | **§1** — colocate `DEFAULT_*` with the mutating service module (e.g. `app_settings.py`, `master_plan.py`) |
+| Pre-transaction service reads | Informal outer-read “fast path” before `transaction()` | **§2** — mutating service methods read persistence only inside `transaction(session)` |
 
 ### TimeConstraintGroup
 
@@ -138,7 +153,6 @@ mkdir -p \
   calendar_backend/services \
   calendar_backend/scheduling \
   calendar_backend/deletion \
-  calendar_backend/settings \
   calendar_backend/orchestration \
   tests \
   tools \
@@ -159,9 +173,10 @@ touch \
   calendar_backend/services/__init__.py \
   calendar_backend/scheduling/__init__.py \
   calendar_backend/deletion/__init__.py \
-  calendar_backend/settings/__init__.py \
   calendar_backend/orchestration/__init__.py
 ```
+
+Repo convention §1: service bootstrap defaults live in the mutating service module (e.g. `services/app_settings.py`), not a separate `calendar_backend/settings/` package. ORM app settings mapping is [`calendar_backend/models/settings.py`](../calendar_backend/models/settings.py).
 
 ### 2.4 Recommended `pyproject.toml`
 

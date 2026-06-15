@@ -3,7 +3,9 @@ description: Project source of truth and implementation boundaries
 alwaysApply: true
 ---
 
-The updated calendar_backend V1 engineering design document is the source of truth for architecture and behavior.
+**Precedence:** [`.cursor/repo_conventions.md`](../repo_conventions.md) overrides everything below. Then other `.cursor/rules`, then `docs/cursor_implementation_guide.md` and finalized plans, then the engineering design PDF, then existing code (update code when conventions change).
+
+The updated calendar_backend V1 engineering design document is the architectural source of truth when no repo convention or guide deviation applies.
 
 Project identity:
 - Python service-layer backend named calendar_backend.
