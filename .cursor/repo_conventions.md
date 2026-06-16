@@ -76,3 +76,24 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 - [`522f4501f06a`](../../calendar_backend/db/migrations/versions/522f4501f06a_add_partial_unique_index_for_system_.py) — data cleanup via `op.get_bind()`, then `op.create_index` with `sqlite_where`.
 
 **Aligns with:** Guide §8.10 (SQLite batch mode); `/db-revision-preview` manual edit step.
+
+---
+
+## 5. Domain vs services placement (session-free vs persistence)
+
+**Scope:** `calendar_backend/domain/` vs `calendar_backend/services/` (same *session-free vs uses `Session`* split applies at `scheduling/`, `deletion/`, and `orchestration/` for their layers).
+
+**Rule:**
+
+- **`services/`** — code that uses `Session`, `transaction()`, or otherwise coordinates persistence (read or write): public service methods, bootstrap/load/save/delete, sibling-service orchestration inside a transaction, and **private helpers used only by that module’s public API** (e.g. `_load_or_create_settings`, `_validate_settings_update` on `update_settings` until extracted).
+- **`domain/`** — **session-free** code: enums, IDs, errors, `ServiceResult`, time/constraint helpers, frozen **DTOs** and their **row→DTO mappers** in [`domain/dtos.py`](../../calendar_backend/domain/dtos.py). Domain must **not** import SQLAlchemy `Session` or call `transaction()`.
+- **Shared calendar/scheduling semantics** (validate windows, merge OR intervals, structural invariant rules on loaded data) belong in **`domain/`** modules (e.g. [`domain/constraints.py`](../../calendar_backend/domain/constraints.py), [`domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py)) even with one caller — not only when reused twice.
+- **ORM mapped classes** may appear in domain **only** for dumb record projection (DTO mappers) or pure checks over already-loaded row/graph data passed in as arguments — never for queries or mutations.
+- **Read-only diagnostics** that must load an ORM graph (`PlanTreeInvariantService`) stay in **`services/`**; extract pure violation logic to `domain/` when it is testable without a database.
+
+**Examples:**
+
+- **Domain:** `GoalPlanDTO`, `goal_plan_dto_from_plan`, `validate_time_window`, `merge_or_windows`, pure `check_*` helpers over in-memory plan/chain/constraint snapshots.
+- **Services:** `AppSettingsService.get_settings`, `MasterHorizonService.refresh_master_horizon`, `PlanTreeInvariantService.validate_master_tree` (loads graph in `transaction`, calls domain pure checks).
+
+**Supersedes:** Vague “services own all validation” readings — services **enforce** rules at persistence boundaries by calling domain semantics; PDF/guide “pure domain layer free of SQLAlchemy **sessions**” (not “ORM-blind DTOs”).

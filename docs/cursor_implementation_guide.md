@@ -46,6 +46,7 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 | Pre-transaction service reads | Informal outer-read “fast path” before `transaction()` | **§2** — mutating service methods read persistence only inside `transaction(session)` |
 | ORM navigation vs explicit SQL in services | Generic “use relationships in services” without read/write distinction | **§3** — relationships for graph reads/validation; explicit `select`/`delete`/`get` for filtered writes and upserts |
 | Alembic revision style | Raw autogenerate output (`typing.Union`, single-line ops, direct ALTER on SQLite) | **§4** — `from __future__ import annotations`, `collections.abc.Sequence`, `batch_alter_table` for SQLite table alters |
+| Domain vs services placement | “Services own all validation”; DTO mappers only in services; invariant helpers forced into service modules | **§5** — session-free semantics and DTOs in `domain/`; `Session`/`transaction()` and use-case glue in `services/` |
 
 ### TimeConstraintGroup
 
@@ -73,7 +74,7 @@ Slice **file lists** name minimum touch points. Completing obvious symmetric wir
 
 See also `.cursor/rules/30-planning-slices.mdc` and `/review-consistency` after `/review-validation` on slice builds.
 
-In **services**, follow [repo convention §3](../.cursor/repo_conventions.md): use relationship navigation for read/traverse/validate paths; use explicit SQL for filtered mutations (see `MasterHorizonService`, `MasterPlanService`, `AppSettingsService`).
+In **services**, follow [repo convention §3](../.cursor/repo_conventions.md): use relationship navigation for read/traverse/validate paths; use explicit SQL for filtered mutations (see `MasterHorizonService`, `MasterPlanService`, `AppSettingsService`). For **domain vs services file placement**, follow [repo convention §5](../.cursor/repo_conventions.md).
 
 ## 1. How to use Cursor for this project
 
@@ -390,10 +391,11 @@ calendar_backend/models:
 calendar_backend/domain:
 - Owns pure enums, IDs, errors, dataclasses, time helpers, DTOs, and ServiceResult.
 - Does not import SQLAlchemy sessions.
+- See [repo convention §5](../.cursor/repo_conventions.md) for DTO mappers, shared validation, and invariant pure helpers vs service persistence glue.
 
 calendar_backend/services:
 - Owns public service methods, validation, transactions, and persistence-changing behavior.
-- Services coordinate models and domain types.
+- Services coordinate models and domain types; enforce domain rules at persistence boundaries.
 - Do not put heavy optional solver dependencies here.
 
 calendar_backend/scheduling:
