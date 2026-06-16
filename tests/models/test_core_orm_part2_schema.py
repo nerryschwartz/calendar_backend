@@ -253,6 +253,55 @@ def test_part2_metadata_enum_columns() -> None:
         assert set(column.type.enums) == expected_values
 
 
+def test_part2_metadata_partial_unique_system_master_horizon_index() -> None:
+    table = Base.metadata.tables["time_constraint_group"]
+    horizon_index = next(
+        idx
+        for idx in table.indexes
+        if idx.name == "uq_time_constraint_group_plan_system_master_horizon"
+    )
+    assert horizon_index.unique is True
+    assert {column.name for column in horizon_index.columns} == {"plan_id"}
+    sqlite_where = horizon_index.kwargs.get("sqlite_where")
+    assert sqlite_where is not None
+    assert str(sqlite_where) == "constraint_kind = 'SYSTEM_MASTER_HORIZON'"
+
+
+@pytest.mark.integration
+def test_partial_unique_rejects_second_system_master_horizon_group(
+    part2_schema_engine: Engine,
+) -> None:
+    time_constraint_group = Base.metadata.tables["time_constraint_group"]
+    session = create_session_factory(part2_schema_engine)()
+    plan_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            _insert_master_goal(txn, plan_id)
+            txn.execute(
+                insert(time_constraint_group).values(
+                    {
+                        "time_constraint_group_id": uuid.uuid4(),
+                        "plan_id": plan_id,
+                        "constraint_kind": ConstraintKind.SYSTEM_MASTER_HORIZON,
+                    }
+                )
+            )
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            txn.execute(
+                insert(time_constraint_group).values(
+                    {
+                        "time_constraint_group_id": uuid.uuid4(),
+                        "plan_id": plan_id,
+                        "constraint_kind": ConstraintKind.SYSTEM_MASTER_HORIZON,
+                    }
+                )
+            )
+    finally:
+        session.close()
+
+
 @pytest.mark.integration
 def test_check_time_window_start_before_end(part2_schema_engine: Engine) -> None:
     time_window = Base.metadata.tables["time_window"]
@@ -441,7 +490,6 @@ def test_check_app_settings_singleton_id(part2_schema_engine: Engine) -> None:
                         "singleton_id": 2,
                         "local_timezone": "UTC",
                         "master_horizon_duration_minutes": 60,
-                        "scheduling_granularity_minutes": 15,
                         "exact_solver_time_limit_seconds": 30,
                         "exact_solver_model_size_limit": 1000,
                         "heuristic_enabled": True,

@@ -9,7 +9,12 @@ from calendar_backend.domain.enums import (
     RepeatMode,
     SolverStatus,
 )
-from calendar_backend.domain.errors import MessageCode, ServiceMessage, WrongPlanTypeError
+from calendar_backend.domain.errors import (
+    MessageCode,
+    ServiceMessage,
+    ServiceTransactionAborted,
+    WrongPlanTypeError,
+)
 from calendar_backend.domain.ids import (
     CalendarEntryID,
     CalendarRunID,
@@ -55,6 +60,7 @@ __all__ = [
     "RepetitionInstanceID",
     "ServiceMessage",
     "ServiceResult",
+    "ServiceTransactionAborted",
     "SolverStatus",
     "SystemClock",
     "TimeConstraintGroupID",

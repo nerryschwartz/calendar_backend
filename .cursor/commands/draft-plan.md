@@ -1,7 +1,7 @@
 Draft a Cursor implementation plan.
 
 Inputs:
-- The updated calendar_backend V1 engineering design document is the source of truth.
+- [`.cursor/repo_conventions.md`](../repo_conventions.md) has highest precedence, then this guide and locked decisions, then the engineering design PDF.
 - Use the active conversation instructions and any locked decisions.
 - Store draft plans in ~/.cursor/plans/.
 - After approval, save the finalized plan to docs/plans/.

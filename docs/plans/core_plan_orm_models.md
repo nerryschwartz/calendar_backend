@@ -124,7 +124,7 @@ uv run pyright
 - [`calendar_backend/models/plans.py`](../../calendar_backend/models/plans.py)
 
 **Implementation steps:**
-1. Add **`relationship()`** definitions (read-oriented, no cascade delete from master):
+1. Add **`relationship()`** definitions (read-oriented, no cascade delete from master). Services use navigation for read/validate paths only ([repo convention §3](../../.cursor/repo_conventions.md)); mutations stay explicit SQL.
    - `Plan` ↔ subtype (`uselist=False`, `back_populates`).
    - `Plan` self-referential `parent` / `children` via `parent_id`.
    - `GoalPlan` ↔ `GoalChildChain` / chains list.
@@ -246,7 +246,7 @@ uv run pytest -m "not slow and not failure_expected"
 | Introduced item | Needed now? | Justification |
 |-----------------|-------------|---------------|
 | Mapped classes (`Plan`, `GoalPlan`, etc.) | Yes | Design §6 ORM tables |
-| SQLAlchemy `relationship()` | Yes | Slice 3 objective; enables navigation in tests and later services |
+| SQLAlchemy `relationship()` | Yes | Slice 3 objective; enables navigation in tests and read/validate paths in services ([repo convention §3](../../.cursor/repo_conventions.md)) |
 | Test inline fixtures | Maybe | Allowed in slice 5 test file only; no shared `ModelFactory` registry |
 | Repository / DAO layer | No | Services talk to Session directly per design |
 | Polymorphic inheritance mapper | No | Conflicts with explicit subtype table pattern |

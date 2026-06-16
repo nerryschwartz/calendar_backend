@@ -68,9 +68,12 @@ Flag §8.12 risks when relevant:
 - empty or near-empty migration (often missing `env.py` imports)
 - drop/add instead of rename
 - app/service imports inside the migration
-- SQLite batch-mode needs for ALTER operations
+- SQLite batch-mode needs for ALTER operations — use `op.batch_alter_table(..., schema=None)` per [repo convention §4](../repo_conventions.md)
+- autogenerate style not normalized (`typing.Union`, missing `from __future__ import annotations`)
 - multiple `Base` metadata sources
 - speculative indexes or constraints not reflected in models
+
+After autogenerate, normalize the revision file to [repo convention §4](../repo_conventions.md) during manual review (before `/db-revision-continue`).
 
 Review output format:
 

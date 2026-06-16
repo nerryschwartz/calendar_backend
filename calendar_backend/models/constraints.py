@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Uuid
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Index, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from calendar_backend.db.base import Base
@@ -15,6 +15,14 @@ from calendar_backend.models.plans import Plan
 
 class TimeConstraintGroup(Base):
     __tablename__ = "time_constraint_group"
+    __table_args__ = (
+        Index(
+            "uq_time_constraint_group_plan_system_master_horizon",
+            "plan_id",
+            unique=True,
+            sqlite_where=text("constraint_kind = 'SYSTEM_MASTER_HORIZON'"),
+        ),
+    )
 
     time_constraint_group_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),

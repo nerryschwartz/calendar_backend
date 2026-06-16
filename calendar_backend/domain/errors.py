@@ -36,3 +36,10 @@ class ServiceMessage:
 
 class WrongPlanTypeError(TypeError):
     """Raised when a service receives a plan of the wrong subtype."""
+
+
+class ServiceTransactionAborted(Exception):
+    """Raised inside transaction() to roll back; convert to fail(...) at the service boundary."""
+
+    def __init__(self, errors: tuple[ServiceMessage, ...]) -> None:
+        self.errors = errors

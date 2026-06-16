@@ -28,7 +28,24 @@ Use these decisions throughout the project:
 
 ## 0.1 Guide vs engineering design PDF
 
-When this guide or a finalized plan in `docs/plans/` conflicts with `docs/calendar_backend_v1_engineering_design_updated.pdf` on the topics below, **this guide and finalized plans take precedence**. The PDF is not updated for these deviations.
+When this guide or a finalized plan in `docs/plans/` conflicts with `docs/calendar_backend_v1_engineering_design_updated.pdf` on the topics below, **this guide and finalized plans take precedence**. The PDF is not updated for these deviations (update the PDF manually when desired).
+
+## 0.3 Repository code conventions
+
+**Highest precedence:** numbered conventions in [`.cursor/repo_conventions.md`](../.cursor/repo_conventions.md), enforced by [`.cursor/rules/01-repo-conventions.mdc`](../.cursor/rules/01-repo-conventions.mdc).
+
+Add or change conventions only via [`/add-repo-convention`](../.cursor/commands/add-repo-convention.md).
+
+When a repo convention conflicts with this guide, a finalized plan, the PDF, or existing code, **follow the convention** and update downstream docs/code per the command workflow. Do not edit the PDF in automation; record superseded PDF points here instead.
+
+### Convention supersessions (PDF / guide)
+
+| Topic | Superseded guidance | Repo convention |
+|---|---|---|
+| Service bootstrap defaults | PDF §4 separate static defaults package; guide §2.3 `calendar_backend/settings/` placeholder | **§1** — colocate `DEFAULT_*` with the mutating service module (e.g. `app_settings.py`, `master_plan.py`) |
+| Pre-transaction service reads | Informal outer-read “fast path” before `transaction()` | **§2** — mutating service methods read persistence only inside `transaction(session)` |
+| ORM navigation vs explicit SQL in services | Generic “use relationships in services” without read/write distinction | **§3** — relationships for graph reads/validation; explicit `select`/`delete`/`get` for filtered writes and upserts |
+| Alembic revision style | Raw autogenerate output (`typing.Union`, single-line ops, direct ALTER on SQLite) | **§4** — `from __future__ import annotations`, `collections.abc.Sequence`, `batch_alter_table` for SQLite table alters |
 
 ### TimeConstraintGroup
 
@@ -55,6 +72,8 @@ Examples:
 Slice **file lists** name minimum touch points. Completing obvious symmetric wiring in modules the slice already touches is **in scope**, not scope creep.
 
 See also `.cursor/rules/30-planning-slices.mdc` and `/review-consistency` after `/review-validation` on slice builds.
+
+In **services**, follow [repo convention §3](../.cursor/repo_conventions.md): use relationship navigation for read/traverse/validate paths; use explicit SQL for filtered mutations (see `MasterHorizonService`, `MasterPlanService`, `AppSettingsService`).
 
 ## 1. How to use Cursor for this project
 
@@ -138,7 +157,6 @@ mkdir -p \
   calendar_backend/services \
   calendar_backend/scheduling \
   calendar_backend/deletion \
-  calendar_backend/settings \
   calendar_backend/orchestration \
   tests \
   tools \
@@ -159,9 +177,10 @@ touch \
   calendar_backend/services/__init__.py \
   calendar_backend/scheduling/__init__.py \
   calendar_backend/deletion/__init__.py \
-  calendar_backend/settings/__init__.py \
   calendar_backend/orchestration/__init__.py
 ```
+
+Repo convention §1: service bootstrap defaults live in the mutating service module (e.g. `services/app_settings.py`), not a separate `calendar_backend/settings/` package. ORM app settings mapping is [`calendar_backend/models/settings.py`](../calendar_backend/models/settings.py).
 
 ### 2.4 Recommended `pyproject.toml`
 
@@ -1217,11 +1236,11 @@ SQLite is good for V1, but migrations have constraints:
 For SQLite batch migrations, Alembic can use:
 
 ```python
-with op.batch_alter_table("some_table") as batch_op:
+with op.batch_alter_table("some_table", schema=None) as batch_op:
     batch_op.add_column(...)
 ```
 
-Do not over-optimize for Postgres in V1, but avoid SQLite-only assumptions when easy.
+See [repo convention §4](../.cursor/repo_conventions.md) for full revision-file style (imports, when to use batch vs top-level `op`, data migrations).
 
 ### 8.11 Recommended migration workflow
 
@@ -1251,6 +1270,7 @@ During `/build-plan-slice`, stop after preview and wait for migration approval b
 | Renamed a column | Alembic generates drop/add | Manually edit migration to rename when preserving data matters. |
 | SQLite foreign keys disabled | Relationship tests pass incorrectly or fail inconsistently | Enable `PRAGMA foreign_keys=ON` on connection. |
 | Migration depends on app services | Migration breaks outside app runtime | Keep migrations schema/data focused and self-contained. |
+| Autogenerate style drift | `typing.Union`, missing `from __future__`, direct ALTER on SQLite | Normalize per [repo convention §4](../.cursor/repo_conventions.md) during manual review. |
 
 ## 9. Implementation plan prompts
 
@@ -1364,8 +1384,7 @@ Split into slices:
 1. Plan and subtype tables
 2. goal child chain tables
 3. relationships and basic constraints
-4. initial Alembic migration
-5. model/schema tests (post Test catalog in chat)
+4. model/schema tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1385,7 +1404,7 @@ Context:
 - Implement FreeTimeActivity and FreeTimeActivityPrerequisite.
 - Implement CalendarRun, ActiveCalendarState, and AppSettings.
 - Models are persistence records only.
-- Add migrations and schema tests.
+- Add schema tests where the plan specifies them.
 
 Split into slices:
 1. constraints tables
@@ -1393,7 +1412,7 @@ Split into slices:
 3. calendar entry table
 4. free-time tables
 5. settings and run metadata tables
-6. Alembic migration and schema tests (post Test catalog in chat)
+6. schema tests (post Test catalog in chat)
 
 Store the finalized plan in docs/plans/.
 ```
@@ -1777,12 +1796,12 @@ Create a Cursor implementation plan for a final V1 design conformance audit.
 Context:
 - Compare the implemented code against the updated V1 engineering design document.
 - Do not add new features.
-- Identify missing behavior, accidental non-goals, layer violations, unnecessary abstractions, weak tests, and migration issues.
+- Identify missing behavior, accidental non-goals, layer violations, unnecessary abstractions, weak tests, and schema drift issues.
 - Produce a plan split into audit/fix slices.
 
 Split into slices:
 1. package/layer boundary audit
-2. data model and migration audit
+2. data model and schema audit
 3. service behavior audit
 4. algorithm behavior audit
 5. test coverage audit
