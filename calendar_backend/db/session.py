@@ -34,5 +34,9 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 @contextmanager
 def transaction(session: Session) -> Generator[Session]:
-    with session.begin():
-        yield session
+    if session.in_transaction():
+        with session.begin_nested():
+            yield session
+    else:
+        with session.begin():
+            yield session
