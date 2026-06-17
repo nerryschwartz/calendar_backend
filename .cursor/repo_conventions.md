@@ -117,7 +117,7 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 
 **Examples:**
 
-- **Prefer `tuple`:** `validate_user_group_windows(windows: tuple[TimeWindow, ...])`, `merge_or_windows(...) -> tuple[TimeWindow, ...]`, `TimeConstraintGroupDTO.windows: tuple[TimeWindowDTO, ...]`, `ServiceResult.errors: tuple[ServiceMessage, ...]`.
+- **Prefer `tuple`:** `validate_user_group_windows(windows: tuple[TimeWindow, ...])`, `merge_or_windows(...) -> tuple[TimeWindow, ...]`, `TimeConstraintGroupDTO.windows: tuple[_TimeWindowDTO, ...]`, `ServiceResult.errors: tuple[ServiceMessage, ...]`.
 - **Keep `Sequence`:** migration `down_revision` fields ([§4](#4-alembic-revision-file-style-sqlite)); `scripts/cursor/commit_changes.py` `run(cmd: Sequence[str])`.
 
 **Aligns with:** [§5](#5-domain-vs-services-placement-session-free-vs-persistence); abstraction discipline (no widening for hypothetical callers).

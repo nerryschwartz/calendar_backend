@@ -17,7 +17,7 @@ Design constraints:
 
 **Locked clarifications (request-questions):**
 - **`PlanTreeInvariantService.validate_master_tree()`** covers the **full master-tree invariant suite** in this prompt (master, subtype pairing, reachability, chain ordering/uniqueness, system-constraint cardinality, USER constraint shape). Prompt 8 adds deletion/cascade-specific checks only.
-- **`TimeConstraintService` API:** **group-level CRUD only** — `add_user_group`, `update_user_group`, `remove_user_group`. No plan-level replace-all in V1.
+- **`TimeConstraintService` API:** group CRUD — `add_user_group`, `update_user_group`, `remove_user_group`; window edits within a USER group — `add_user_window` (validate + merge with existing), `remove_user_window` (auto-deletes group when last window removed). No plan-level replace-all in V1.
 - **Invariant layout:** **`PlanTreeInvariantService` in `services/`** loads the ORM graph inside `transaction()`; **pure structural checks** in [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) ([repo convention §5](../../.cursor/repo_conventions.md)). No separate `invariant_validation` package beyond `domain/`.
 
 **Slice order note:** Guide Prompt 7 lists APIs before helpers; this plan **reorders** so validation/normalization helpers land before mutating service methods (dependency order).
@@ -43,12 +43,13 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
   - [`calendar_backend/domain/constraints.py`](../../calendar_backend/domain/constraints.py) (new) — OR-window merge/normalization and USER-group window list validation (no SQLAlchemy).
   - [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) (new, slice 4) — session-free master-tree structural checks over loaded plan/chain/constraint data passed in from the service.
 - **DTOs** in [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) (import from `domain.dtos`, not [`domain/__init__.py`](../../calendar_backend/domain/__init__.py) barrel per rule 25):
-  - `TimeWindowDTO` — `time_window_id: TimeWindowID`, `start_time`, `end_time`
-  - `TimeConstraintGroupDTO` — `constraint_group_id`, `plan_id`, `constraint_kind`, `windows: tuple[TimeWindowDTO, ...]`
+  - `TimeConstraintGroupDTO` — `constraint_group_id`, `plan_id`, `constraint_kind`, `windows: tuple[_TimeWindowDTO, ...]` (`_TimeWindowDTO` is module-private: `time_window_id`, `start_time`, `end_time`; projected inline in `time_constraint_group_dto_from_rows`, no standalone window service)
 - **`TimeConstraintService` public methods:**
   - `add_user_group(plan_id, windows)` — validate + merge windows; insert `ConstraintKind.USER` group + windows; return `TimeConstraintGroupDTO`.
   - `update_user_group(group_id, windows)` — reject non-USER groups; replace windows after validate + merge.
   - `remove_user_group(group_id)` — reject non-USER groups; delete windows then group.
+  - `add_user_window(group_id, window)` — reject non-USER groups; validate window; merge with existing windows and replace persisted set; return `TimeConstraintGroupDTO`.
+  - `remove_user_window(group_id, time_window_id)` — reject non-USER groups; delete window; if last window, delete group and return `ServiceResult[None]`, else return updated `TimeConstraintGroupDTO`.
   - All accept domain [`TimeWindow`](../../calendar_backend/domain/time.py) dataclass inputs (start/end only on add; IDs assigned on persist).
 - **`PlanTreeInvariantService.validate_master_tree()`** — read-only; loads master tree graph inside `transaction(session)`; returns `ServiceResult[None]` with `success=True` and empty errors when clean, else `success=False` and one `ServiceMessage` per violation (add `MessageCode` values in slice 4 as needed, e.g. tree/subtype/chain/constraint-specific codes or a small set of invariant codes with `details` carrying path/plan_id).
 - **OR-window merge:** within each group, sort by `start_time`, merge intervals that overlap or touch at a minute boundary; persist merged set; deterministic output.
@@ -99,7 +100,7 @@ uv run pytest tests/domain/test_constraints.py -m "not slow and not failure_expe
 **Objective:** Implement `TimeConstraintService` add/update/remove for `ConstraintKind.USER` groups only.
 
 **Files expected to change:**
-- [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) (add `TimeWindowDTO`, `TimeConstraintGroupDTO`, mappers from ORM rows)
+- [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) (add `TimeConstraintGroupDTO` and `time_constraint_group_dto_from_rows`; private `_TimeWindowDTO` nested in group projection)
 - [`calendar_backend/services/time_constraint.py`](../../calendar_backend/services/time_constraint.py) (new)
 
 **Implementation steps:**
@@ -138,7 +139,7 @@ uv run pyright
 - [`calendar_backend/services/time_constraint.py`](../../calendar_backend/services/time_constraint.py)
 
 **Implementation steps:**
-1. Add private `_require_user_group(group)` (or inline check) on `update_user_group` and `remove_user_group`.
+1. Add private `_load_user_group(txn, group_id)` (load, not-found, and USER-kind guard) on `update_user_group`, `remove_user_group`, `add_user_window`, and `remove_user_window`.
 2. If `constraint_kind != ConstraintKind.USER`, return `fail(ServiceMessage(code=SYSTEM_CONSTRAINT_DIRECT_EDIT_FORBIDDEN, ...))` without mutating.
 3. `add_user_group` always creates `USER` — no guard needed beyond kind assignment.
 4. Do **not** block [`MasterHorizonService`](../../calendar_backend/services/master_horizon.py) or other system writers.
@@ -215,7 +216,7 @@ uv run pyright
 - [`tests/services/test_foundational_invariants.py`](../../tests/services/test_foundational_invariants.py) (extend — system-edit rejection note from Prompt 6)
 
 **Implementation steps:**
-1. **`test_time_constraint_service.py`:** add/update/remove USER groups; merge behavior persisted; empty group rejected; naive/non-UTC/non-minute windows rejected; system group update/remove forbidden; no partial persistence on failure.
+1. **`test_time_constraint_service.py`:** add/update/remove USER groups; add/remove USER windows (merge on add, auto-delete group on last remove); merge behavior persisted; empty group rejected; naive/non-UTC/non-minute windows rejected; system group update/remove/window mutations forbidden; no partial persistence on failure.
 2. **`test_plan_tree_invariant_service.py`:** clean tree passes; violations for orphan plan, subtype mismatch, empty USER group, duplicate horizon group (if seedable), broken chain ordering/uniqueness.
 3. **`test_constraints.py` (domain):** merge and validate unit cases if not done in slice 1.
 4. **`test_invariant_validation.py` (domain):** pure structural violation cases without DB.
@@ -250,8 +251,8 @@ uv run pytest tests/domain/test_constraints.py tests/domain/test_invariant_valid
 | `PlanTreeInvariantService` | Yes | Design-deferred tree/subtype/constraint diagnostics ([`core_plan_orm_models.md`](core_plan_orm_models.md) locked decision) |
 | `domain/constraints.py` pure functions | Yes | Session-free constraint semantics ([repo convention §5](../../.cursor/repo_conventions.md)) |
 | `domain/invariant_validation.py` pure functions | Yes | Session-free tree/chain/constraint structural checks; service loads graph |
-| `TimeWindowDTO`, `TimeConstraintGroupDTO` | Yes | Design §8.2 service return types |
-| Private `_require_user_group` in service | Yes | Single guard for system-edit rejection |
+| `TimeConstraintGroupDTO` (with private `_TimeWindowDTO` window elements) | Yes | Design §8.2 group service return type; no standalone window CRUD in V1 |
+| Private `_load_user_group` in service | Yes | Single load + system-edit rejection for USER-group mutations |
 | Repository / DAO / service base class | No | Matches existing services (`Session` direct) |
 | Plan-level replace-all API | No | Explicitly deferred (group CRUD sufficient for V1) |
 | Separate top-level `invariant_validation` package | No | Use `domain/invariant_validation.py`, not a new package |
