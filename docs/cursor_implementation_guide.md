@@ -47,6 +47,7 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 | ORM navigation vs explicit SQL in services | Generic “use relationships in services” without read/write distinction | **§3** — relationships for graph reads/validation; explicit `select`/`delete`/`get` for filtered writes and upserts |
 | Alembic revision style | Raw autogenerate output (`typing.Union`, single-line ops, direct ALTER on SQLite) | **§4** — `from __future__ import annotations`, `collections.abc.Sequence`, `batch_alter_table` for SQLite table alters |
 | Domain vs services placement | “Services own all validation”; DTO mappers only in services; invariant helpers forced into service modules | **§5** — session-free semantics and DTOs in `domain/`; `Session`/`transaction()` and use-case glue in `services/` |
+| Collection parameter types | `Sequence` / `Iterable` on domain and service APIs by default | **§6** — `tuple` for domain value bundles; `Sequence` only for Alembic metadata, generic scripts, or proven multi-caller utilities |
 
 ### TimeConstraintGroup
 
@@ -74,7 +75,7 @@ Slice **file lists** name minimum touch points. Completing obvious symmetric wir
 
 See also `.cursor/rules/30-planning-slices.mdc` and `/review-consistency` after `/review-validation` on slice builds.
 
-In **services**, follow [repo convention §3](../.cursor/repo_conventions.md): use relationship navigation for read/traverse/validate paths; use explicit SQL for filtered mutations (see `MasterHorizonService`, `MasterPlanService`, `AppSettingsService`). For **domain vs services file placement**, follow [repo convention §5](../.cursor/repo_conventions.md).
+In **services**, follow [repo convention §3](../.cursor/repo_conventions.md): use relationship navigation for read/traverse/validate paths; use explicit SQL for filtered mutations (see `MasterHorizonService`, `MasterPlanService`, `AppSettingsService`). For **domain vs services file placement**, follow [repo convention §5](../.cursor/repo_conventions.md). For **collection types in APIs**, prefer `tuple` over `Sequence` per [repo convention §6](../.cursor/repo_conventions.md).
 
 ## 1. How to use Cursor for this project
 

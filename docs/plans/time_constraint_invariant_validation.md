@@ -70,8 +70,8 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 
 **Implementation steps:**
 1. Add functions (names illustrative):
-   - `validate_user_group_windows(windows: Sequence[TimeWindow]) -> ServiceMessage | None` — reject empty list (`EMPTY_CONSTRAINT_GROUP`); delegate each window to `validate_time_window`.
-   - `merge_or_windows(windows: Sequence[TimeWindow]) -> tuple[TimeWindow, ...]` — merge overlapping/adjacent half-open intervals; assume inputs already validated.
+   - `validate_user_group_windows(windows: tuple[TimeWindow, ...]) -> ServiceMessage | None` — reject empty group (`EMPTY_CONSTRAINT_GROUP`); delegate each window to `validate_time_window`.
+   - `merge_or_windows(windows: tuple[TimeWindow, ...]) -> tuple[TimeWindow, ...]` — merge overlapping/adjacent half-open intervals; assume inputs already validated ([repo convention §6](../../.cursor/repo_conventions.md)).
 2. Keep module free of SQLAlchemy and service imports.
 3. Document in module docstring: AND-of-OR semantics; merge applies **within** one group only.
 

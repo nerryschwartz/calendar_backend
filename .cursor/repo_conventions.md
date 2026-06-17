@@ -97,3 +97,27 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 - **Services:** `AppSettingsService.get_settings`, `MasterHorizonService.refresh_master_horizon`, `PlanTreeInvariantService.validate_master_tree` (loads graph in `transaction`, calls domain pure checks).
 
 **Supersedes:** Vague “services own all validation” readings — services **enforce** rules at persistence boundaries by calling domain semantics; PDF/guide “pure domain layer free of SQLAlchemy **sessions**” (not “ORM-blind DTOs”).
+
+---
+
+## 6. Opinionated collection types (prefer `tuple` over `Sequence`)
+
+**Scope:** Domain and service **public** APIs, DTO fields, and `ServiceResult` payloads in `calendar_backend/`. Does not apply to Alembic revision metadata ([§4](#4-alembic-revision-file-style-sqlite)), generic dev scripts, or stdlib-style utilities with many unknown callers.
+
+**Rule:**
+
+- **Prefer concrete value types** (`tuple[T, ...]`, frozen dataclass fields) when the collection is part of a **domain concept** (e.g. OR windows in one constraint group, `ServiceMessage` bundles). Signatures document intent, not only “iterable.”
+- **Do not use `collections.abc.Sequence`** (or `Iterable`) on domain helpers or service public methods merely because the body only loops — that widens types without adding clarity when callers are known.
+- **Validate semantics at trust boundaries** (service public API, future HTTP/CLI); **normalize shape once** at that boundary (e.g. `windows = tuple(windows)` if accepting a list literal in tests), then pass **`tuple`** to domain.
+- **Bridge ORM `list` relationship collections in `services/`** — convert to `tuple` (or build DTOs) before calling domain; domain does not take `Mapped[list[...]]`.
+- **Use `Sequence` only when** the container shape is intentionally not part of the contract:
+  - Alembic `down_revision: str | Sequence[str] | None` (single parent vs merge heads)
+  - Generic command/script helpers (`run(cmd: Sequence[str])`) with unrelated caller container types
+  - A **shared utility** with two or more real callers that pass different read-only container types (abstraction discipline — not hypothetical reuse)
+
+**Examples:**
+
+- **Prefer `tuple`:** `validate_user_group_windows(windows: tuple[TimeWindow, ...])`, `merge_or_windows(...) -> tuple[TimeWindow, ...]`, `TimeConstraintGroupDTO.windows: tuple[TimeWindowDTO, ...]`, `ServiceResult.errors: tuple[ServiceMessage, ...]`.
+- **Keep `Sequence`:** migration `down_revision` fields ([§4](#4-alembic-revision-file-style-sqlite)); `scripts/cursor/commit_changes.py` `run(cmd: Sequence[str])`.
+
+**Aligns with:** [§5](#5-domain-vs-services-placement-session-free-vs-persistence); abstraction discipline (no widening for hypothetical callers).
