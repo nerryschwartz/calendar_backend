@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from calendar_backend.domain.enums import FreeTimeWeekStartDay
+from calendar_backend.domain.enums import ConstraintKind, FreeTimeWeekStartDay
 from calendar_backend.domain.ids import PlanID, TimeConstraintGroupID, TimeWindowID
+from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import Plan
 from calendar_backend.models.settings import AppSettings
 
@@ -61,3 +62,37 @@ class MasterHorizonDTO:
     horizon_end: datetime
     constraint_group_id: TimeConstraintGroupID
     time_window_id: TimeWindowID
+
+
+@dataclass(frozen=True)
+class _TimeWindowDTO:
+    time_window_id: TimeWindowID
+    start_time: datetime
+    end_time: datetime
+
+
+@dataclass(frozen=True)
+class TimeConstraintGroupDTO:
+    constraint_group_id: TimeConstraintGroupID
+    plan_id: PlanID
+    constraint_kind: ConstraintKind
+    windows: tuple[_TimeWindowDTO, ...]
+
+
+def time_constraint_group_dto_from_rows(
+    group: TimeConstraintGroup,
+    windows: tuple[TimeWindow, ...],
+) -> TimeConstraintGroupDTO:
+    return TimeConstraintGroupDTO(
+        constraint_group_id=TimeConstraintGroupID(group.time_constraint_group_id),
+        plan_id=PlanID(group.plan_id),
+        constraint_kind=group.constraint_kind,
+        windows=tuple(
+            _TimeWindowDTO(
+                time_window_id=TimeWindowID(window.time_window_id),
+                start_time=window.start_time,
+                end_time=window.end_time,
+            )
+            for window in windows
+        ),
+    )

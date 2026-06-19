@@ -7,7 +7,7 @@
 Implement Prompt 6 from [docs/cursor_implementation_guide.md](../cursor_implementation_guide.md): foundational V1 services per [docs/calendar_backend_v1_engineering_design_updated.pdf](../calendar_backend_v1_engineering_design_updated.pdf) §7 (service layer), §8.1–§8.2 (ServiceResult / DTOs), §11 (settings and time handling), Appendix §12 (time/error rules), and locked architectural notes (master plan, master horizon constraint).
 
 Design constraints:
-- [`calendar_backend/services/`](../../calendar_backend/services/) owns **public service methods, validation, transactions, and persistence-changing behavior** (design §4); no SQLAlchemy in domain; no solver dependencies.
+- [`calendar_backend/services/`](../../calendar_backend/services/) owns **public service methods, validation, transactions, and persistence-changing behavior** (design §4); no SQLAlchemy sessions in domain ([repo convention §5](../../.cursor/repo_conventions.md)).
 - Public methods return **`ServiceResult[T]`** via [`calendar_backend/domain/results.py`](../../calendar_backend/domain/results.py); mutations run inside [`transaction(session)`](../../calendar_backend/db/session.py).
 - ORM models in [`calendar_backend/models/`](../../calendar_backend/models/) are persistence records only — services own bootstrap and updates.
 - **`Clock` protocol** ([`calendar_backend/domain/time.py`](../../calendar_backend/domain/time.py)) stamps `created_at` / `updated_at`; services inject `Clock` (default `SystemClock`).
