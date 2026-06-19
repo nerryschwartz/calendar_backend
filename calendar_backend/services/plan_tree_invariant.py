@@ -14,7 +14,7 @@ from calendar_backend.domain.invariant_validation import validate_master_tree_gr
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.models.chains import GoalChildChain
 from calendar_backend.models.constraints import TimeConstraintGroup
-from calendar_backend.models.plans import GoalPlan, Plan
+from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
 
 
 class PlanTreeInvariantService:
@@ -30,7 +30,7 @@ class PlanTreeInvariantService:
                         .selectinload(GoalPlan.chains)
                         .selectinload(GoalChildChain.items),
                         selectinload(Plan.task_plan),
-                        selectinload(Plan.repetition_plan),
+                        selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
                         selectinload(Plan.constraint_groups).selectinload(
                             TimeConstraintGroup.windows
                         ),
