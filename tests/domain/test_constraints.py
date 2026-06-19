@@ -41,6 +41,24 @@ def test_validate_user_group_windows_rejects_invalid_window() -> None:
     assert result.details["window_index"] == "0"
 
 
+def test_validate_user_group_windows_rejects_inverted_window() -> None:
+    windows = (_window(_utc(2026, 6, 7, 12, 0), _utc(2026, 6, 7, 9, 0)),)
+
+    result = validate_user_group_windows(windows)
+
+    assert result is not None
+    assert result.code == MessageCode.INVALID_TIME_WINDOW
+
+
+def test_validate_user_group_windows_rejects_naive_datetime() -> None:
+    windows = (_window(datetime(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),)
+
+    result = validate_user_group_windows(windows)
+
+    assert result is not None
+    assert result.code == MessageCode.INVALID_TIME_WINDOW
+
+
 def test_merge_or_windows_returns_empty_for_empty_input() -> None:
     assert merge_or_windows(()) == ()
 
