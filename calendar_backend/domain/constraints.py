@@ -1,7 +1,9 @@
-"""Pure constraint-group validation and OR-window normalization.
+"""Pure constraint-group validation and OR-window normalization for write paths.
 
 Plan constraints use AND-of-OR semantics: each group is an OR of windows; merge
-applies within one group only (not across groups on a plan).
+applies within one group only (not across groups on a plan). Not an ORM invariant
+entry point — persisted-shape checks live in ``domain/invariant_validation.py``
+([repo convention §9]).
 """
 
 from __future__ import annotations

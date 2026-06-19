@@ -13,12 +13,13 @@ Design constraints:
 - **Constraint semantics:** AND-of-OR groups per plan; empty outer USER set = no local restriction; **empty inner group invalid**; windows half-open `[start, end)` UTC minute-aligned (reject, do not truncate — reuse [`validate_time_window`](../../calendar_backend/domain/time.py)).
 - **System-owned groups:** `SYSTEM_MASTER_HORIZON` (writer: [`MasterHorizonService`](../../calendar_backend/services/master_horizon.py)); `SYSTEM_REPETITION_WINDOW` (future `RepetitionService`). **`TimeConstraintService` is USER-only**; direct mutation of system groups via this service is forbidden ([`MessageCode.SYSTEM_CONSTRAINT_DIRECT_EDIT_FORBIDDEN`](../../calendar_backend/domain/errors.py)).
 - **Persistence access:** filtered writes via explicit SQL; invariant tree walks via ORM relationships + eager load ([repo convention §3](../../.cursor/repo_conventions.md)).
+- **Plan-tree invariants:** validate **ideal persisted shape** after operations expected to leave the tree correct ([repo convention §7](../../.cursor/repo_conventions.md)); do not replay DB CHECK/UNIQUE ([§8](../../.cursor/repo_conventions.md)); ORM invariant checks only in [`domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) ([§9](../../.cursor/repo_conventions.md)).
 - **Prompt 6 complete:** master/settings/horizon services and service test fixtures exist ([`master_plan_app_settings_master_horizon_services.md`](master_plan_app_settings_master_horizon_services.md)).
 
 **Locked clarifications (request-questions):**
-- **`PlanTreeInvariantService.validate_master_tree()`** covers the **full master-tree invariant suite** in this prompt (master, subtype pairing, reachability, chain ordering/uniqueness, system-constraint cardinality, USER constraint shape). Prompt 8 adds deletion/cascade-specific checks only.
+- **`PlanTreeInvariantService.validate_master_tree()`** covers the **full master-tree invariant suite** in this prompt (master existence/root, subtype pairing, reachability, chain ordering/alignment, repetition instance shape, system-constraint cardinality, USER constraint persisted shape). Prompt 8 adds deletion/cascade-specific checks only. Checks **ideal post-change shape**, not transient mid-bootstrap state ([repo convention §7](../../.cursor/repo_conventions.md)).
 - **`TimeConstraintService` API:** group CRUD — `add_user_group`, `update_user_group`, `remove_user_group`; window edits within a USER group — `add_user_window` (validate + merge with existing), `remove_user_window` (auto-deletes group when last window removed). No plan-level replace-all in V1.
-- **Invariant layout:** **`PlanTreeInvariantService` in `services/`** loads the ORM graph inside `transaction()`; **pure structural checks** in [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) ([repo convention §5](../../.cursor/repo_conventions.md)). No separate `invariant_validation` package beyond `domain/`.
+- **Invariant layout:** **`PlanTreeInvariantService` in `services/`** loads the full committed ORM graph inside `transaction()`; **ORM invariant checks** in [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) ([repo convention §9](../../.cursor/repo_conventions.md)). [`domain/constraints.py`](../../calendar_backend/domain/constraints.py) and [`domain/time.py`](../../calendar_backend/domain/time.py) are write-path/shared helpers only. Split to `domain/invariants/` later if the module grows; no separate top-level package.
 
 **Slice order note:** Guide Prompt 7 lists APIs before helpers; this plan **reorders** so validation/normalization helpers land before mutating service methods (dependency order).
 
@@ -40,8 +41,8 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
   - [`calendar_backend/services/plan_tree_invariant.py`](../../calendar_backend/services/plan_tree_invariant.py) (new)
   - [`calendar_backend/services/__init__.py`](../../calendar_backend/services/__init__.py) — docstring only (no barrel re-exports).
 - **Domain pure helpers:**
-  - [`calendar_backend/domain/constraints.py`](../../calendar_backend/domain/constraints.py) (new) — OR-window merge/normalization and USER-group window list validation (no SQLAlchemy).
-  - [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) (new, slice 4) — session-free master-tree structural checks over loaded plan/chain/constraint data passed in from the service.
+  - [`calendar_backend/domain/constraints.py`](../../calendar_backend/domain/constraints.py) (new) — OR-window merge/normalization and USER-group window list validation for **write paths** (no SQLAlchemy; not ORM invariant entry points — [repo convention §9](../../.cursor/repo_conventions.md)).
+  - [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) (new, slice 4) — session-free **ORM invariant** checks over the full loaded plan/chain/constraint graph ([repo conventions §7–§9](../../.cursor/repo_conventions.md)).
 - **DTOs** in [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) (import from `domain.dtos`, not [`domain/__init__.py`](../../calendar_backend/domain/__init__.py) barrel per rule 25):
   - `TimeConstraintGroupDTO` — `constraint_group_id`, `plan_id`, `constraint_kind`, `windows: tuple[_TimeWindowDTO, ...]` (`_TimeWindowDTO` is module-private: `time_window_id`, `start_time`, `end_time`; projected inline in `time_constraint_group_dto_from_rows`, no standalone window service)
 - **`TimeConstraintService` public methods:**
@@ -175,16 +176,17 @@ uv run pyright
 - [`tests/domain/test_invariant_validation.py`](../../tests/domain/test_invariant_validation.py) (new — unit tests for pure checks; optional here if deferred to slice 5)
 
 **Implementation steps:**
-1. Add **`domain/invariant_validation.py`** with session-free functions that take already-loaded graph data (plans, chains, constraint groups/windows) and return violation messages or `ServiceMessage` tuples — master/subtype/reachability/chain/constraint rules listed below.
+1. Add **`domain/invariant_validation.py`** with session-free functions that take the full loaded graph and return `ServiceMessage` tuples — rules below. Do **not** re-check DB-enforced CHECK/UNIQUE ([repo convention §8](../../.cursor/repo_conventions.md)).
 2. Implement **`PlanTreeInvariantService(session)`** with `validate_master_tree() -> ServiceResult[None]`:
-   - Inside `transaction`: load master and graph via ORM + `selectinload` ([repo convention §3](../../.cursor/repo_conventions.md)).
-   - Call domain invariant helpers on the loaded graph; aggregate violations.
-   - **Master / root:** exactly one master; master has `GoalPlan`; `parent_id is None`; `plan_kind == GOAL`.
-   - **Reachability:** every `Plan` row reachable from master via `parent_id` tree (no orphan plans); master reachable from itself.
+   - Inside `transaction`: load **all** `Plan` rows and graph via ORM + `selectinload` ([repo convention §3](../../.cursor/repo_conventions.md)).
+   - Call `validate_master_tree_graph` on the loaded graph; aggregate violations.
+   - **Master / root:** master exists; master has `GoalPlan`; `parent_id is None` (`plan_kind == GOAL` enforced by DB — do not re-report).
+   - **Reachability:** every `Plan` row reachable from master via `parent_id` tree (no orphan plans).
    - **Subtype pairing:** each plan has exactly one matching detail row for its `plan_kind` and no conflicting detail rows.
-   - **Chains:** under each `GoalPlan`, chain `sort_order` non-negative; `GoalChildChainItem.position` uniqueness per chain; each `child_plan_id` appears in at most one chain item (DB unique — report if violated); optional: dense `sort_order` / `position` diagnostics per design parity with schema tests.
-   - **Constraints:** USER groups have ≥1 window; master has at most one `SYSTEM_MASTER_HORIZON` group with exactly one window when present; flag duplicate system horizon groups or empty USER groups.
-3. Read-only — no mutations. Service module keeps only graph-load and `ServiceResult` wiring; violation rules live in `domain/invariant_validation.py`.
+   - **Chains:** dense `sort_order` per `(goal, is_critical)` bucket; dense `position` per chain; chain item child must be direct child of parent goal (`child_plan_id` global uniqueness enforced by DB — do not re-report).
+   - **Repetition instances:** dense `instance_index` and `sort_order` per bucket; global unique `root_clone_id`; root clone parented under repetition plan with `cloned_from_id == template_root_id` (when instances are loaded).
+   - **Constraints:** master must have exactly one `SYSTEM_MASTER_HORIZON` group with exactly one window; horizon only on master; USER and `SYSTEM_REPETITION_WINDOW` groups non-empty when present; persisted windows minute-aligned and merged canonical form (`start < end` enforced by DB — do not re-report).
+3. Read-only — no mutations. Service module keeps graph-load and `ServiceResult` wiring; violation rules live in `domain/invariant_validation.py`.
 
 **Tests/checks:**
 ```bash
@@ -195,7 +197,7 @@ uv run pyright
 
 **Acceptance criteria:**
 - Clean DB after Prompt 6 bootstrap + horizon refresh returns `success=True`.
-- Seeded violations (wrong subtype, orphan plan, empty USER group, direct system group duplicate) produce `success=False` with actionable messages.
+- Seeded **semantic** violations (wrong subtype, orphan plan, empty USER group, misaligned chain child, broken dense ordering) produce `success=False` with actionable messages.
 - Does not implement Prompt 8 deletion/cascade rules.
 
 **Risks/edge cases:**
@@ -217,7 +219,7 @@ uv run pyright
 
 **Implementation steps:**
 1. **`test_time_constraint_service.py`:** add/update/remove USER groups; add/remove USER windows (merge on add, auto-delete group on last remove); merge behavior persisted; empty group rejected; naive/non-UTC/non-minute windows rejected; system group update/remove/window mutations forbidden; no partial persistence on failure.
-2. **`test_plan_tree_invariant_service.py`:** clean tree passes; violations for orphan plan, subtype mismatch, empty USER group, duplicate horizon group (if seedable), broken chain ordering/uniqueness.
+2. **`test_plan_tree_invariant_service.py`:** clean tree passes after bootstrap + horizon refresh; violations for orphan plan, subtype mismatch, empty USER group, misaligned chain child, broken dense ordering/uniqueness (schema CHECK/UNIQUE cases belong in model schema tests, not invariant replay).
 3. **`test_constraints.py` (domain):** merge and validate unit cases if not done in slice 1.
 4. **`test_invariant_validation.py` (domain):** pure structural violation cases without DB.
 5. **`test_foundational_invariants.py`** docstring / add test that `TimeConstraintService` cannot mutate system horizon created by `MasterHorizonService`.
@@ -249,13 +251,13 @@ uv run pytest tests/domain/test_constraints.py tests/domain/test_invariant_valid
 |-----------------|-------------|---------------|
 | `TimeConstraintService` | Yes | Design §7 named USER constraint mutation path |
 | `PlanTreeInvariantService` | Yes | Design-deferred tree/subtype/constraint diagnostics ([`core_plan_orm_models.md`](core_plan_orm_models.md) locked decision) |
-| `domain/constraints.py` pure functions | Yes | Session-free constraint semantics ([repo convention §5](../../.cursor/repo_conventions.md)) |
-| `domain/invariant_validation.py` pure functions | Yes | Session-free tree/chain/constraint structural checks; service loads graph |
+| `domain/constraints.py` pure functions | Yes | Write-path constraint semantics; shared helpers callable from invariant checks ([repo convention §9](../../.cursor/repo_conventions.md)) |
+| `domain/invariant_validation.py` pure functions | Yes | ORM invariant checks over loaded graph ([repo conventions §7–§9](../../.cursor/repo_conventions.md)); service loads graph |
 | `TimeConstraintGroupDTO` (with private `_TimeWindowDTO` window elements) | Yes | Design §8.2 group service return type; no standalone window CRUD in V1 |
 | Private `_load_user_group` in service | Yes | Single load + system-edit rejection for USER-group mutations |
 | Repository / DAO / service base class | No | Matches existing services (`Session` direct) |
 | Plan-level replace-all API | No | Explicitly deferred (group CRUD sufficient for V1) |
-| Separate top-level `invariant_validation` package | No | Use `domain/invariant_validation.py`, not a new package |
+| Separate top-level `invariant_validation` package | No | Use `domain/invariant_validation.py`; split to `domain/invariants/` subpackage if needed ([repo convention §9](../../.cursor/repo_conventions.md)) |
 | Constraint merge registry/strategy | No | One merge algorithm suffices |
 
 ## Dependency changes

@@ -48,6 +48,8 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 | Alembic revision style | Raw autogenerate output (`typing.Union`, single-line ops, direct ALTER on SQLite) | **§4** — `from __future__ import annotations`, `collections.abc.Sequence`, `batch_alter_table` for SQLite table alters |
 | Domain vs services placement | “Services own all validation”; DTO mappers only in services; invariant helpers forced into service modules | **§5** — session-free semantics and DTOs in `domain/`; `Session`/`transaction()` and use-case glue in `services/` |
 | Collection parameter types | `Sequence` / `Iterable` on domain and service APIs by default | **§6** — `tuple` for domain value bundles; `Sequence` only for Alembic metadata, generic scripts, or proven multi-caller utilities |
+| Plan tree invariant semantics | Invariants must hold at all times; replay DB CHECK/UNIQUE in diagnostics | **§7** — ideal post-change persisted shape; **§8** — no schema replay on committed rows |
+| ORM invariant vs write-path validation | Structural checks on loaded data may live in `constraints.py` or services | **§9** — ORM invariant entry points in `domain/invariant_validation.py` (or future `domain/invariants/`); other domain modules are write-path/shared helpers only |
 
 ### TimeConstraintGroup
 
@@ -75,7 +77,7 @@ Slice **file lists** name minimum touch points. Completing obvious symmetric wir
 
 See also `.cursor/rules/30-planning-slices.mdc` and `/review-consistency` after `/review-validation` on slice builds.
 
-In **services**, follow [repo convention §3](../.cursor/repo_conventions.md): use relationship navigation for read/traverse/validate paths; use explicit SQL for filtered mutations (see `MasterHorizonService`, `MasterPlanService`, `AppSettingsService`). For **domain vs services file placement**, follow [repo convention §5](../.cursor/repo_conventions.md). For **collection types in APIs**, prefer `tuple` over `Sequence` per [repo convention §6](../.cursor/repo_conventions.md).
+In **services**, follow [repo convention §3](../.cursor/repo_conventions.md): use relationship navigation for read/traverse/validate paths; use explicit SQL for filtered mutations (see `MasterHorizonService`, `MasterPlanService`, `AppSettingsService`). For **domain vs services file placement**, follow [repo convention §5](../.cursor/repo_conventions.md). For **collection types in APIs**, prefer `tuple` over `Sequence` per [repo convention §6](../.cursor/repo_conventions.md). For **plan-tree invariant diagnostics**, follow [repo conventions §7–§9](../.cursor/repo_conventions.md): ideal persisted shape, no DB-schema replay, ORM invariant checks in `domain/invariant_validation.py`.
 
 ## 1. How to use Cursor for this project
 
@@ -1457,7 +1459,7 @@ Create a Cursor implementation plan for time constraint editing and invariant va
 Context:
 - Implement TimeConstraintService for USER constraints only.
 - Reject direct mutation of SYSTEM_REPETITION_WINDOW and SYSTEM_MASTER_HORIZON constraints.
-- Implement PlanTreeInvariantService or invariant_validation module for diagnostics.
+- Implement PlanTreeInvariantService for diagnostics against **ideal persisted plan-tree shape** ([repo convention §7](../.cursor/repo_conventions.md)); pure checks in `domain/invariant_validation.py` per [§9](../.cursor/repo_conventions.md) — do not replay DB CHECK/UNIQUE ([§8](../.cursor/repo_conventions.md)).
 - Constraint semantics: AND-of-OR groups, empty outer list means no local restriction, empty inner group invalid, windows are half-open and minute-aligned.
 - Normalize/merge OR windows within each group where appropriate.
 - Do not implement task resolution yet.
