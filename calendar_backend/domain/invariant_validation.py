@@ -158,10 +158,6 @@ def _chain_child_counts(plans: tuple[Plan, ...]) -> dict[uuid.UUID, int]:
     return counts
 
 
-def _goal_plan_ids(plans: tuple[Plan, ...]) -> set[uuid.UUID]:
-    return {plan.plan_id for plan in plans if plan.goal_plan is not None}
-
-
 def _check_master_chains_non_critical(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
     violations: list[ServiceMessage] = []
     for plan in plans:
@@ -183,7 +179,7 @@ def _check_master_chains_non_critical(plans: tuple[Plan, ...]) -> list[ServiceMe
 
 
 def _check_goal_chain_membership(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
-    goal_ids = _goal_plan_ids(plans)
+    goal_ids = {plan.plan_id for plan in plans if plan.goal_plan is not None}
     chain_counts = _chain_child_counts(plans)
     violations: list[ServiceMessage] = []
     for plan in plans:
@@ -192,19 +188,18 @@ def _check_goal_chain_membership(plans: tuple[Plan, ...]) -> list[ServiceMessage
         if plan.clone_status == CloneStatus.TEMPLATE:
             continue
         count = chain_counts.get(plan.plan_id, 0)
-        if count == 1:
-            continue
-        violations.append(
-            ServiceMessage(
-                code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                message="Direct goal child must appear in exactly one goal child chain item",
-                details={
-                    "child_plan_id": str(plan.plan_id),
-                    "parent_goal_id": str(plan.parent_id),
-                    "chain_item_count": str(count),
-                },
+        if count != 1:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                    message="Direct goal child must appear in exactly one goal child chain item",
+                    details={
+                        "child_plan_id": str(plan.plan_id),
+                        "parent_goal_id": str(plan.parent_id),
+                        "chain_item_count": str(count),
+                    },
+                )
             )
-        )
     return violations
 
 
