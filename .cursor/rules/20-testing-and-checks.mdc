@@ -12,6 +12,7 @@ Testing expectations:
 - Use integration tests for refresh_schedule and cross-service persistence behavior.
 - Do not silently skip failing tests.
 - If a check fails during a command that is not explicitly a fix command, report the failure and stop.
+- When ORM schema enforcement requires a deferred Alembic revision, add schema tests in the same change and mark them `failure_expected` per [repo convention §13](../repo_conventions.md); remove the marker in `/db-revision-continue` after `upgrade head`.
 
 Default local check sequence:
 1. uv run ruff format .
