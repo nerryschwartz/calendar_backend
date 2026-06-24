@@ -16,9 +16,12 @@ import uuid
 from collections import deque
 
 from calendar_backend.domain.constraints import merge_or_windows
-from calendar_backend.domain.enums import ConstraintKind, PlanKind
+from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.time import TimeWindow, is_minute_aligned
+from calendar_backend.domain.time import (
+    TimeWindow,
+    is_minute_aligned,
+)
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import Plan
 
@@ -37,7 +40,10 @@ def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage,
     if master is not None:
         violations.extend(_check_reachability(plans, master))
     violations.extend(_check_subtype_pairing(plans))
+    violations.extend(_check_master_chains_non_critical(plans))
+    violations.extend(_check_goal_chain_membership(plans))
     violations.extend(_check_chains(plans))
+    violations.extend(_check_repetition_plans(plans))
     violations.extend(_check_repetition_instances(plans))
     violations.extend(_check_constraints(plans))
     return tuple(violations)
@@ -137,6 +143,173 @@ def _check_subtype_pairing(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                         },
                     )
                 )
+
+    return violations
+
+
+def _chain_child_counts(plans: tuple[Plan, ...]) -> dict[uuid.UUID, int]:
+    counts: dict[uuid.UUID, int] = {}
+    for plan in plans:
+        if plan.goal_plan is None:
+            continue
+        for chain in plan.goal_plan.chains:
+            for item in chain.items:
+                counts[item.child_plan_id] = counts.get(item.child_plan_id, 0) + 1
+    return counts
+
+
+def _goal_plan_ids(plans: tuple[Plan, ...]) -> set[uuid.UUID]:
+    return {plan.plan_id for plan in plans if plan.goal_plan is not None}
+
+
+def _check_master_chains_non_critical(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+    violations: list[ServiceMessage] = []
+    for plan in plans:
+        if not plan.is_master or plan.goal_plan is None:
+            continue
+        for chain in plan.goal_plan.chains:
+            if chain.is_critical:
+                violations.append(
+                    ServiceMessage(
+                        code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                        message="Master goal child chains must be non-critical",
+                        details={
+                            "parent_goal_id": str(plan.plan_id),
+                            "goal_child_chain_id": str(chain.goal_child_chain_id),
+                        },
+                    )
+                )
+    return violations
+
+
+def _check_goal_chain_membership(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+    goal_ids = _goal_plan_ids(plans)
+    chain_counts = _chain_child_counts(plans)
+    violations: list[ServiceMessage] = []
+    for plan in plans:
+        if plan.parent_id is None or plan.parent_id not in goal_ids:
+            continue
+        if plan.clone_status == CloneStatus.TEMPLATE:
+            continue
+        count = chain_counts.get(plan.plan_id, 0)
+        if count == 1:
+            continue
+        violations.append(
+            ServiceMessage(
+                code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                message="Direct goal child must appear in exactly one goal child chain item",
+                details={
+                    "child_plan_id": str(plan.plan_id),
+                    "parent_goal_id": str(plan.parent_id),
+                    "chain_item_count": str(count),
+                },
+            )
+        )
+    return violations
+
+
+def _check_repetition_plans(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+    plan_by_id = {plan.plan_id: plan for plan in plans}
+    template_root_ids: set[uuid.UUID] = set()
+    violations: list[ServiceMessage] = []
+
+    for plan in plans:
+        if plan.repetition_plan is None:
+            continue
+
+        repetition_plan_id = plan.plan_id
+        repetition_detail = plan.repetition_plan
+        template_root_ids.add(repetition_detail.template_root_id)
+
+        if not is_minute_aligned(repetition_detail.start_time):
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.INVALID_REPETITION_SETTINGS,
+                    message="Repetition start_time must be minute-aligned",
+                    details={"repetition_plan_id": str(repetition_plan_id)},
+                )
+            )
+        if repetition_detail.end_time is not None and not is_minute_aligned(
+            repetition_detail.end_time
+        ):
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.INVALID_REPETITION_SETTINGS,
+                    message="Repetition end_time must be minute-aligned",
+                    details={"repetition_plan_id": str(repetition_plan_id)},
+                )
+            )
+
+        # TODO(Prompt 10 / RepetitionService): relax when generation materializes instances.
+        if repetition_detail.generated_at is not None or repetition_detail.instances:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                    message=(
+                        "Repetition plan must be pre-generation (generated_at unset, no instances)"
+                    ),
+                    details={
+                        "repetition_plan_id": str(repetition_plan_id),
+                        "generated_at": (
+                            "set" if repetition_detail.generated_at is not None else "unset"
+                        ),
+                        "instance_count": str(len(repetition_detail.instances)),
+                    },
+                )
+            )
+
+        template = plan_by_id.get(repetition_detail.template_root_id)
+        if template is None:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                    message="Repetition template_root_id must reference a loaded plan",
+                    details={
+                        "repetition_plan_id": str(repetition_plan_id),
+                        "template_root_id": str(repetition_detail.template_root_id),
+                    },
+                )
+            )
+            continue
+        # TODO(Prompt 10 / RepetitionService): Relax plan_kind == GOAL for non-goal templates.
+        if template.plan_kind != PlanKind.GOAL or template.clone_status != CloneStatus.TEMPLATE:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                    message="Repetition template root must be a TEMPLATE goal plan",
+                    details={
+                        "repetition_plan_id": str(repetition_plan_id),
+                        "template_root_id": str(repetition_detail.template_root_id),
+                        "plan_kind": template.plan_kind.value,
+                        "clone_status": template.clone_status.value,
+                    },
+                )
+            )
+        if template.parent_id != repetition_plan_id:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                    message=(
+                        "Repetition template root must be a direct child of the repetition plan"
+                    ),
+                    details={
+                        "repetition_plan_id": str(repetition_plan_id),
+                        "template_root_id": str(repetition_detail.template_root_id),
+                        "actual_parent_id": str(template.parent_id),
+                    },
+                )
+            )
+
+    chain_counts = _chain_child_counts(plans)
+    for template_root_id in template_root_ids:
+        if chain_counts.get(template_root_id, 0) > 0:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                    message="Repetition template root must not appear in a goal child chain",
+                    details={"template_root_id": str(template_root_id)},
+                )
+            )
 
     return violations
 
