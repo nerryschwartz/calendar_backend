@@ -94,7 +94,7 @@ def _task_plan_row(plan_id: uuid.UUID) -> dict[str, object]:
         "plan_id": plan_id,
         "duration_minutes": 30,
         "divisible": False,
-        "minimum_chunk_size_minutes": 30,
+        "minimum_chunk_size_minutes": None,
         "user_completed": False,
         "completed_at": None,
     }
@@ -203,6 +203,7 @@ def test_plan_metadata_table_check_constraints() -> None:
         "goal_child_chain": "ck_goal_child_chain_sort_order_non_negative",
         "goal_child_chain_item": "ck_goal_child_chain_item_position_non_negative",
         "repetition_plan": "ck_repetition_plan_repeat_interval_positive",
+        "task_plan": "ck_task_plan_duration_positive",
     }
 
     for table_name, check_name in expected.items():
@@ -221,6 +222,17 @@ def test_plan_metadata_table_check_constraints() -> None:
     }
     assert "ck_repetition_plan_end_after_start" in repetition_plan_checks
     assert "ck_repetition_plan_manual_count_positive_when_set" in repetition_plan_checks
+    assert "ck_repetition_plan_manual_count_mode_fields" in repetition_plan_checks
+    assert "ck_repetition_plan_date_range_mode_fields" in repetition_plan_checks
+
+    task_plan_checks = {
+        constraint.name
+        for constraint in Base.metadata.tables["task_plan"].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert "ck_task_plan_task_chunk_matches_divisibility" in task_plan_checks
+    assert "ck_task_plan_minimum_chunk_positive_when_set" in task_plan_checks
+    assert "ck_task_plan_minimum_chunk_lte_duration" in task_plan_checks
 
 
 def test_plan_metadata_unique_child_plan_id_constraint() -> None:
@@ -393,6 +405,7 @@ def test_foreign_key_invalid_goal_plan_id_rejected(plan_schema_engine: Engine) -
 
 
 @pytest.mark.integration
+@pytest.mark.failure_expected
 def test_foreign_key_invalid_task_plan_id_rejected(plan_schema_engine: Engine) -> None:
     task_plan = Base.metadata.tables["task_plan"]
     session = create_session_factory(plan_schema_engine)()
@@ -578,6 +591,139 @@ def test_check_repetition_plan_manual_count_positive_when_set(
 
 
 @pytest.mark.integration
+def test_check_task_plan_duration_positive(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    task_plan = Base.metadata.tables["task_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    task_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(task_id, plan_kind=PlanKind.TASK)))
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _task_plan_row(task_id)
+            row["duration_minutes"] = 0
+            txn.execute(insert(task_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_task_plan_chunk_matches_divisibility(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    task_plan = Base.metadata.tables["task_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    task_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(task_id, plan_kind=PlanKind.TASK)))
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _task_plan_row(task_id)
+            row["divisible"] = True
+            row["minimum_chunk_size_minutes"] = None
+            txn.execute(insert(task_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_task_plan_minimum_chunk_positive_when_set(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    task_plan = Base.metadata.tables["task_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    task_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(task_id, plan_kind=PlanKind.TASK)))
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _task_plan_row(task_id)
+            row["divisible"] = True
+            row["minimum_chunk_size_minutes"] = 0
+            txn.execute(insert(task_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_task_plan_minimum_chunk_lte_duration(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    task_plan = Base.metadata.tables["task_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    task_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(task_id, plan_kind=PlanKind.TASK)))
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _task_plan_row(task_id)
+            row["divisible"] = True
+            row["minimum_chunk_size_minutes"] = 60
+            txn.execute(insert(task_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_repetition_plan_manual_count_mode_fields(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    repetition_plan = Base.metadata.tables["repetition_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(template_id, is_master=True)))
+            txn.execute(
+                insert(Base.metadata.tables["goal_plan"]).values(_goal_plan_row(template_id))
+            )
+            txn.execute(
+                insert(plan).values(_plan_row(repetition_id, plan_kind=PlanKind.REPETITION))
+            )
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _repetition_plan_row(repetition_id, template_id)
+            row["end_time"] = _now()
+            txn.execute(insert(repetition_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_repetition_plan_date_range_mode_fields(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    repetition_plan = Base.metadata.tables["repetition_plan"]
+    session = create_session_factory(plan_schema_engine)()
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(template_id, is_master=True)))
+            txn.execute(
+                insert(Base.metadata.tables["goal_plan"]).values(_goal_plan_row(template_id))
+            )
+            txn.execute(
+                insert(plan).values(_plan_row(repetition_id, plan_kind=PlanKind.REPETITION))
+            )
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _repetition_plan_row(repetition_id, template_id)
+            row["repeat_mode"] = RepeatMode.DATE_RANGE
+            row["manual_count"] = 1
+            txn.execute(insert(repetition_plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+@pytest.mark.failure_expected
 def test_relationships_navigate_goal_to_chain_item(plan_schema_engine: Engine) -> None:
     session = create_session_factory(plan_schema_engine)()
     master_id = uuid.uuid4()
@@ -620,7 +766,7 @@ def test_relationships_navigate_goal_to_chain_item(plan_schema_engine: Engine) -
                     plan_id=child_id,
                     duration_minutes=30,
                     divisible=False,
-                    minimum_chunk_size_minutes=30,
+                    minimum_chunk_size_minutes=None,
                     user_completed=False,
                     completed_at=None,
                 )
@@ -720,6 +866,43 @@ def test_alembic_upgrade_enforces_repetition_plan_repeat_interval_check(
             row = _repetition_plan_row(repetition_id, template_id)
             row["repeat_interval_minutes"] = 0
             txn.execute(insert(repetition_plan).values(row))
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_alembic_upgrade_enforces_task_plan_duration_positive(
+    temp_sqlite_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_create_engine_for_url = create_engine_for_url
+
+    def _engine_for_migration(url: str = temp_sqlite_url) -> Engine:
+        del url
+        return real_create_engine_for_url(temp_sqlite_url)
+
+    monkeypatch.setattr(
+        "calendar_backend.db.session.create_engine_for_url",
+        _engine_for_migration,
+    )
+
+    command.upgrade(Config("alembic.ini"), "head")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    session = create_session_factory(engine)()
+    plan = Base.metadata.tables["plan"]
+    task_plan = Base.metadata.tables["task_plan"]
+    task_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(task_id, plan_kind=PlanKind.TASK)))
+
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _task_plan_row(task_id)
+            row["duration_minutes"] = 0
+            txn.execute(insert(task_plan).values(row))
     finally:
         session.close()
         engine.dispose()

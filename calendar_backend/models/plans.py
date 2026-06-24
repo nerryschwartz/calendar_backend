@@ -115,6 +115,25 @@ class GoalPlan(Base):
 
 class TaskPlan(Base):
     __tablename__ = "task_plan"
+    __table_args__ = (
+        CheckConstraint(
+            "duration_minutes > 0",
+            name="duration_positive",
+        ),
+        CheckConstraint(
+            "(divisible = 1 AND minimum_chunk_size_minutes IS NOT NULL) "
+            "OR (divisible = 0 AND minimum_chunk_size_minutes IS NULL)",
+            name="task_chunk_matches_divisibility",
+        ),
+        CheckConstraint(
+            "minimum_chunk_size_minutes IS NULL OR minimum_chunk_size_minutes > 0",
+            name="minimum_chunk_positive_when_set",
+        ),
+        CheckConstraint(
+            "minimum_chunk_size_minutes IS NULL OR minimum_chunk_size_minutes <= duration_minutes",
+            name="minimum_chunk_lte_duration",
+        ),
+    )
 
     plan_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -123,7 +142,7 @@ class TaskPlan(Base):
     )
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     divisible: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    minimum_chunk_size_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    minimum_chunk_size_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user_completed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -147,6 +166,14 @@ class RepetitionPlan(Base):
         CheckConstraint(
             "manual_count IS NULL OR manual_count > 0",
             name="manual_count_positive_when_set",
+        ),
+        CheckConstraint(
+            "repeat_mode != 'MANUAL_COUNT' OR (manual_count IS NOT NULL AND end_time IS NULL)",
+            name="manual_count_mode_fields",
+        ),
+        CheckConstraint(
+            "repeat_mode != 'DATE_RANGE' OR manual_count IS NULL",
+            name="date_range_mode_fields",
         ),
     )
 
