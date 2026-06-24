@@ -4,12 +4,12 @@
 
 ## Context
 
-Implement Prompt 8 from [docs/cursor_implementation_guide.md](../cursor_implementation_guide.md): `PlanTreeService` for V1 plan-tree mutations per [docs/calendar_backend_v1_engineering_design_updated.pdf](../calendar_backend_v1_engineering_design_updated.pdf) §5.2 (goal child chains), §5.3 (repetition shell), §7 (service layer), §9.6 (deletion impact), and Appendix invariants.
+Implement Prompt 8 from [docs/cursor_implementation_guide.md](../cursor_implementation_guide.md): **`GoalService`** for goal-parent plan creation and **`PlanTreeService`** for tree-wide mutations (move/rename/delete), per engineering design §5.2 (goal child chains), §5.3 (repetition shell), §7 (service layer), §9.6 (deletion impact), and Appendix invariants. **Guide + this plan supersede PDF §7** on splitting create from tree mutations ([guide §0.1](../cursor_implementation_guide.md)).
 
 Design constraints:
 - [`calendar_backend/services/`](../../calendar_backend/services/) owns public mutation methods, validation, transactions, and persistence-changing behavior; ORM models are persistence records only ([layer boundaries](../../.cursor/rules/10-layer-boundaries.mdc)).
 - Public methods return **`ServiceResult[T]`** via [`calendar_backend/domain/results.py`](../../calendar_backend/domain/results.py); mutations run inside [`transaction(session)`](../../calendar_backend/db/session.py) ([repo convention §2](../../.cursor/repo_conventions.md)).
-- **Tree invariants:** every active non-master child is reachable from master and appears in exactly one `GoalChildChainItem`; master child chains are non-critical; subtype pairing is service-enforced ([`PlanTreeInvariantService`](../../calendar_backend/services/plan_tree_invariant.py) + [`domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) per [repo conventions §7–§9](../../.cursor/repo_conventions.md)).
+- **Tree invariants:** chain-member children under goals are reachable from master and appear in exactly one `GoalChildChainItem`; repetition/template subtrees use `parent_id` only (no chain); master child chains are non-critical; subtype pairing is service-enforced ([`PlanTreeInvariantService`](../../calendar_backend/services/plan_tree_invariant.py) + [`domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) per [repo conventions §7–§9](../../.cursor/repo_conventions.md)).
 - **Deletion semantics (design):** ordinary deletion cascades to descendants; deleting any plan inside a goal child chain deletes the **whole chain** (and its member plans per cascade rules); deleting a **critical** chain deletes the parent goal and may cascade upward; master is never deleted.
 - **Persistence access:** relationship navigation + eager load for graph reads (previews, cascade planning); explicit `select` / `delete` / `session.get` for filtered writes ([repo convention §3](../../.cursor/repo_conventions.md)). No ORM `cascade="all, delete-orphan"` on plan trees.
 - **Prompt 7 complete:** master/settings/horizon services, `TimeConstraintService`, and `PlanTreeInvariantService` exist ([`time_constraint_invariant_validation.md`](time_constraint_invariant_validation.md)).
@@ -17,7 +17,7 @@ Design constraints:
 **Locked clarifications (request-questions):**
 - **Deletion preview boundary:** keep Prompt 8 **minimal** — cascade computation and `preview_delete` / `delete_plan` live in `PlanTreeService` (private helpers in [`plan_tree.py`](../../calendar_backend/services/plan_tree.py)); defer `calendar_backend/deletion/` package and `DeletionPreviewService` class to Prompt 12 (extract/refactor only; semantics unchanged).
 - **Chain on create:** caller supplies `is_critical`; service always creates a **new** `GoalChildChain` at the end of that bucket (`sort_order = max + 1` among chains with same `parent_goal_id` and `is_critical`) with a single `GoalChildChainItem` at `position = 0`. Reject `is_critical=True` when parent is master.
-- **create_repetition (minimal):** persist `RepetitionPlan` + child stub template-root `GoalPlan` (`clone_status=TEMPLATE`); set `template_root_id`; `generated_at` null; zero `RepetitionInstance` rows; no `SYSTEM_REPETITION_WINDOW` materialization.
+- **create_child (REPETITION, minimal):** via `GoalService.create_child` — persist repetition shell + empty goal template stub (`clone_status=TEMPLATE`); set `template_root_id`; `generated_at` null; zero `RepetitionInstance` rows; no `SYSTEM_REPETITION_WINDOW` materialization; **goal template only** until Prompt 10 (no template subtree in payload).
 - **move_plan:** chain reordering under the **same parent goal** only — **not reparenting** (reparenting out of scope for V1). API shape:
   - **Single index** `position`: reorder within the plan’s current chain (dense `position` renumbering).
   - **Pair** `(chain_index, position)`: move to another chain under the same parent; `position = -1` append; `chain_index = -1` create new chain at end of bucket, **inferring `is_critical` from the plan’s current chain**.
@@ -38,19 +38,17 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 
 ## Locked assumptions
 
-- **Service module:** [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py) with `PlanTreeService(session, clock=None)`; bootstrap constants colocated in same module ([repo convention §1](../../.cursor/repo_conventions.md)).
-- **Public methods (V1):**
-  - `create_goal(parent_id, name, is_critical) -> ServiceResult[GoalPlanDTO]`
-  - `create_task(parent_id, name, is_critical, duration_minutes, divisible, minimum_chunk_size_minutes) -> ServiceResult[TaskPlanDTO]`
-  - `create_repetition(parent_id, name, is_critical, repeat_mode, start_time, repeat_interval_minutes, manual_count, end_time, default_instance_critical) -> ServiceResult[RepetitionPlanDTO]` — validate repetition settings shape only; no generation.
-  - `move_plan(plan_id, position)` and `move_plan(plan_id, chain_index, position)` — overload or optional second index; same parent only.
-  - `rename_plan(plan_id, name) -> ServiceResult[PlanNameDTO]` (or reuse subtype DTO with updated name).
-  - `preview_delete(plan_id) -> ServiceResult[PlanDeletionPreviewDTO]`
-  - `delete_plan(plan_id) -> ServiceResult[None]`
+- **Service modules:** [`calendar_backend/services/goal.py`](../../calendar_backend/services/goal.py) with `GoalService(session, clock=None)`; [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py) with `PlanTreeService(session, clock=None)`.
+- **External public API (V1):**
+  - **`GoalService.create_child(parent_id, kind, payload, is_critical)`** — single entry for creating goal/task/repetition under a goal parent; typed payloads in [`domain/plan_create.py`](../../calendar_backend/domain/plan_create.py); `@overload` return types per `PlanKind`.
+  - **`PlanTreeService`:** `move_plan`, `rename_plan`, `preview_delete`, `delete_plan` (slices 2–4).
+- **Repo-internal sibling API on `PlanTreeService` (not external/CLI):** `make_goal`, `make_task`, `make_repetition`, `attach_under_parent` — take active `txn: Session`; insert orphan plan + subtype rows or set `parent_id` only (no chain).
+- **Goal-chain attach:** private to `GoalService` (`_attach_to_goal_chain`); not on `PlanTreeService`.
+- **Contract:** parents create minimal children under goals (`GoalService`); children edit themselves later (`TaskService`, `RepetitionService` — Prompts 9–10).
 - **Parent validation:** `parent_id` must reference an existing `GoalPlan` (not task/repetition leaf unless design allows — **parent must be GOAL**); child becomes direct tree child of that goal; chain item aligns with same parent ([`invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) chain alignment rule).
 - **Master rules:** master cannot be deleted, moved, or renamed away from `MASTER_PLAN_NAME` convention; plans created under master must use `is_critical=False`.
 - **Task defaults on create:** `user_completed=False`, `completed_at=None`, `clone_status=NOT_CLONED`, `cloned_from_id=None`.
-- **Repetition template stub:** template root is a child `GoalPlan` of the repetition plan node; `template_root_id` points at that child; template subtree may be expanded later by `RepetitionService` — for now empty goal shell is enough.
+- **Repetition template stub:** template root is a child `GoalPlan` of the repetition plan node (`attach_under_parent`, not in chain); `template_root_id` points at that child; template subtree expansion deferred to `RepetitionService` (Prompt 10) — slice 1 creates empty goal shell only; payload must not include template children.
 - **Deletion order:** explicit deletes for dependent rows (chain items/chains, constraint windows/groups, repetition instances, calendar entries with `source_plan_id`, subtype rows, plan rows) respecting SQLite FK RESTRICT — no reliance on DB ON DELETE CASCADE.
 - **Preview/delete parity:** `delete_plan` must delete exactly the plan IDs (and linked calendar entries) computed by the same private cascade function used by `preview_delete`.
 - **Slice checks:** slices 1–4 → ruff format, ruff check, pyright; slice 5 adds pytest + **Test catalog** posted in chat.
@@ -60,26 +58,30 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 
 ### Slice 1: Create operations
 
-**Objective:** Implement `create_goal`, `create_task`, and `create_repetition` with chain placement, subtype row creation, and parent/tree validation.
+**Objective:** Implement `GoalService.create_child` and repo-internal `PlanTreeService.make_*` / `attach_under_parent` with chain placement, subtype row creation, and parent/tree validation.
 
 **Files expected to change:**
-- [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py) (new)
-- [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) — add `TaskPlanDTO`, `RepetitionPlanDTO`, mappers from ORM rows
-- [`calendar_backend/domain/errors.py`](../../calendar_backend/domain/errors.py) — add mutation `MessageCode` values as needed (e.g. `INVALID_PARENT`, `MASTER_CHILD_MUST_BE_NON_CRITICAL`, `INVALID_TASK_SCHEDULING_FIELDS`, `INVALID_REPETITION_SETTINGS`)
-- [`calendar_backend/domain/tasks.py`](../../calendar_backend/domain/tasks.py) (new, optional) — pure `validate_task_scheduling_fields(...)` if logic is non-trivial; otherwise colocate minimal validation in service until Prompt 9
+- [`calendar_backend/services/goal.py`](../../calendar_backend/services/goal.py) (new)
+- [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py) — insert/attach primitives (no public create methods)
+- [`calendar_backend/domain/plan_create.py`](../../calendar_backend/domain/plan_create.py) (new) — frozen create payloads + kind/payload validation
+- [`calendar_backend/domain/repetitions.py`](../../calendar_backend/domain/repetitions.py) (new) — `validate_repetition_create`
+- [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) — `TaskPlanDTO`, `RepetitionPlanDTO`, mappers (if not already present)
+- [`calendar_backend/domain/errors.py`](../../calendar_backend/domain/errors.py) — e.g. `INVALID_CREATE_PAYLOAD`, mutation codes
+- [`calendar_backend/domain/tasks.py`](../../calendar_backend/domain/tasks.py) — `validate_task_create`
 
 **May also change:**
-- [`calendar_backend/domain/enums.py`](../../calendar_backend/domain/enums.py) — only if new error detail enums required (unlikely)
+- [`docs/cursor_implementation_guide.md`](../cursor_implementation_guide.md) — §0.1 supersession row; Prompt 8/10 text
 
 **Implementation steps:**
-1. Add frozen DTOs + `*_dto_from_plan` mappers for task and repetition plans (goal mapper already exists).
-2. Implement `PlanTreeService` constructor (`session`, `clock`) matching sibling services.
-3. **Shared private helper** `_create_plan_under_goal(...)` (name illustrative): inside `transaction`, load parent goal plan; reject missing parent; enforce master non-critical rule; insert `Plan` + subtype detail row; insert new `GoalChildChain` at end of `(parent_goal_id, is_critical)` bucket; insert single `GoalChildChainItem` at `position=0`; set timestamps via `clock.now_utc()`.
-4. **`create_goal`:** `plan_kind=GOAL`, insert `GoalPlan` detail row.
-5. **`create_task`:** validate scheduling fields (duration > 0, minute granularity, minimum chunk rules vs duration/divisibility); insert `TaskPlan` with defaults.
-6. **`create_repetition`:** validate `repeat_mode` / `start_time` / `repeat_interval_minutes` / `manual_count` / `end_time` combinations per ORM CHECKs and design (minute-aligned `start_time`; `manual_count` required for `MANUAL_COUNT`; `end_time` rules for `DATE_RANGE`); insert `RepetitionPlan` with `generated_at=None`; create child template `GoalPlan` stub; set `template_root_id` to stub `plan_id`; **no** instances or system repetition window.
-7. Map validation failures to `fail(...)` with structured `ServiceMessage`; use `ServiceTransactionAborted` only if matching sibling pattern for multi-step rollback inside transaction.
+1. Add frozen create payloads in `domain/plan_create.py` (`GoalCreatePayload`, `TaskCreatePayload`, `RepetitionCreatePayload` with `template_type` / `template_payload`) and `validate_create_payload`; add `validate_repetition_create` in `domain/repetitions.py`.
+2. Move repetition settings validation to `domain/repetitions.py`.
+3. Implement `PlanTreeService.make_goal`, `make_task`, `make_repetition`, `attach_under_parent` (orphan inserts / tree link only; docstring: sibling services only).
+4. Implement `GoalService.create_child` with `@overload` returns (annotate type-checker-only code per repo convention §10); private `_load_parent_goal`, `_attach_to_goal_chain`.
+5. **`GOAL` / `TASK` branches:** `make_*` → `_attach_to_goal_chain` (sets `parent_id` + new chain at end of `(parent_goal_id, is_critical)` bucket, single item at `position=0`).
+6. **`REPETITION` branch:** validate settings; `make_goal` (template, `clone_status=TEMPLATE`) → `make_repetition` with `template_root_id` → `attach_under_parent` (template under shell) → `_attach_to_goal_chain` (shell under goal parent); reject non-goal templates.
+7. Map validation failures to `fail(...)`; `GoalService` opens `transaction()`, passes `txn` to `PlanTreeService` helpers.
 8. Do **not** call `PlanTreeInvariantService` in production path yet (optional in slice 5 tests).
+9. Persisted-shape enforcement for create validators follows [repo convention §11](../../.cursor/repo_conventions.md): ORM CHECKs on subtype tables + invariant catch-up in `domain/invariant_validation.py` (migration for CHECKs is a separate db-revision step).
 
 **Tests/checks:**
 ```bash
@@ -89,14 +91,14 @@ uv run pyright
 ```
 
 **Acceptance criteria:**
-- Creating goal/task/repetition under a goal persists correct `parent_id`, subtype row, and new chain at end of `is_critical` bucket with one item.
+- `GoalService.create_child(GOAL|TASK|REPETITION, …)` under a goal persists correct `parent_id`, subtype row, and new chain at end of `is_critical` bucket with one item (repetition shell in chain; template attached via `attach_under_parent` only).
 - Creating under master succeeds with `is_critical=False`; `is_critical=True` rejected.
-- Invalid parent, invalid task duration/chunk fields, and invalid repetition settings fail without partial persistence.
-- `create_repetition` leaves `generated_at` null and creates no `RepetitionInstance` rows.
+- Invalid parent, kind/payload mismatch, invalid task/repetition fields fail without partial persistence.
+- Repetition leaves `generated_at` null and creates no `RepetitionInstance` rows.
 
 **Risks/edge cases:**
 - First child under a goal: `sort_order` starts at 0.
-- Concurrent chain `sort_order` assignment: SQLite transaction isolation is sufficient for V1 single-writer tests.
+- Orphan `parent_id=None` on `make_*` rows is transient within transaction until attach.
 - Template stub must be reachable in tree (child of repetition plan) so reachability invariant holds.
 
 ---
@@ -229,7 +231,8 @@ uv run pyright
 **Objective:** Add pytest coverage for slices 1–4; post **Test catalog** in chat per guide §9.
 
 **Files expected to change:**
-- [`tests/services/test_plan_tree_service.py`](../../tests/services/test_plan_tree_service.py) (new)
+- [`tests/services/test_goal_service.py`](../../tests/services/test_goal_service.py) (new)
+- [`tests/services/test_plan_tree_service.py`](../../tests/services/test_plan_tree_service.py) (new — move/rename/delete)
 - [`tests/domain/test_deletion_impact.py`](../../tests/domain/test_deletion_impact.py) (new, optional — if pure cascade helper extracted to `domain/`)
 - [`tests/services/test_foundational_invariants.py`](../../tests/services/test_foundational_invariants.py) (extend — bootstrap via create APIs if useful)
 
@@ -237,7 +240,7 @@ uv run pyright
 - [`tests/domain/test_tasks.py`](../../tests/domain/test_tasks.py) (new, if `domain/tasks.py` added)
 
 **Implementation steps:**
-1. **Create tests:** goal/task/repetition under master and nested goal; chain `sort_order`/`position` after sequential creates; master non-critical enforcement; invalid parents and invalid task/repetition fields.
+1. **Create tests:** via `GoalService.create_child` — goal/task/repetition under master and nested goal; chain `sort_order`/`position` after sequential creates; master non-critical enforcement; invalid parents and invalid task/repetition fields.
 2. **Move/rename tests:** within-chain reorder; cross-chain move; `chain_index=-1` / `position=-1`; rename persistence; master guards.
 3. **Preview/delete parity tests:** leaf, subtree, chain-member triggers whole chain, critical chain upward, calendar entries removed, master delete forbidden.
 4. **Invariant integration:** after successful mutations, `PlanTreeInvariantService.validate_master_tree()` passes on clean cases.
@@ -249,7 +252,7 @@ uv run pyright
 uv run ruff format .
 uv run ruff check .
 uv run pyright
-uv run pytest tests/services/test_plan_tree_service.py tests/domain/test_deletion_impact.py tests/domain/test_tasks.py -m "not slow and not failure_expected"
+uv run pytest tests/services/test_goal_service.py tests/services/test_plan_tree_service.py tests/domain/test_deletion_impact.py tests/domain/test_tasks.py -m "not slow and not failure_expected"
 ```
 
 **Acceptance criteria:**
@@ -267,11 +270,13 @@ uv run pytest tests/services/test_plan_tree_service.py tests/domain/test_deletio
 
 | Introduced item | Needed now? | Justification |
 |-----------------|-------------|---------------|
-| `PlanTreeService` | Yes | Design §7 named plan mutation path |
+| `GoalService` | Yes | External create-under-goal API; goal-chain attach |
+| `PlanTreeService` | Yes | Tree mutations (slices 2–4) + repo-internal insert/attach |
+| `domain/plan_create.py`, `domain/repetitions.py` | Yes | Typed create payloads and session-free validation |
 | `TaskPlanDTO`, `RepetitionPlanDTO`, `PlanDeletionPreviewDTO` | Yes | Design §8.2 service return types |
-| `domain/tasks.py` validate helper | Maybe | Shared task field rules before `TaskService`; omit if < ~15 lines inline |
+| `domain/tasks.py` validate helper | Yes | Shared task field rules before `TaskService` |
 | Private `_compute_deletion_impact` | Yes | Preview/delete parity requirement |
-| Private `_create_plan_under_goal`, chain move helpers | Yes | Remove duplication across three create methods and move paths |
+| Private `_attach_to_goal_chain` on `GoalService` | Yes | Goal-context chain placement |
 | `calendar_backend/deletion/` package | No | Deferred to Prompt 12 per locked clarification |
 | `DeletionPreviewService` class | No | Prompt 12 extraction from working `PlanTreeService` logic |
 | Repository / DAO / service base class | No | Matches existing services |
