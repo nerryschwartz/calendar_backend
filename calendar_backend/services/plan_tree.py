@@ -1,4 +1,4 @@
-"""Plan tree insert/attach primitives and move/rename/delete service."""
+"""Plan tree insert/attach primitives and plan-wide rename/delete service."""
 
 from __future__ import annotations
 
@@ -6,14 +6,17 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from calendar_backend.db.session import transaction
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID, new_id
+from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 
 
 class PlanTreeService:
-    """Tree-wide mutations and repo-internal insert/attach primitives.
+    """Plan-wide identity/existence mutations and repo-internal insert/attach primitives.
 
     Sibling services (for example ``GoalService``) may call ``make_*`` and
     ``attach_under_parent``; those methods are not part of the external API.
@@ -22,6 +25,32 @@ class PlanTreeService:
     def __init__(self, session: Session, clock: Clock | None = None) -> None:
         self._session = session
         self._clock = clock or SystemClock()
+
+    def rename_plan(self, plan_id: PlanID, name: str) -> ServiceResult[None]:
+        with transaction(self._session) as txn:
+            plan = txn.get(Plan, plan_id)
+            if plan is None:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.PLAN_NOT_FOUND,
+                        message="Plan not found",
+                        details={"plan_id": str(plan_id)},
+                    )
+                )
+            if plan.is_master:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.MASTER_MUTATION_FORBIDDEN,
+                        message="Master plan cannot be renamed",
+                        details={"plan_id": str(plan_id)},
+                    )
+                )
+
+            now = self._clock.now_utc()
+            plan.name = name
+            plan.updated_at = now
+            txn.flush()
+            return ok(None)
 
     def make_goal(
         self,
