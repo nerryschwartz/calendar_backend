@@ -262,3 +262,24 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 - **After migration:** drop marker on schema INSERT-failure tests; they run in the default `pytest -m "not slow and not failure_expected"` suite.
 
 **Aligns with:** [§4](#4-alembic-revision-file-style-sqlite), [§11](#11-boundary-validators-imply-persisted-shape-enforcement).
+
+---
+
+## 14. Plan service ownership boundaries
+
+**Scope:** [`GoalService`](../../calendar_backend/services/goal.py), [`PlanTreeService`](../../calendar_backend/services/plan_tree.py), and sibling plan services (`TaskService`, `RepetitionService`).
+
+**Rule:**
+
+- **`PlanTreeService`** — plan-wide **identity** (`rename_plan`) and **existence** (`preview_delete`, `delete_plan`); repo-internal `make_*` / `attach_under_parent` for sibling services.
+- **`GoalService`** — goal-parent **child-chain layout**: `create_child` (initial chain placement) and `move_plan` (within/cross-chain reorder under the same parent goal; no reparenting in V1).
+- **`TaskService` / `RepetitionService`** — subtype self-edits on the plan node (scheduling, generation, etc.).
+- Goal child-chain persistence helpers (ordering, dense renumbering, bucket-end chain creation) are **module-private to `GoalService`**, not shared via `PlanTreeService`.
+
+**Examples:**
+
+- **GoalService:** `create_child` + `_attach_to_goal_chain`; `move_plan(plan_id, position)` and `move_plan(plan_id, chain_index, position)`.
+- **PlanTreeService:** `rename_plan`; future `preview_delete` / `delete_plan`; `make_goal` / `attach_under_parent` called from `GoalService` during create.
+- **Not PlanTreeService:** chain reorder, cross-chain move, or empty-chain cleanup after move.
+
+**Supersedes:** Guide §0.1 row “Plan creation vs tree mutations” and [`docs/plans/plan_tree_service.md`](../docs/plans/plan_tree_service.md) assumptions that listed `move_plan` on `PlanTreeService`; PDF §7 monolithic plan-tree service readings for move ownership.

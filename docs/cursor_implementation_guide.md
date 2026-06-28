@@ -52,7 +52,7 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 | ORM invariant vs write-path validation | Structural checks on loaded data may live in `constraints.py` or services | **§9** — ORM invariant entry points in `domain/invariant_validation.py` (or future `domain/invariants/`); other domain modules are write-path/shared helpers only |
 | Type-checker-only artifacts | Unmarked overloads, asserts, casts, or pyright ignores | **§10** — minimal form; prefer checker comments; comment code that exists primarily for Pyright |
 | Boundary validator → persisted shape | Write-path validation with no matching CHECK or invariant | **§11** — CHECK when single-table; invariant when graph or CHECK-unfriendly; no invariant replay of CHECKs (**§8**); no UTC checks on loaded ORM rows (**§12**) |
-| Plan creation vs tree mutations (PDF §7) | Monolithic `PlanTreeService` with `create_goal` / `create_task` / `create_repetition` | **`GoalService.create_child`** for creating plans under a goal parent; **`PlanTreeService`** for move/rename/delete and repo-internal `make_*` / `attach_under_parent` (see [plan_tree_service.md](plans/plan_tree_service.md)) |
+| Plan service ownership (PDF §7) | Monolithic `PlanTreeService` with create/move/rename/delete | **`GoalService.create_child`** + **`GoalService.move_plan`** for goal child-chain layout; **`PlanTreeService`** for rename/delete and repo-internal `make_*` / `attach_under_parent` ([repo convention §14](../.cursor/repo_conventions.md), [plan_tree_service.md](plans/plan_tree_service.md)) |
 | Schema enforcement before migration | Defer DB INSERT-failure tests until migration lands; or skip schema tests | **§13** — add schema tests in the ORM change; mark `failure_expected` until `upgrade head`; unmark in `/db-revision-continue` |
 
 ### TimeConstraintGroup
@@ -1496,7 +1496,8 @@ Create a Cursor implementation plan for PlanTreeService and GoalService (see fin
 
 Context:
 - GoalService.create_child(parent_id, kind, payload, is_critical) is the external API for creating goal/task/repetition under a goal parent (typed payloads in domain/plan_create.py).
-- PlanTreeService provides repo-internal make_goal/make_task/make_repetition and attach_under_parent; public move_plan, rename_plan, preview_delete, delete_plan.
+- GoalService.move_plan is the external API for goal child-chain reorder (within/cross-chain under same parent).
+- PlanTreeService provides repo-internal make_goal/make_task/make_repetition and attach_under_parent; public rename_plan, preview_delete, delete_plan.
 - Maintain rooted tree under master.
 - No orphan active plans.
 - Deletion cascades to descendants.
@@ -1507,7 +1508,7 @@ Context:
 
 Split into slices:
 1. create operations (GoalService + PlanTreeService primitives)
-2. move/rename operations
+2. move (GoalService) + rename (PlanTreeService)
 3. deletion preview foundations
 4. real deletion and cascade parity
 5. tests for tree invariants and deletion behavior (post Test catalog in chat)

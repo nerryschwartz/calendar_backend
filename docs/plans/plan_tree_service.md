@@ -4,7 +4,7 @@
 
 ## Context
 
-Implement Prompt 8 from [docs/cursor_implementation_guide.md](../cursor_implementation_guide.md): **`GoalService`** for goal-parent plan creation and **`PlanTreeService`** for tree-wide mutations (move/rename/delete), per engineering design §5.2 (goal child chains), §5.3 (repetition shell), §7 (service layer), §9.6 (deletion impact), and Appendix invariants. **Guide + this plan supersede PDF §7** on splitting create from tree mutations ([guide §0.1](../cursor_implementation_guide.md)).
+Implement Prompt 8 from [docs/cursor_implementation_guide.md](../cursor_implementation_guide.md): **`GoalService`** for goal-parent plan creation and child-chain layout (`create_child`, `move_plan`); **`PlanTreeService`** for plan-wide identity and existence (`rename_plan`, `preview_delete`, `delete_plan`), per engineering design §5.2 (goal child chains), §5.3 (repetition shell), §7 (service layer), §9.6 (deletion impact), and Appendix invariants. **Guide + this plan supersede PDF §7** on service ownership ([guide §0.1](../cursor_implementation_guide.md), [repo convention §14](../../.cursor/repo_conventions.md)).
 
 Design constraints:
 - [`calendar_backend/services/`](../../calendar_backend/services/) owns public mutation methods, validation, transactions, and persistence-changing behavior; ORM models are persistence records only ([layer boundaries](../../.cursor/rules/10-layer-boundaries.mdc)).
@@ -18,10 +18,10 @@ Design constraints:
 - **Deletion preview boundary:** keep Prompt 8 **minimal** — cascade computation and `preview_delete` / `delete_plan` live in `PlanTreeService` (private helpers in [`plan_tree.py`](../../calendar_backend/services/plan_tree.py)); defer `calendar_backend/deletion/` package and `DeletionPreviewService` class to Prompt 12 (extract/refactor only; semantics unchanged).
 - **Chain on create:** caller supplies `is_critical`; service always creates a **new** `GoalChildChain` at the end of that bucket (`sort_order = max + 1` among chains with same `parent_goal_id` and `is_critical`) with a single `GoalChildChainItem` at `position = 0`. Reject `is_critical=True` when parent is master.
 - **create_child (REPETITION, minimal):** via `GoalService.create_child` — persist repetition shell + empty goal template stub (`clone_status=TEMPLATE`); set `template_root_id`; `generated_at` null; zero `RepetitionInstance` rows; no `SYSTEM_REPETITION_WINDOW` materialization; **goal template only** until Prompt 10 (no template subtree in payload).
-- **move_plan:** chain reordering under the **same parent goal** only — **not reparenting** (reparenting out of scope for V1). API shape:
-  - **Single index** `position`: reorder within the plan’s current chain (dense `position` renumbering).
+- **move_plan (GoalService):** chain reordering under the **same parent goal** only — **not reparenting** (reparenting out of scope for V1). API shape:
+  - **Single index** `position`: reorder within the plan’s current chain (dense `position` renumbering); `position = -1` append within current chain.
   - **Pair** `(chain_index, position)`: move to another chain under the same parent; `position = -1` append; `chain_index = -1` create new chain at end of bucket, **inferring `is_critical` from the plan’s current chain**.
-- **rename_plan:** update `plan.name` and `updated_at` only.
+- **rename_plan (PlanTreeService):** update `plan.name` and `updated_at` only.
 
 Build workflow: use `/build-plan-slice` per slice against this file; stop after each slice for approval.
 
@@ -40,11 +40,11 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 
 - **Service modules:** [`calendar_backend/services/goal.py`](../../calendar_backend/services/goal.py) with `GoalService(session, clock=None)`; [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py) with `PlanTreeService(session, clock=None)`.
 - **External public API (V1):**
-  - **`GoalService.create_child(parent_id, kind, payload, is_critical)`** — single entry for creating goal/task/repetition under a goal parent; typed payloads in [`domain/plan_create.py`](../../calendar_backend/domain/plan_create.py); `@overload` return types per `PlanKind`.
-  - **`PlanTreeService`:** `move_plan`, `rename_plan`, `preview_delete`, `delete_plan` (slices 2–4).
+  - **`GoalService`:** `create_child(parent_id, kind, payload, is_critical)` — single entry for creating goal/task/repetition under a goal parent; typed payloads in [`domain/plan_create.py`](../../calendar_backend/domain/plan_create.py); `@overload` return types per `PlanKind`; **`move_plan`** for goal child-chain reorder.
+  - **`PlanTreeService`:** `rename_plan`, `preview_delete`, `delete_plan` (slices 2–4 rename; slices 3–4 delete).
 - **Repo-internal sibling API on `PlanTreeService` (not external/CLI):** `make_goal`, `make_task`, `make_repetition`, `attach_under_parent` — take active `txn: Session`; insert orphan plan + subtype rows or set `parent_id` only (no chain).
-- **Goal-chain attach:** private to `GoalService` (`_attach_to_goal_chain`); not on `PlanTreeService`.
-- **Contract:** parents create minimal children under goals (`GoalService`); children edit themselves later (`TaskService`, `RepetitionService` — Prompts 9–10).
+- **Goal-chain layout:** private to `GoalService` (`_attach_to_goal_chain`, chain move helpers); not on `PlanTreeService`.
+- **Contract:** goal parents own child-chain layout (`GoalService` create + move); plans edit their own attributes (`rename_plan` on `PlanTreeService`; `TaskService`, `RepetitionService` for subtype fields — Prompts 9–10).
 - **Parent validation:** `parent_id` must reference an existing `GoalPlan` (not task/repetition leaf unless design allows — **parent must be GOAL**); child becomes direct tree child of that goal; chain item aligns with same parent ([`invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) chain alignment rule).
 - **Master rules:** master cannot be deleted, moved, or renamed away from `MASTER_PLAN_NAME` convention; plans created under master must use `is_critical=False`.
 - **Task defaults on create:** `user_completed=False`, `completed_at=None`, `clone_status=NOT_CLONED`, `cloned_from_id=None`.
@@ -105,20 +105,21 @@ uv run pyright
 
 ### Slice 2: Move and rename operations
 
-**Objective:** Implement `move_plan` (chain reorder / cross-chain under same parent) and `rename_plan`.
+**Objective:** Implement `GoalService.move_plan` (chain reorder / cross-chain under same parent) and `PlanTreeService.rename_plan`.
 
 **Files expected to change:**
-- [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py)
+- [`calendar_backend/services/goal.py`](../../calendar_backend/services/goal.py) — `move_plan` and goal child-chain layout helpers
+- [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py) — `rename_plan` only
 
 **May also change:**
 - [`calendar_backend/domain/errors.py`](../../calendar_backend/domain/errors.py) — e.g. `INVALID_MOVE`, `PLAN_NOT_IN_CHAIN`
 
 **Implementation steps:**
-1. **`rename_plan`:** load plan by id; reject master rename if name change forbidden (allow master name update only if design permits — V1: allow rename of any non-master; master rename optional/minimal: reject or no-op per test choice — **reject renaming master** to keep `MASTER_PLAN_NAME` stable); update `name`, `updated_at`.
-2. **`move_plan(plan_id, position)`:** locate plan’s current `GoalChildChainItem` and chain; validate `position` in range or implement insert-shift semantics with dense renumbering; reject if plan has no chain item (orphan) or is master.
-3. **`move_plan(plan_id, chain_index, position)`:** enumerate parent goal’s chains in stable order (e.g. critical bucket first, then `sort_order`, tie-break `goal_child_chain_id`); resolve `chain_index=-1` → new chain at end of current item’s `is_critical` bucket; resolve `position=-1` → append; move item between chains: remove from source (renumber source chain); insert into target; if source chain empty, delete chain header.
+1. **`rename_plan` (PlanTreeService):** load plan by id; reject master rename if name change forbidden (allow master name update only if design permits — V1: allow rename of any non-master; master rename optional/minimal: reject or no-op per test choice — **reject renaming master** to keep `MASTER_PLAN_NAME` stable); update `name`, `updated_at`.
+2. **`move_plan(plan_id, position)` (GoalService):** locate plan’s current `GoalChildChainItem` and chain; validate `position` in range or implement insert-shift semantics with dense renumbering; reject if plan has no chain item (orphan) or is master.
+3. **`move_plan(plan_id, chain_index, position)` (GoalService):** enumerate parent goal’s chains in stable order (e.g. critical bucket first, then `sort_order`, tie-break `goal_child_chain_id`); resolve `chain_index=-1` → new chain at end of current item’s `is_critical` bucket; resolve `position=-1` → append; move item between chains: remove from source (renumber source chain); insert into target; if source chain empty, delete chain header.
 4. **Guards:** parent goal unchanged; cannot move master; cannot move template/repetition nodes in ways that break invariants (if move applies only to chain-member children, document and reject repetition template roots without chain items).
-5. Maintain dense `position` per chain and dense `sort_order` per `(parent_goal_id, is_critical)` after moves.
+5. Maintain dense `position` per chain; reuse `_create_chain_at_bucket_end` from create path where applicable.
 
 **Tests/checks:**
 ```bash
@@ -231,8 +232,8 @@ uv run pyright
 **Objective:** Add pytest coverage for slices 1–4; post **Test catalog** in chat per guide §9.
 
 **Files expected to change:**
-- [`tests/services/test_goal_service.py`](../../tests/services/test_goal_service.py) (new)
-- [`tests/services/test_plan_tree_service.py`](../../tests/services/test_plan_tree_service.py) (new — move/rename/delete)
+- [`tests/services/test_goal_service.py`](../../tests/services/test_goal_service.py) (new — create + move)
+- [`tests/services/test_plan_tree_service.py`](../../tests/services/test_plan_tree_service.py) (new — rename/delete)
 - [`tests/domain/test_deletion_impact.py`](../../tests/domain/test_deletion_impact.py) (new, optional — if pure cascade helper extracted to `domain/`)
 - [`tests/services/test_foundational_invariants.py`](../../tests/services/test_foundational_invariants.py) (extend — bootstrap via create APIs if useful)
 
@@ -241,11 +242,12 @@ uv run pyright
 
 **Implementation steps:**
 1. **Create tests:** via `GoalService.create_child` — goal/task/repetition under master and nested goal; chain `sort_order`/`position` after sequential creates; master non-critical enforcement; invalid parents and invalid task/repetition fields.
-2. **Move/rename tests:** within-chain reorder; cross-chain move; `chain_index=-1` / `position=-1`; rename persistence; master guards.
-3. **Preview/delete parity tests:** leaf, subtree, chain-member triggers whole chain, critical chain upward, calendar entries removed, master delete forbidden.
-4. **Invariant integration:** after successful mutations, `PlanTreeInvariantService.validate_master_tree()` passes on clean cases.
-5. Inline ORM builders only (no shared factory registry); use `service_db_session` + `fake_clock`; mark `@pytest.mark.integration` where appropriate.
-6. Post grouped **Test catalog** in chat.
+2. **Move tests (GoalService):** within-chain reorder; cross-chain move; `chain_index=-1` / `position=-1`; master move guards.
+3. **Rename tests (PlanTreeService):** rename persistence; master rename guard.
+4. **Preview/delete parity tests:** leaf, subtree, chain-member triggers whole chain, critical chain upward, calendar entries removed, master delete forbidden.
+5. **Invariant integration:** after successful mutations, `PlanTreeInvariantService.validate_master_tree()` passes on clean cases.
+6. Inline ORM builders only (no shared factory registry); use `service_db_session` + `fake_clock`; mark `@pytest.mark.integration` where appropriate.
+7. Post grouped **Test catalog** in chat.
 
 **Tests/checks:**
 ```bash
@@ -270,13 +272,13 @@ uv run pytest tests/services/test_goal_service.py tests/services/test_plan_tree_
 
 | Introduced item | Needed now? | Justification |
 |-----------------|-------------|---------------|
-| `GoalService` | Yes | External create-under-goal API; goal-chain attach |
-| `PlanTreeService` | Yes | Tree mutations (slices 2–4) + repo-internal insert/attach |
+| `GoalService` | Yes | External create-under-goal API; goal child-chain layout (create + move) |
+| `PlanTreeService` | Yes | Plan identity/existence (rename, delete slices 2–4) + repo-internal insert/attach |
 | `domain/plan_create.py`, `domain/repetitions.py` | Yes | Typed create payloads and session-free validation |
 | `TaskPlanDTO`, `RepetitionPlanDTO`, `PlanDeletionPreviewDTO` | Yes | Design §8.2 service return types |
 | `domain/tasks.py` validate helper | Yes | Shared task field rules before `TaskService` |
 | Private `_compute_deletion_impact` | Yes | Preview/delete parity requirement |
-| Private `_attach_to_goal_chain` on `GoalService` | Yes | Goal-context chain placement |
+| Private `_attach_to_goal_chain` / chain layout helpers on `GoalService` | Yes | Goal-context chain placement and move |
 | `calendar_backend/deletion/` package | No | Deferred to Prompt 12 per locked clarification |
 | `DeletionPreviewService` class | No | Prompt 12 extraction from working `PlanTreeService` logic |
 | Repository / DAO / service base class | No | Matches existing services |
