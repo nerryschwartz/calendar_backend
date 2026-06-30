@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
@@ -16,9 +17,12 @@ from calendar_backend.domain.ids import PlanID, new_id
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChain
+from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.constraints import TimeConstraintGroup
+from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
+from calendar_backend.models.free_time import FreeTimeActivityPrerequisite
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.repetitions import RepetitionInstance
 
 
 class PlanTreeService:
@@ -81,6 +85,30 @@ class PlanTreeService:
             plans, calendar_entries = _load_deletion_graph(txn)
             preview = compute_deletion_impact(plan_id, plans, calendar_entries)
             return ok(preview)
+
+    def delete_plan(self, plan_id: PlanID) -> ServiceResult[None]:
+        preview_result = self.preview_delete(plan_id)
+        if not preview_result.success:
+            return fail(*preview_result.errors)
+
+        assert preview_result.value is not None
+        preview = preview_result.value
+
+        with transaction(self._session) as txn:
+            master = txn.scalar(select(Plan).where(Plan.is_master))
+            if master is not None and PlanID(master.plan_id) in preview.affected_plan_ids:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.MASTER_DELETE_FORBIDDEN,
+                        message="Master plan cannot be deleted",
+                        details={"plan_id": str(plan_id)},
+                    )
+                )
+
+            plans, _calendar_entries = _load_deletion_graph(txn)
+            _execute_plan_deletes(txn, preview, plans)
+            txn.flush()
+            return ok(None)
 
     def make_goal(
         self,
@@ -217,3 +245,92 @@ def _load_deletion_graph(
         txn.scalars(select(CalendarEntry).where(CalendarEntry.source_plan_id.in_(plan_ids))).all()
     )
     return plans, calendar_entries
+
+
+def _execute_plan_deletes(
+    txn: Session,
+    preview: PlanDeletionPreviewDTO,
+    plans: tuple[Plan, ...],
+) -> None:
+    affected_plan_ids = preview.affected_plan_ids
+    if not affected_plan_ids:
+        return
+
+    affected_set = set(affected_plan_ids)
+    plans_by_id = {plan.plan_id: plan for plan in plans}
+
+    if preview.affected_calendar_entry_ids:
+        txn.execute(
+            delete(CalendarEntry).where(
+                CalendarEntry.calendar_entry_id.in_(preview.affected_calendar_entry_ids)
+            )
+        )
+
+    txn.execute(
+        # TODO(Prompt 15): FreeTimeActivityService should delete or disable orphan activities
+        # when plan-backed prerequisites are removed; rows deleted here for FK safety only.
+        delete(FreeTimeActivityPrerequisite).where(
+            FreeTimeActivityPrerequisite.source_plan_id.in_(affected_plan_ids)
+        )
+    )
+
+    group_ids = [
+        group.time_constraint_group_id
+        for plan in plans
+        if plan.plan_id in affected_set
+        for group in plan.constraint_groups
+    ]
+    if group_ids:
+        txn.execute(delete(TimeWindowRow).where(TimeWindowRow.group_id.in_(group_ids)))
+        txn.execute(
+            delete(TimeConstraintGroup).where(
+                TimeConstraintGroup.time_constraint_group_id.in_(group_ids)
+            )
+        )
+
+    txn.execute(
+        delete(GoalChildChainItem).where(GoalChildChainItem.child_plan_id.in_(affected_plan_ids))
+    )
+    txn.execute(delete(GoalChildChain).where(GoalChildChain.parent_goal_id.in_(affected_plan_ids)))
+
+    txn.execute(
+        delete(RepetitionInstance).where(
+            or_(
+                RepetitionInstance.repetition_plan_id.in_(affected_plan_ids),
+                RepetitionInstance.root_clone_id.in_(affected_plan_ids),
+            )
+        )
+    )
+
+    txn.execute(delete(TaskPlan).where(TaskPlan.plan_id.in_(affected_plan_ids)))
+    txn.execute(delete(RepetitionPlan).where(RepetitionPlan.plan_id.in_(affected_plan_ids)))
+    txn.execute(delete(GoalPlan).where(GoalPlan.plan_id.in_(affected_plan_ids)))
+
+    for plan_id in _plan_deletion_order(affected_set, plans_by_id):
+        txn.delete(plans_by_id[plan_id])
+
+
+def _plan_deletion_order(
+    affected: set[PlanID],
+    plans_by_id: dict[uuid.UUID, Plan],
+) -> tuple[PlanID, ...]:
+    remaining = set(affected)
+    order: list[PlanID] = []
+
+    while remaining:
+        ready: list[PlanID] = []
+        for plan_id in remaining:
+            plan = plans_by_id[plan_id]
+            if plan.parent_id is not None and PlanID(plan.parent_id) in remaining:
+                continue
+            if plan.cloned_from_id is not None and PlanID(plan.cloned_from_id) in remaining:
+                continue
+            ready.append(plan_id)
+        ready.sort()
+        if not ready:
+            msg = "Plan deletion order could not be resolved for affected set"
+            raise RuntimeError(msg)
+        order.extend(ready)
+        remaining -= set(ready)
+
+    return tuple(order)
