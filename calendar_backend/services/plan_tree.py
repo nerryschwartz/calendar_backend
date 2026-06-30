@@ -4,14 +4,20 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
+from calendar_backend.domain.deletion import compute_deletion_impact
+from calendar_backend.domain.dtos import PlanDeletionPreviewDTO
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID, new_id
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.models.calendar import CalendarEntry
+from calendar_backend.models.chains import GoalChildChain
+from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 
 
@@ -51,6 +57,30 @@ class PlanTreeService:
             plan.updated_at = now
             txn.flush()
             return ok(None)
+
+    def preview_delete(self, plan_id: PlanID) -> ServiceResult[PlanDeletionPreviewDTO]:
+        with transaction(self._session) as txn:
+            root_plan = txn.get(Plan, plan_id)
+            if root_plan is None:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.PLAN_NOT_FOUND,
+                        message="Plan not found",
+                        details={"plan_id": str(plan_id)},
+                    )
+                )
+            if root_plan.is_master:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.MASTER_DELETE_FORBIDDEN,
+                        message="Master plan cannot be deleted",
+                        details={"plan_id": str(plan_id)},
+                    )
+                )
+
+            plans, calendar_entries = _load_deletion_graph(txn)
+            preview = compute_deletion_impact(plan_id, plans, calendar_entries)
+            return ok(preview)
 
     def make_goal(
         self,
@@ -162,3 +192,28 @@ class PlanTreeService:
         child_plan = txn.get(Plan, child_plan_id)
         child_plan.parent_id = parent_id  # pyright: ignore[reportOptionalMemberAccess]  # type checker: trusted internal caller
         child_plan.updated_at = now  # pyright: ignore[reportOptionalMemberAccess]
+
+
+def _load_deletion_graph(
+    txn: Session,
+) -> tuple[tuple[Plan, ...], tuple[CalendarEntry, ...]]:
+    plans = tuple(
+        txn.scalars(
+            select(Plan).options(
+                selectinload(Plan.goal_plan)
+                .selectinload(GoalPlan.chains)
+                .selectinload(GoalChildChain.items),
+                selectinload(Plan.task_plan),
+                selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
+                selectinload(Plan.constraint_groups).selectinload(TimeConstraintGroup.windows),
+            )
+        ).all()
+    )
+    plan_ids = [plan.plan_id for plan in plans]
+    if not plan_ids:
+        return plans, ()
+
+    calendar_entries = tuple(
+        txn.scalars(select(CalendarEntry).where(CalendarEntry.source_plan_id.in_(plan_ids))).all()
+    )
+    return plans, calendar_entries
