@@ -49,6 +49,43 @@ class TaskService:
             txn.flush()
             return ok(task_plan_dto_from_rows(plan, task_plan))
 
+    def mark_complete(self, plan_id: PlanID) -> ServiceResult[TaskPlanDTO]:
+        with transaction(self._session) as txn:
+            loaded = _load_task_plan(txn, plan_id)
+            if isinstance(loaded, ServiceMessage):
+                return fail(loaded)
+            plan, task_plan = loaded
+
+            if task_plan.user_completed:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.TASK_ALREADY_COMPLETED,
+                        message="Task is already completed",
+                        details={"plan_id": str(plan_id)},
+                    )
+                )
+
+            now = self._clock.now_utc()
+            task_plan.user_completed = True
+            task_plan.completed_at = now
+            plan.updated_at = now
+            txn.flush()
+            return ok(task_plan_dto_from_rows(plan, task_plan))
+
+    def reopen(self, plan_id: PlanID) -> ServiceResult[TaskPlanDTO]:
+        with transaction(self._session) as txn:
+            loaded = _load_task_plan(txn, plan_id)
+            if isinstance(loaded, ServiceMessage):
+                return fail(loaded)
+            plan, task_plan = loaded
+
+            now = self._clock.now_utc()
+            task_plan.user_completed = False
+            task_plan.completed_at = None
+            plan.updated_at = now
+            txn.flush()
+            return ok(task_plan_dto_from_rows(plan, task_plan))
+
 
 def _load_task_plan(txn: Session, plan_id: PlanID) -> tuple[Plan, TaskPlan] | ServiceMessage:
     plan = txn.get(Plan, plan_id)
