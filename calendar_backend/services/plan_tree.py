@@ -306,31 +306,48 @@ def _execute_plan_deletes(
     txn.execute(delete(RepetitionPlan).where(RepetitionPlan.plan_id.in_(affected_plan_ids)))
     txn.execute(delete(GoalPlan).where(GoalPlan.plan_id.in_(affected_plan_ids)))
 
-    for plan_id in _plan_deletion_order(affected_set, plans_by_id):
-        txn.delete(plans_by_id[plan_id])
+    for wave in _plan_deletion_waves(affected_set, plans_by_id):
+        txn.execute(delete(Plan).where(Plan.plan_id.in_(wave)))
 
 
-def _plan_deletion_order(
+def _plan_deletion_waves(
     affected: set[PlanID],
     plans_by_id: dict[uuid.UUID, Plan],
-) -> tuple[PlanID, ...]:
+) -> tuple[tuple[PlanID, ...], ...]:
+    """Deletion waves: children and clones before parents and clone referents."""
+    dependents: dict[PlanID, int] = dict.fromkeys(affected, 0)
+    for plan_id in affected:
+        plan = plans_by_id[plan_id]
+        if plan.parent_id is not None:
+            parent_id = PlanID(plan.parent_id)
+            if parent_id in affected:
+                dependents[parent_id] += 1
+        if plan.cloned_from_id is not None:
+            referent_id = PlanID(plan.cloned_from_id)
+            if referent_id in affected:
+                dependents[referent_id] += 1
+
     remaining = set(affected)
-    order: list[PlanID] = []
+    waves: list[tuple[PlanID, ...]] = []
 
     while remaining:
-        ready: list[PlanID] = []
-        for plan_id in remaining:
-            plan = plans_by_id[plan_id]
-            if plan.parent_id is not None and PlanID(plan.parent_id) in remaining:
-                continue
-            if plan.cloned_from_id is not None and PlanID(plan.cloned_from_id) in remaining:
-                continue
-            ready.append(plan_id)
-        ready.sort()
+        ready = tuple(sorted(plan_id for plan_id in remaining if dependents[plan_id] == 0))
         if not ready:
             msg = "Plan deletion order could not be resolved for affected set"
             raise RuntimeError(msg)
-        order.extend(ready)
-        remaining -= set(ready)
 
-    return tuple(order)
+        for plan_id in ready:
+            remaining.discard(plan_id)
+            plan = plans_by_id[plan_id]
+            if plan.parent_id is not None:
+                parent_id = PlanID(plan.parent_id)
+                if parent_id in remaining:
+                    dependents[parent_id] -= 1
+            if plan.cloned_from_id is not None:
+                referent_id = PlanID(plan.cloned_from_id)
+                if referent_id in remaining:
+                    dependents[referent_id] -= 1
+
+        waves.append(ready)
+
+    return tuple(waves)

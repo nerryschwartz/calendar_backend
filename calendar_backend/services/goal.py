@@ -406,6 +406,7 @@ def _move_across_chains(
     target_chain.updated_at = now
 
     if not source_items:
+        txn.flush()
         txn.delete(source_chain)
 
     txn.flush()
