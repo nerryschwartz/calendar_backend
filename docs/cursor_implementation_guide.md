@@ -45,11 +45,15 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 | Service bootstrap defaults | PDF §4 separate static defaults package; guide §2.3 `calendar_backend/settings/` placeholder | **§1** — colocate `DEFAULT_*` with the mutating service module (e.g. `app_settings.py`, `master_plan.py`) |
 | Pre-transaction service reads | Informal outer-read “fast path” before `transaction()` | **§2** — mutating service methods read persistence only inside `transaction(session)` |
 | ORM navigation vs explicit SQL in services | Generic “use relationships in services” without read/write distinction | **§3** — relationships for graph reads/validation; explicit `select`/`delete`/`get` for filtered writes and upserts |
-| Alembic revision style | Raw autogenerate output (`typing.Union`, single-line ops, direct ALTER on SQLite) | **§4** — `from __future__ import annotations`, `collections.abc.Sequence`, `batch_alter_table` for SQLite table alters |
+| Alembic revision style | Raw autogenerate output (`typing.Union`, single-line ops, direct ALTER on SQLite) | **§4** — `from __future__ import annotations`, `collections.abc.Sequence`, `batch_alter_table` for SQLite table alters, double-quoted strings |
 | Domain vs services placement | “Services own all validation”; DTO mappers only in services; invariant helpers forced into service modules | **§5** — session-free semantics and DTOs in `domain/`; `Session`/`transaction()` and use-case glue in `services/` |
 | Collection parameter types | `Sequence` / `Iterable` on domain and service APIs by default | **§6** — `tuple` for domain value bundles; `Sequence` only for Alembic metadata, generic scripts, or proven multi-caller utilities |
 | Plan tree invariant semantics | Invariants must hold at all times; replay DB CHECK/UNIQUE in diagnostics | **§7** — ideal post-change persisted shape; **§8** — no schema replay on committed rows |
 | ORM invariant vs write-path validation | Structural checks on loaded data may live in `constraints.py` or services | **§9** — ORM invariant entry points in `domain/invariant_validation.py` (or future `domain/invariants/`); other domain modules are write-path/shared helpers only |
+| Type-checker-only artifacts | Unmarked overloads, asserts, casts, or pyright ignores | **§10** — minimal form; prefer checker comments; comment code that exists primarily for Pyright |
+| Boundary validator → persisted shape | Write-path validation with no matching CHECK or invariant | **§11** — CHECK when single-table; invariant when graph or CHECK-unfriendly; no invariant replay of CHECKs (**§8**); no UTC checks on loaded ORM rows (**§12**) |
+| Plan service ownership (PDF §7) | Monolithic `PlanTreeService` with create/move/rename/delete | **`GoalService.create_child`** + **`GoalService.move_plan`** for goal child-chain layout; **`PlanTreeService`** for rename/delete and repo-internal `make_*` / `attach_under_parent` ([repo convention §14](../.cursor/repo_conventions.md), [plan_tree_service.md](plans/plan_tree_service.md)) |
+| Schema enforcement before migration | Defer DB INSERT-failure tests until migration lands; or skip schema tests | **§13** — add schema tests in the ORM change; mark `failure_expected` until `upgrade head`; unmark in `/db-revision-continue` |
 
 ### TimeConstraintGroup
 
@@ -668,6 +672,15 @@ After editing:
 - Run only the narrowest relevant check unless I ask for broader tests.
 - Report changed files and any skipped checks.
 ```
+
+### 4.5a `.cursor/commands/add-defer-comment.md`
+
+Insert a **scheduled deferral** `# TODO(<resolve-scope>): …` comment when work is blocked until a named guide prompt, plan slice, or V1 milestone. Canonical text lives in [`.cursor/commands/add-defer-comment.md`](../.cursor/commands/add-defer-comment.md).
+
+- Required: `Task:`; `File:` when location is not obvious.
+- Optional: `When:` (default `v1-complete` → comment scope **`Prompt 20`**), `Resolve:` (explicit scope override), `Anchor:`.
+- Not for lazy deferrals — use only when a future prompt/slice/milestone must land first.
+- When resolve is **not** Prompt 20: also append to **`Deferred carry-over:`** under the target **`### Prompt N:`** section in this guide (see command for format and plan→prompt mapping).
 
 ### 4.6 `.cursor/commands/review-abstractions.md`
 
@@ -1479,21 +1492,23 @@ Store the finalized plan in docs/plans/.
 ```text
 Use /request-questions first.
 
-Create a Cursor implementation plan for PlanTreeService.
+Create a Cursor implementation plan for PlanTreeService and GoalService (see finalized plan in docs/plans/plan_tree_service.md).
 
 Context:
-- Implement create_goal, create_task, create_repetition, move_plan, rename_plan, preview_delete, and delete_plan as appropriate for V1.
+- GoalService.create_child(parent_id, kind, payload, is_critical) is the external API for creating goal/task/repetition under a goal parent (typed payloads in domain/plan_create.py).
+- GoalService.move_plan is the external API for goal child-chain reorder (within/cross-chain under same parent).
+- PlanTreeService provides repo-internal make_goal/make_task/make_repetition and attach_under_parent; public rename_plan, preview_delete, delete_plan.
 - Maintain rooted tree under master.
 - No orphan active plans.
 - Deletion cascades to descendants.
 - Deleting a plan inside a goal child chain deletes the whole chain as specified by the design.
 - Master cannot be deleted.
 - Keep subtype behavior service-owned, not model-owned.
-- Do not implement repetition refresh internals yet beyond placeholders needed for plan creation.
+- Do not implement repetition refresh/generation yet beyond empty goal template stub on create_child(REPETITION, …).
 
 Split into slices:
-1. create operations
-2. move/rename operations
+1. create operations (GoalService + PlanTreeService primitives)
+2. move (GoalService) + rename (PlanTreeService)
 3. deletion preview foundations
 4. real deletion and cascade parity
 5. tests for tree invariants and deletion behavior (post Test catalog in chat)
@@ -1527,13 +1542,18 @@ Store the finalized plan in docs/plans/.
 
 ### Prompt 10: Repetition service
 
+**Deferred carry-over:**
+- [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py): Relax plan_kind == GOAL for non-goal templates — `# TODO(Prompt 10 / RepetitionService)` in source
+- [`calendar_backend/domain/repetitions.py`](../../calendar_backend/domain/repetitions.py): Replace `_validate_repetition_template` with `validate_create_payload` when non-goal templates are supported — `# TODO(Prompt 10 / RepetitionService slice 1)` in source
+
 ```text
 Use /request-questions first.
 
 Create a Cursor implementation plan for RepetitionService.
 
 Context:
-- Implement repetition creation, generation, refresh, clone propagation, descendant-only detachment rules, and materialized SYSTEM_REPETITION_WINDOW constraints.
+- Repetition shell + empty goal template creation is GoalService.create_child(REPETITION, …) (Prompt 8); RepetitionService owns generation, refresh, template subtree expansion, and non-goal templates (deferred until this service).
+- Implement generation, refresh, clone propagation, descendant-only detachment rules, and materialized SYSTEM_REPETITION_WINDOW constraints.
 - RepetitionInstance rows use is_critical and sort_order (critical-first, then sort_order within bucket) per §0.1; set is_critical from default_instance_critical at generation; assign sort_order in RepetitionService.
 - Template subtree is unscheduled.
 - Instance 0 is a scheduled clone shifted by 0 * repeat_interval.

@@ -27,7 +27,7 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 
 ## Non-goals
 
-- Task resolution, assignment, repetition refresh/generation, `PlanTreeService` mutations, deletion preview/cascade — later prompts.
+- Task resolution, assignment, repetition refresh/generation, `GoalService` / `PlanTreeService` mutations, deletion preview/cascade — later prompts.
 - Plan-level `set_user_constraints(replace-all)` API — deferred (group CRUD only).
 - Production HTTP API, dev CLI (Prompt 18), Alembic revisions (no schema changes expected).
 - OR-Tools / scheduling solver code.

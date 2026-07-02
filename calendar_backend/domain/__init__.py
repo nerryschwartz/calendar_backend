@@ -7,6 +7,7 @@ from calendar_backend.domain.enums import (
     LastFailureReason,
     PlanKind,
     RepeatMode,
+    RepetitionTimestampField,
     SolverStatus,
 )
 from calendar_backend.domain.errors import (
@@ -58,6 +59,7 @@ __all__ = [
     "PlanKind",
     "RepeatMode",
     "RepetitionInstanceID",
+    "RepetitionTimestampField",
     "ServiceMessage",
     "ServiceResult",
     "ServiceTransactionAborted",

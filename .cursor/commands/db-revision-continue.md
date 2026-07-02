@@ -8,7 +8,8 @@ Before applying:
 
 Apply and verify:
 1. uv run alembic upgrade head
-2. uv run pytest -m "not slow and not failure_expected"
+2. Remove `@pytest.mark.failure_expected` from schema/integration tests that the new revision satisfies (grep `failure_expected` in `tests/`; focus on tests tied to constraints, indexes, or columns added or changed in this revision). Re-run those tests without the marker to confirm they pass.
+3. uv run pytest -m "not slow and not failure_expected"
 
 If checks fail, report failures and stop. Do not fix failing tests during this command.
 
@@ -21,7 +22,7 @@ Then run the `/commit-changes` workflow with these invocation-local overrides:
 Typical schema commit scope:
 - ORM model changes
 - reviewed Alembic revision file
-- related schema/migration tests
+- related schema/migration tests (including removal of `failure_expected` per [repo convention §13](../repo_conventions.md))
 
 Do not re-run before commit:
 - ruff format/check

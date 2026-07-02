@@ -29,7 +29,7 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 
 ## Non-goals
 
-- `PlanTreeService`, `TaskService`, `RepetitionService`, resolution, assignment, free-time, orchestration — later prompts.
+- `GoalService`, `PlanTreeService`, `TaskService`, `RepetitionService`, resolution, assignment, free-time, orchestration — later prompts.
 - `TimeConstraintService` user constraint APIs and **direct-edit rejection** for system constraints — Prompt 7 (slice 5 may document deferral).
 - `PlanTreeInvariantService.validate_master_tree()` — Prompt 7; slice 5 tests **local** master/settings/horizon invariants only.
 - Production HTTP API, dev CLI commands (Prompt 18), Alembic revisions (handled separately when schema changes).

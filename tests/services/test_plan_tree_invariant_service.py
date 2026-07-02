@@ -34,18 +34,49 @@ def _bootstrap_master_with_horizon(session: Session) -> PlanID:
     return master.value.plan_id
 
 
-def _seed_valid_repetition_instance(
+def _add_chain_item(
+    txn: Session,
+    *,
+    parent_goal_id: uuid.UUID,
+    child_plan_id: uuid.UUID,
+    chain_id: uuid.UUID | None = None,
+    position: int = 0,
+) -> uuid.UUID:
+    resolved_chain_id = chain_id or uuid.uuid4()
+    txn.add(
+        GoalChildChain(
+            goal_child_chain_id=resolved_chain_id,
+            parent_goal_id=parent_goal_id,
+            is_critical=False,
+            sort_order=0,
+            created_at=RUN_AT,
+            updated_at=RUN_AT,
+        )
+    )
+    txn.add(
+        GoalChildChainItem(
+            goal_child_chain_item_id=uuid.uuid4(),
+            chain_id=resolved_chain_id,
+            child_plan_id=child_plan_id,
+            position=position,
+        )
+    )
+    return resolved_chain_id
+
+
+def _seed_valid_repetition_create_shape(
     txn: Session,
     master_id: PlanID,
-) -> tuple[uuid.UUID, uuid.UUID]:
+) -> uuid.UUID:
+    goal_id = uuid.uuid4()
     template_id = uuid.uuid4()
     repetition_id = uuid.uuid4()
-    clone_id = uuid.uuid4()
+
     txn.add(
         Plan(
-            plan_id=template_id,
+            plan_id=goal_id,
             plan_kind=PlanKind.GOAL,
-            name="template",
+            name="goal",
             parent_id=master_id,
             is_master=False,
             cloned_from_id=None,
@@ -54,13 +85,15 @@ def _seed_valid_repetition_instance(
             updated_at=RUN_AT,
         )
     )
-    txn.add(GoalPlan(plan_id=template_id))
+    txn.add(GoalPlan(plan_id=goal_id))
+    _add_chain_item(txn, parent_goal_id=master_id, child_plan_id=goal_id)
+
     txn.add(
         Plan(
             plan_id=repetition_id,
             plan_kind=PlanKind.REPETITION,
             name="repetition",
-            parent_id=master_id,
+            parent_id=goal_id,
             is_master=False,
             cloned_from_id=None,
             clone_status=CloneStatus.NOT_CLONED,
@@ -68,6 +101,20 @@ def _seed_valid_repetition_instance(
             updated_at=RUN_AT,
         )
     )
+    txn.add(
+        Plan(
+            plan_id=template_id,
+            plan_kind=PlanKind.GOAL,
+            name="template",
+            parent_id=repetition_id,
+            is_master=False,
+            cloned_from_id=None,
+            clone_status=CloneStatus.TEMPLATE,
+            created_at=RUN_AT,
+            updated_at=RUN_AT,
+        )
+    )
+    txn.add(GoalPlan(plan_id=template_id))
     txn.add(
         RepetitionPlan(
             plan_id=repetition_id,
@@ -81,6 +128,21 @@ def _seed_valid_repetition_instance(
             generated_at=None,
         )
     )
+    _add_chain_item(txn, parent_goal_id=goal_id, child_plan_id=repetition_id)
+
+    txn.flush()
+    return repetition_id
+
+
+def _seed_valid_repetition_instance(
+    txn: Session,
+    master_id: PlanID,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    repetition_id = _seed_valid_repetition_create_shape(txn, master_id)
+    repetition_plan = txn.get(RepetitionPlan, repetition_id)
+    assert repetition_plan is not None
+    template_root_id = repetition_plan.template_root_id
+    clone_id = uuid.uuid4()
     txn.add(
         Plan(
             plan_id=clone_id,
@@ -88,7 +150,7 @@ def _seed_valid_repetition_instance(
             name="clone",
             parent_id=repetition_id,
             is_master=False,
-            cloned_from_id=template_id,
+            cloned_from_id=template_root_id,
             clone_status=CloneStatus.LINKED,
             created_at=RUN_AT,
             updated_at=RUN_AT,
@@ -120,6 +182,7 @@ def test_validate_master_tree_passes_after_bootstrap(service_db_session: Session
 
 
 @pytest.mark.integration
+@pytest.mark.failure_expected
 def test_validate_master_tree_reports_orphan_plan(service_db_session: Session) -> None:
     _bootstrap_master_with_horizon(service_db_session)
     orphan_id = uuid.uuid4()
@@ -142,7 +205,7 @@ def test_validate_master_tree_reports_orphan_plan(service_db_session: Session) -
                 plan_id=orphan_id,
                 duration_minutes=30,
                 divisible=False,
-                minimum_chunk_size_minutes=30,
+                minimum_chunk_size_minutes=None,
                 user_completed=False,
                 completed_at=None,
             )
@@ -205,6 +268,7 @@ def test_validate_master_tree_reports_empty_user_group(service_db_session: Sessi
 
 
 @pytest.mark.integration
+@pytest.mark.failure_expected
 def test_validate_master_tree_reports_misaligned_chain_child(
     service_db_session: Session,
 ) -> None:
@@ -245,7 +309,7 @@ def test_validate_master_tree_reports_misaligned_chain_child(
                 plan_id=child_id,
                 duration_minutes=30,
                 divisible=False,
-                minimum_chunk_size_minutes=30,
+                minimum_chunk_size_minutes=None,
                 user_completed=False,
                 completed_at=None,
             )
@@ -281,6 +345,7 @@ def test_validate_master_tree_reports_misaligned_chain_child(
 
 
 @pytest.mark.integration
+@pytest.mark.failure_expected
 def test_validate_master_tree_reports_non_dense_chain_position(
     service_db_session: Session,
 ) -> None:
@@ -323,7 +388,7 @@ def test_validate_master_tree_reports_non_dense_chain_position(
                     plan_id=child_id,
                     duration_minutes=30,
                     divisible=False,
-                    minimum_chunk_size_minutes=30,
+                    minimum_chunk_size_minutes=None,
                     user_completed=False,
                     completed_at=None,
                 )
@@ -367,7 +432,21 @@ def test_validate_master_tree_reports_non_dense_chain_position(
 
 
 @pytest.mark.integration
-def test_validate_master_tree_passes_with_valid_repetition_instance(
+def test_validate_master_tree_passes_with_valid_repetition_create_shape(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    with transaction(service_db_session) as txn:
+        _seed_valid_repetition_create_shape(txn, master_id)
+
+    result = PlanTreeInvariantService(service_db_session).validate_master_tree()
+
+    assert result.success
+
+
+@pytest.mark.integration
+@pytest.mark.failure_expected
+def test_validate_master_tree_reports_pre_generation_with_instances(
     service_db_session: Session,
 ) -> None:
     master_id = _bootstrap_master_with_horizon(service_db_session)
@@ -376,7 +455,11 @@ def test_validate_master_tree_passes_with_valid_repetition_instance(
 
     result = PlanTreeInvariantService(service_db_session).validate_master_tree()
 
-    assert result.success
+    assert not result.success
+    assert any(
+        error.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "pre-generation" in error.message
+        for error in result.errors
+    )
 
 
 @pytest.mark.integration

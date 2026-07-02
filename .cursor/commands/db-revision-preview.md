@@ -5,6 +5,7 @@ Use after SQLAlchemy model changes and before manual migration approval.
 Prerequisites:
 - Model changes are already in the working tree.
 - Alembic is configured under `calendar_backend/db/migrations/`.
+- If the model change adds DB-level enforcement (CHECK, UNIQUE, etc.), schema tests for that enforcement should already exist and be marked `failure_expected` per [repo convention §13](../repo_conventions.md) until this revision is applied.
 
 ## 1. Wire model imports in `env.py`
 

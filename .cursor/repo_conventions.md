@@ -67,6 +67,7 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 - **Alter existing SQLite tables** (add/drop column, add/drop CHECK on existing table): use `with op.batch_alter_table("<table>", schema=None) as batch_op:` and call methods on `batch_op`.
 - **Create/drop tables or indexes** on new or unchanged table definitions: use top-level `op.create_table`, `op.create_index`, `op.drop_index`, etc. (batch mode not required).
 - Match sibling revisions: multi-line argument lists, `op.f(...)` for generated constraint names where used elsewhere, partial indexes with `sqlite_where=sa.text(...)`.
+- Use **double-quoted** string literals for revision identifiers, table/column names, and CHECK SQL in migration files (normalize autogenerate single quotes).
 - Data backfills or deduplication before constraints: use `connection = op.get_bind()` and `connection.execute(sa.text(...))` in helper functions; keep upgrade/downgrade reversible when practical.
 
 **Examples:**
@@ -173,3 +174,112 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 - **Service:** `PlanTreeInvariantService` loads graph, calls `validate_master_tree_graph` — does not embed tree rules inline.
 
 **Aligns with:** [§5](#5-domain-vs-services-placement-session-free-vs-persistence), [§7](#7-plan-tree-invariant-ideal-shape), [§8](#8-no-db-schema-replay-in-invariants).
+
+---
+
+## 10. Type-checker-only artifacts (minimal)
+
+**Scope:** Python in `calendar_backend/` where static analysis (Pyright) needs hints beyond what inference provides.
+
+**Rule:**
+
+- Prefer the **most minimal** form that satisfies the checker: inline `# pyright: ...` or `# type: ...` comments when they alone suffice.
+- When **code** with little or no runtime purpose exists primarily for type checkers — `@overload` stubs, redundant `assert isinstance(...)` after validation, `cast(...)`, `# pyright: ignore[...]` on an implementation — add a brief comment that it is for type checkers.
+- Do not add overloads, asserts, casts, or ignores when a plain union return type or a real runtime `isinstance` branch is simpler and sufficient.
+
+**Examples:**
+
+- **Comment on overload block:** `# Type checker: correlate kind, payload, and return DTO.` above `@overload` stubs; one implementation body below.
+- **Comment on narrowing assert:** `assert isinstance(payload, TaskCreatePayload)  # type checker: validate_create_payload already enforced match`
+- **Comment on ignore:** `# pyright: ignore[reportInconsistentOverload]  # type checker: implementation wider than overload stubs`
+- **Prefer comment over code:** use `# pyright: ignore[reportArgumentType]` on one line instead of a wrapper function when that is the only issue.
+
+**Does not apply to:** Runtime validation at trust boundaries, real control-flow `isinstance` checks, or Alembic typing ([§4](#4-alembic-revision-file-style-sqlite)).
+
+---
+
+## 11. Boundary validators imply persisted-shape enforcement
+
+**Scope:** New or changed **write-path / API boundary** validators in `calendar_backend/domain/` and `calendar_backend/services/` (including helpers called only from mutating service entry points).
+
+**Rule:**
+
+- When adding or changing a boundary validator, ask whether it implies **ideal committed ORM shape** (row fields or loaded graph semantics), not only request convenience.
+- If yes:
+  1. Add an **ORM `CheckConstraint`** on the mapped table when the rule is single-table and SQLite-friendly; follow with an Alembic migration before relying on DB enforcement in production. Add schema tests marked `failure_expected` per [§13](#13-schema-tests-pending-migration-failure_expected) when the migration is deferred.
+  2. Otherwise add a check in [`domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) (or future [`domain/invariants/`](../../calendar_backend/domain/)) per [§9](#9-orm-invariant-validation-ownership).
+- Per [§12](#12-no-utc-timezone-checks-on-loaded-orm-rows-v1), do **not** add UTC timezone checks on loaded ORM datetime fields in invariant modules (minute alignment still applies where scheduling requires it).
+- Per [§8](#8-no-db-schema-replay-in-invariants), do **not** duplicate CHECK-covered rules in invariant modules once the CHECK is on the schema.
+- If the rule is boundary-only (payload pairing, unsupported API policy, parent existence at create time with no persisted counterpart), stop at the boundary validator.
+- Shared predicate logic: prefer [`domain/time.py`](../../calendar_backend/domain/time.py) and sibling helpers; export from boundary modules only when non-trivial duplication would result — not for one-liners.
+
+**Examples:**
+
+- **CHECK:** `TaskPlan.duration_minutes > 0` mirrors `validate_task_create`.
+- **Invariant:** repetition template root parented under repetition shell — graph rule, not a single-row CHECK.
+- **Boundary only:** `validate_create_payload` kind/payload type pairing — no committed column encodes the mismatch.
+
+**Aligns with:** [§8](#8-no-db-schema-replay-in-invariants), [§9](#9-orm-invariant-validation-ownership), [§12](#12-no-utc-timezone-checks-on-loaded-orm-rows-v1).
+
+---
+
+## 12. No UTC timezone checks on loaded ORM rows (V1)
+
+**Scope:** ORM invariant validation in [`domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) (or future [`domain/invariants/`](../../calendar_backend/domain/)) and other **read-oriented** checks over loaded mapped rows.
+
+**Rule:**
+
+- Do **not** validate timezone-aware UTC on datetime fields **read from persistence** in invariant modules.
+- UTC enforcement belongs at **write boundaries** (domain validators and mutating services before persist) and in shared helpers such as [`require_utc`](../../calendar_backend/domain/time.py) / `validate_time_window`.
+- **Do** validate **minute alignment** on loaded ORM timestamps when scheduling semantics require it (same as USER constraint windows in [§8](#8-no-db-schema-replay-in-invariants) examples).
+- Revisit UTC-on-read when migrating off SQLite if persistence preserves tzinfo reliably.
+
+**Examples:**
+
+- **Invariant:** `is_minute_aligned` on `RepetitionPlan.start_time` / `end_time` — yes.
+- **Invariant:** `require_utc` on loaded `repetition_plan.start_time` — no (V1).
+- **Boundary:** `validate_repetition_create` rejects naive `start_time` — yes.
+
+**Aligns with:** [§8](#8-no-db-schema-replay-in-invariants), [§11](#11-boundary-validators-imply-persisted-shape-enforcement).
+
+---
+
+## 13. Schema tests pending migration (`failure_expected`)
+
+**Scope:** ORM or schema changes in `calendar_backend/models/` (and related schema tests) that add or change **database-level** enforcement — `CheckConstraint`, `UNIQUE`, partial indexes, `NOT NULL`, new FK rules — when the Alembic revision is **not** applied in the same change.
+
+**Rule:**
+
+- In the **same change** as the ORM/schema edit, add integration or schema tests that document the intended DB behavior (for example `IntegrityError` on invalid `INSERT`).
+- Mark those tests `@pytest.mark.failure_expected` until `alembic upgrade head` applies the matching revision — ORM `CheckConstraint`s on mapped classes do not enforce on SQLite until the migration lands.
+- Do **not** use `failure_expected` for rules already enforced without a migration (domain invariants, service/boundary validation, pure unit tests).
+- When running `/db-revision-continue`, remove `failure_expected` from tests satisfied by the new revision and confirm they pass (see [db-revision-continue](../commands/db-revision-continue.md)).
+
+**Examples:**
+
+- **Mark:** `test_task_plan_rejects_zero_duration` expecting `IntegrityError` after adding `duration_minutes > 0` CHECK on `TaskPlan` ORM — migration deferred.
+- **Do not mark:** `test_validate_task_create_rejects_zero_duration` — boundary validation, no migration required for the test to pass.
+- **After migration:** drop marker on schema INSERT-failure tests; they run in the default `pytest -m "not slow and not failure_expected"` suite.
+
+**Aligns with:** [§4](#4-alembic-revision-file-style-sqlite), [§11](#11-boundary-validators-imply-persisted-shape-enforcement).
+
+---
+
+## 14. Plan service ownership boundaries
+
+**Scope:** [`GoalService`](../../calendar_backend/services/goal.py), [`PlanTreeService`](../../calendar_backend/services/plan_tree.py), and sibling plan services (`TaskService`, `RepetitionService`).
+
+**Rule:**
+
+- **`PlanTreeService`** — plan-wide **identity** (`rename_plan`) and **existence** (`preview_delete`, `delete_plan`); repo-internal `make_*` / `attach_under_parent` for sibling services.
+- **`GoalService`** — goal-parent **child-chain layout**: `create_child` (initial chain placement) and `move_plan` (within/cross-chain reorder under the same parent goal; no reparenting in V1).
+- **`TaskService` / `RepetitionService`** — subtype self-edits on the plan node (scheduling, generation, etc.).
+- Goal child-chain persistence helpers (ordering, dense renumbering, bucket-end chain creation) are **module-private to `GoalService`**, not shared via `PlanTreeService`.
+
+**Examples:**
+
+- **GoalService:** `create_child` + `_attach_to_goal_chain`; `move_plan(plan_id, position)` and `move_plan(plan_id, chain_index, position)`.
+- **PlanTreeService:** `rename_plan`; future `preview_delete` / `delete_plan`; `make_goal` / `attach_under_parent` called from `GoalService` during create.
+- **Not PlanTreeService:** chain reorder, cross-chain move, or empty-chain cleanup after move.
+
+**Supersedes:** Guide §0.1 row “Plan creation vs tree mutations” and [`docs/plans/plan_tree_service.md`](../docs/plans/plan_tree_service.md) assumptions that listed `move_plan` on `PlanTreeService`; PDF §7 monolithic plan-tree service readings for move ownership.

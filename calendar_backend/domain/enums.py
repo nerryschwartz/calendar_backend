@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+# TODO(Prompt 20): Audit domain StrEnum values and remove entries with no references.
 class PlanKind(StrEnum):
     GOAL = "GOAL"
     TASK = "TASK"
@@ -19,6 +20,11 @@ class CloneStatus(StrEnum):
 class RepeatMode(StrEnum):
     MANUAL_COUNT = "MANUAL_COUNT"
     DATE_RANGE = "DATE_RANGE"
+
+
+class RepetitionTimestampField(StrEnum):
+    START_TIME = "START_TIME"
+    END_TIME = "END_TIME"
 
 
 class ConstraintKind(StrEnum):

@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from calendar_backend.domain.enums import ConstraintKind, FreeTimeWeekStartDay
-from calendar_backend.domain.ids import PlanID, TimeConstraintGroupID, TimeWindowID
+from calendar_backend.domain.enums import ConstraintKind, FreeTimeWeekStartDay, RepeatMode
+from calendar_backend.domain.ids import CalendarEntryID, PlanID, TimeConstraintGroupID, TimeWindowID
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
-from calendar_backend.models.plans import Plan
+from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.settings import AppSettings
 
 
@@ -31,6 +31,82 @@ def goal_plan_dto_from_plan(plan: Plan) -> GoalPlanDTO:
         created_at=plan.created_at,
         updated_at=plan.updated_at,
     )
+
+
+@dataclass(frozen=True)
+class TaskPlanDTO:
+    plan_id: PlanID
+    name: str
+    is_master: bool
+    parent_id: PlanID | None
+    duration_minutes: int
+    divisible: bool
+    minimum_chunk_size_minutes: int | None
+    user_completed: bool
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+def task_plan_dto_from_rows(plan: Plan, task_plan: TaskPlan) -> TaskPlanDTO:
+    return TaskPlanDTO(
+        plan_id=PlanID(plan.plan_id),
+        name=plan.name,
+        is_master=plan.is_master,
+        parent_id=PlanID(plan.parent_id) if plan.parent_id is not None else None,
+        duration_minutes=task_plan.duration_minutes,
+        divisible=task_plan.divisible,
+        minimum_chunk_size_minutes=task_plan.minimum_chunk_size_minutes,
+        user_completed=task_plan.user_completed,
+        completed_at=task_plan.completed_at,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+    )
+
+
+@dataclass(frozen=True)
+class RepetitionPlanDTO:
+    plan_id: PlanID
+    name: str
+    is_master: bool
+    parent_id: PlanID | None
+    repeat_mode: RepeatMode
+    start_time: datetime
+    repeat_interval_minutes: int
+    manual_count: int | None
+    end_time: datetime | None
+    template_root_id: PlanID
+    default_instance_critical: bool
+    generated_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+def repetition_plan_dto_from_rows(plan: Plan, repetition_plan: RepetitionPlan) -> RepetitionPlanDTO:
+    return RepetitionPlanDTO(
+        plan_id=PlanID(plan.plan_id),
+        name=plan.name,
+        is_master=plan.is_master,
+        parent_id=PlanID(plan.parent_id) if plan.parent_id is not None else None,
+        repeat_mode=repetition_plan.repeat_mode,
+        start_time=repetition_plan.start_time,
+        repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
+        manual_count=repetition_plan.manual_count,
+        end_time=repetition_plan.end_time,
+        template_root_id=PlanID(repetition_plan.template_root_id),
+        default_instance_critical=repetition_plan.default_instance_critical,
+        generated_at=repetition_plan.generated_at,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+    )
+
+
+@dataclass(frozen=True)
+class PlanDeletionPreviewDTO:
+    root_plan_id: PlanID
+    affected_plan_ids: tuple[PlanID, ...]
+    affected_calendar_entry_ids: tuple[CalendarEntryID, ...]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
