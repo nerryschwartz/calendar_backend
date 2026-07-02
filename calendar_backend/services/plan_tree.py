@@ -351,3 +351,30 @@ def _plan_deletion_waves(
         waves.append(ready)
 
     return tuple(waves)
+
+
+def detach_linked_self_and_descendants(txn: Session, plan: Plan, now: datetime) -> None:
+    """Detach a mutated LINKED clone and its descendants from template refresh.
+
+    Sibling services (for example ``TaskService``, ``GoalService``) call this after
+    mutations that fork a linked clone from its template. Parents and siblings stay
+    ``LINKED``. Prompt 10 ``RepetitionService`` refresh must skip ``DETACHED`` subtrees.
+    """
+    if plan.clone_status != CloneStatus.LINKED:
+        return
+
+    collected: set[uuid.UUID] = {plan.plan_id}
+    frontier = [plan.plan_id]
+    while frontier:
+        child_ids = txn.scalars(select(Plan.plan_id).where(Plan.parent_id.in_(frontier))).all()
+        next_frontier: list[uuid.UUID] = []
+        for child_id in child_ids:
+            if child_id not in collected:
+                collected.add(child_id)
+                next_frontier.append(child_id)
+        frontier = next_frontier
+
+    for row in txn.scalars(select(Plan).where(Plan.plan_id.in_(collected))):
+        if row.clone_status == CloneStatus.LINKED:
+            row.clone_status = CloneStatus.DETACHED
+            row.updated_at = now

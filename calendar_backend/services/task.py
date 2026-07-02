@@ -13,6 +13,7 @@ from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.tasks import validate_task_scheduling_fields
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.plans import Plan, TaskPlan
+from calendar_backend.services.plan_tree import detach_linked_self_and_descendants
 
 
 class TaskService:
@@ -46,6 +47,7 @@ class TaskService:
             task_plan.divisible = divisible
             task_plan.minimum_chunk_size_minutes = minimum_chunk_size_minutes
             plan.updated_at = now
+            detach_linked_self_and_descendants(txn, plan, now)
             txn.flush()
             return ok(task_plan_dto_from_rows(plan, task_plan))
 
@@ -69,6 +71,7 @@ class TaskService:
             task_plan.user_completed = True
             task_plan.completed_at = now
             plan.updated_at = now
+            detach_linked_self_and_descendants(txn, plan, now)
             txn.flush()
             return ok(task_plan_dto_from_rows(plan, task_plan))
 
