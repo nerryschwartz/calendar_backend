@@ -31,7 +31,7 @@ from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.plans import GoalPlan, Plan
-from calendar_backend.services.plan_tree import PlanTreeService
+from calendar_backend.services.plan_tree import PlanTreeService, detach_linked_self_and_descendants
 
 _APPEND_POSITION = -1
 _NEW_CHAIN_INDEX = -1
@@ -291,7 +291,7 @@ def _move_within_chain(
     plan_id: PlanID,
     position: int,
     now: datetime,
-    loaded: tuple[GoalChildChainItem, GoalChildChain] | None = None,
+    loaded: tuple[Plan, GoalChildChainItem, GoalChildChain] | None = None,
     items: list[GoalChildChainItem] | None = None,
 ) -> ServiceResult[None]:
     if loaded is None:
@@ -299,7 +299,7 @@ def _move_within_chain(
         if isinstance(loaded_result, ServiceMessage):
             return fail(loaded_result)
         loaded = loaded_result
-    item, chain = loaded
+    plan, item, chain = loaded
 
     if items is None:
         items = _sorted_chain_items(txn, GoalChildChainID(chain.goal_child_chain_id))
@@ -327,6 +327,7 @@ def _move_within_chain(
     items.insert(position, item)
     _assign_dense_positions(items)
     chain.updated_at = now
+    detach_linked_self_and_descendants(txn, plan, now)
     txn.flush()
     return ok(None)
 
@@ -342,7 +343,7 @@ def _move_across_chains(
     loaded = _load_movable_chain_item(txn, plan_id)
     if isinstance(loaded, ServiceMessage):
         return fail(loaded)
-    item, source_chain = loaded
+    plan, item, source_chain = loaded
 
     parent_goal_id = PlanID(source_chain.parent_goal_id)
     chains = _ordered_chains_for_goal(txn, parent_goal_id)
@@ -376,7 +377,7 @@ def _move_across_chains(
             plan_id=plan_id,
             position=position,
             now=now,
-            loaded=(item, source_chain),
+            loaded=(plan, item, source_chain),
             items=source_items,
         )
 
@@ -409,6 +410,7 @@ def _move_across_chains(
         txn.flush()
         txn.delete(source_chain)
 
+    detach_linked_self_and_descendants(txn, plan, now)
     txn.flush()
     return ok(None)
 
@@ -416,7 +418,7 @@ def _move_across_chains(
 def _load_movable_chain_item(
     txn: Session,
     plan_id: PlanID,
-) -> tuple[GoalChildChainItem, GoalChildChain] | ServiceMessage:
+) -> tuple[Plan, GoalChildChainItem, GoalChildChain] | ServiceMessage:
     plan = txn.get(Plan, plan_id)
     if plan is None:
         return ServiceMessage(
@@ -441,7 +443,7 @@ def _load_movable_chain_item(
 
     chain = txn.get(GoalChildChain, item.chain_id)
     assert chain is not None  # FK: goal_child_chain_item.chain_id -> goal_child_chain
-    return item, chain
+    return plan, item, chain
 
 
 def _ordered_chains_for_goal(

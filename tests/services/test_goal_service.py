@@ -16,7 +16,7 @@ from calendar_backend.domain.plan_create import (
     TaskCreatePayload,
 )
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
-from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
@@ -97,6 +97,108 @@ def _child_plan_ids_in_chain_order(session: Session, chain_id: uuid.UUID) -> lis
             .order_by(GoalChildChainItem.position)
         ).all()
     )
+
+
+def _clone_status(session: Session, plan_id: PlanID) -> CloneStatus:
+    plan = session.get(Plan, plan_id)
+    assert plan is not None
+    return plan.clone_status
+
+
+def _mark_plan_linked(session: Session, plan_id: PlanID, cloned_from_id: uuid.UUID) -> None:
+    with transaction(session) as txn:
+        plan = txn.get(Plan, plan_id)
+        assert plan is not None
+        plan.clone_status = CloneStatus.LINKED
+        plan.cloned_from_id = cloned_from_id
+        txn.flush()
+
+
+def _add_linked_child_goal(
+    session: Session,
+    parent_id: PlanID,
+    *,
+    cloned_from_id: uuid.UUID,
+    name: str = "linked child",
+) -> PlanID:
+    child_id = PlanID(uuid.uuid4())
+    with transaction(session) as txn:
+        txn.add(
+            Plan(
+                plan_id=child_id,
+                plan_kind=PlanKind.GOAL,
+                name=name,
+                parent_id=parent_id,
+                is_master=False,
+                cloned_from_id=cloned_from_id,
+                clone_status=CloneStatus.LINKED,
+                created_at=RUN_AT,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.add(GoalPlan(plan_id=child_id))
+        txn.flush()
+    return child_id
+
+
+def _create_clone_source_plan(session: Session, master_plan_id: PlanID) -> PlanID:
+    source_id = PlanID(uuid.uuid4())
+    with transaction(session) as txn:
+        txn.add(
+            Plan(
+                plan_id=source_id,
+                plan_kind=PlanKind.GOAL,
+                name="clone source",
+                parent_id=master_plan_id,
+                is_master=False,
+                cloned_from_id=None,
+                clone_status=CloneStatus.NOT_CLONED,
+                created_at=RUN_AT,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.add(GoalPlan(plan_id=source_id))
+        txn.flush()
+    return source_id
+
+
+def _seed_linked_goals_in_same_chain(
+    session: Session,
+    master_plan_id: PlanID,
+) -> dict[str, PlanID]:
+    service = _goal_service(session)
+    cloned_from_id = _create_clone_source_plan(session, master_plan_id)
+    first = service.create_child(
+        master_plan_id,
+        PlanKind.GOAL,
+        GoalCreatePayload(name="first linked"),
+        is_critical=False,
+    )
+    second = service.create_child(
+        master_plan_id,
+        PlanKind.GOAL,
+        GoalCreatePayload(name="second linked"),
+        is_critical=False,
+    )
+    assert first.success and first.value is not None
+    assert second.success and second.value is not None
+    assert service.move_plan(second.value.plan_id, 0, 0).success
+
+    first_id = first.value.plan_id
+    second_id = second.value.plan_id
+    _mark_plan_linked(session, first_id, cloned_from_id)
+    _mark_plan_linked(session, second_id, cloned_from_id)
+    child_id = _add_linked_child_goal(
+        session,
+        first_id,
+        cloned_from_id=cloned_from_id,
+    )
+    return {
+        "first_id": first_id,
+        "second_id": second_id,
+        "child_id": child_id,
+        "cloned_from_id": cloned_from_id,
+    }
 
 
 @pytest.mark.integration
@@ -558,3 +660,58 @@ def test_move_plan_not_in_chain(service_db_session: Session, master_plan_id: Pla
     result = _goal_service(service_db_session).move_plan(PlanID(orphan_id), 0)
     assert not result.success
     assert any(error.code == MessageCode.PLAN_NOT_IN_CHAIN for error in result.errors)
+
+
+@pytest.mark.integration
+def test_move_plan_detaches_linked_clone_within_chain(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    seeded = _seed_linked_goals_in_same_chain(service_db_session, master_plan_id)
+    first_id = seeded["first_id"]
+    second_id = seeded["second_id"]
+    child_id = seeded["child_id"]
+    service = _goal_service(service_db_session)
+
+    result = service.move_plan(first_id, 0)
+
+    assert result.success
+    assert _clone_status(service_db_session, first_id) == CloneStatus.DETACHED
+    assert _clone_status(service_db_session, child_id) == CloneStatus.DETACHED
+    assert _clone_status(service_db_session, second_id) == CloneStatus.LINKED
+
+
+@pytest.mark.integration
+def test_move_plan_detaches_linked_clone_cross_chain(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    seeded = _seed_linked_goals_in_same_chain(service_db_session, master_plan_id)
+    first_id = seeded["first_id"]
+    second_id = seeded["second_id"]
+    child_id = seeded["child_id"]
+    service = _goal_service(service_db_session)
+
+    result = service.move_plan(first_id, -1, 0)
+
+    assert result.success
+    assert _clone_status(service_db_session, first_id) == CloneStatus.DETACHED
+    assert _clone_status(service_db_session, child_id) == CloneStatus.DETACHED
+    assert _clone_status(service_db_session, second_id) == CloneStatus.LINKED
+
+
+@pytest.mark.integration
+def test_move_plan_no_op_within_chain_does_not_detach_linked_clone(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    seeded = _seed_linked_goals_in_same_chain(service_db_session, master_plan_id)
+    second_id = seeded["second_id"]
+    child_id = seeded["child_id"]
+    service = _goal_service(service_db_session)
+
+    result = service.move_plan(second_id, 0)
+
+    assert result.success
+    assert _clone_status(service_db_session, seeded["first_id"]) == CloneStatus.LINKED
+    assert _clone_status(service_db_session, child_id) == CloneStatus.LINKED

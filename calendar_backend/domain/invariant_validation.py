@@ -40,6 +40,7 @@ def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage,
     if master is not None:
         violations.extend(_check_reachability(plans, master))
     violations.extend(_check_subtype_pairing(plans))
+    violations.extend(_check_task_completion_pairing(plans))
     violations.extend(_check_master_chains_non_critical(plans))
     violations.extend(_check_goal_chain_membership(plans))
     violations.extend(_check_chains(plans))
@@ -144,6 +145,38 @@ def _check_subtype_pairing(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                     )
                 )
 
+    return violations
+
+
+def _check_task_completion_pairing(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+    violations: list[ServiceMessage] = []
+    for plan in plans:
+        if plan.task_plan is None:
+            continue
+        task_plan = plan.task_plan
+        if task_plan.user_completed and task_plan.completed_at is None:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.TASK_COMPLETION_INVARIANT_VIOLATION,
+                    message="Completed task must have completed_at set",
+                    details={
+                        "plan_id": str(plan.plan_id),
+                        "user_completed": "true",
+                    },
+                )
+            )
+        elif not task_plan.user_completed and task_plan.completed_at is not None:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.TASK_COMPLETION_INVARIANT_VIOLATION,
+                    message="Incomplete task must not have completed_at set",
+                    details={
+                        "plan_id": str(plan.plan_id),
+                        "user_completed": "false",
+                        "completed_at": str(task_plan.completed_at),
+                    },
+                )
+            )
     return violations
 
 

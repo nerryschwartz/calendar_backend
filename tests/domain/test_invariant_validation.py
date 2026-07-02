@@ -665,3 +665,42 @@ def test_validate_master_tree_graph_reports_non_dense_repetition_sort_order() ->
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "sort_order must be dense" in v.message
         for v in violations
     )
+
+
+def test_validate_master_tree_graph_reports_completed_task_missing_completed_at() -> None:
+    master_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id)]
+    task = _plan(task_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    _attach_task(task)
+    assert task.task_plan is not None
+    task.task_plan.user_completed = True
+
+    violations = validate_master_tree_graph((master, task))
+
+    assert any(
+        v.code == MessageCode.TASK_COMPLETION_INVARIANT_VIOLATION and "completed_at" in v.message
+        for v in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_incomplete_task_with_completed_at() -> None:
+    master_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id)]
+    task = _plan(task_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    _attach_task(task)
+    assert task.task_plan is not None
+    task.task_plan.completed_at = _NOW
+
+    violations = validate_master_tree_graph((master, task))
+
+    assert any(
+        v.code == MessageCode.TASK_COMPLETION_INVARIANT_VIOLATION
+        and "must not have completed_at" in v.message
+        for v in violations
+    )
