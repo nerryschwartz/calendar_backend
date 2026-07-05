@@ -156,6 +156,7 @@ def _valid_repetition_create_graph() -> tuple[Plan, ...]:
 
 def _valid_repetition_graph() -> tuple[Plan, ...]:
     master_id = uuid.uuid4()
+    goal_id = uuid.uuid4()
     template_id = uuid.uuid4()
     repetition_id = uuid.uuid4()
     clone_id = uuid.uuid4()
@@ -164,11 +165,23 @@ def _valid_repetition_graph() -> tuple[Plan, ...]:
     _attach_goal(master)
     master.constraint_groups = [_horizon_group(master_id)]
 
-    template = _plan(template_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
-    _attach_goal(template)
+    goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
+    _attach_goal(goal)
+    _attach_chain_item(master, child_plan_id=goal_id)
 
-    repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION, parent_id=master_id)
+    repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION, parent_id=goal_id)
     repetition_plan = _attach_repetition(repetition, template_id)
+    repetition_plan.generated_at = _utc(10, 0)
+    _attach_chain_item(goal, child_plan_id=repetition_id)
+
+    template = _plan(
+        template_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        clone_status=CloneStatus.TEMPLATE,
+        name="template",
+    )
+    _attach_goal(template)
 
     clone = _plan(
         clone_id,
@@ -189,7 +202,7 @@ def _valid_repetition_graph() -> tuple[Plan, ...]:
         )
     ]
 
-    return (master, template, repetition, clone)
+    return (master, goal, template, repetition, clone)
 
 
 def _horizon_group(plan_id: uuid.UUID) -> TimeConstraintGroup:
@@ -460,12 +473,8 @@ def test_validate_master_tree_graph_accepts_valid_repetition_create_shape() -> N
     assert validate_master_tree_graph(_valid_repetition_create_graph()) == ()
 
 
-def test_validate_master_tree_graph_accepts_valid_repetition_instance() -> None:
-    violations = validate_master_tree_graph(_valid_repetition_graph())
-    assert any(
-        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "pre-generation" in v.message
-        for v in violations
-    )
+def test_validate_master_tree_graph_accepts_post_generation_repetition_with_instances() -> None:
+    assert validate_master_tree_graph(_valid_repetition_graph()) == ()
 
 
 def test_validate_master_tree_graph_reports_master_critical_chain() -> None:
@@ -585,16 +594,9 @@ def test_validate_master_tree_graph_reports_repetition_non_minute_aligned_end_ti
     )
 
 
-def test_validate_master_tree_graph_reports_repetition_with_instances() -> None:
-    violations = validate_master_tree_graph(_valid_repetition_graph())
-    assert any(
-        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "pre-generation" in v.message
-        for v in violations
-    )
-
-
 def test_validate_master_tree_graph_reports_duplicate_root_clone_id() -> None:
-    master, template, repetition, clone = _valid_repetition_graph()
+    graph = list(_valid_repetition_graph())
+    _master, _goal, _template, repetition, clone = graph
     assert repetition.repetition_plan is not None
     repetition.repetition_plan.instances.append(
         _repetition_instance(
@@ -605,7 +607,7 @@ def test_validate_master_tree_graph_reports_duplicate_root_clone_id() -> None:
         )
     )
 
-    violations = validate_master_tree_graph((master, template, repetition, clone))
+    violations = validate_master_tree_graph(tuple(graph))
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
@@ -615,10 +617,11 @@ def test_validate_master_tree_graph_reports_duplicate_root_clone_id() -> None:
 
 
 def test_validate_master_tree_graph_reports_repetition_clone_wrong_parent() -> None:
-    master, template, repetition, clone = _valid_repetition_graph()
+    graph = list(_valid_repetition_graph())
+    master, _goal, _template, _repetition, clone = graph
     clone.parent_id = master.plan_id
 
-    violations = validate_master_tree_graph((master, template, repetition, clone))
+    violations = validate_master_tree_graph(tuple(graph))
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
@@ -628,10 +631,11 @@ def test_validate_master_tree_graph_reports_repetition_clone_wrong_parent() -> N
 
 
 def test_validate_master_tree_graph_reports_repetition_clone_wrong_lineage() -> None:
-    master, template, repetition, clone = _valid_repetition_graph()
+    graph = list(_valid_repetition_graph())
+    master, _goal, _template, _repetition, clone = graph
     clone.cloned_from_id = master.plan_id
 
-    violations = validate_master_tree_graph((master, template, repetition, clone))
+    violations = validate_master_tree_graph(tuple(graph))
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
@@ -641,11 +645,12 @@ def test_validate_master_tree_graph_reports_repetition_clone_wrong_lineage() -> 
 
 
 def test_validate_master_tree_graph_reports_non_dense_instance_index() -> None:
-    master, template, repetition, clone = _valid_repetition_graph()
+    graph = list(_valid_repetition_graph())
+    _master, _goal, _template, repetition, _clone = graph
     assert repetition.repetition_plan is not None
     repetition.repetition_plan.instances[0].instance_index = 1
 
-    violations = validate_master_tree_graph((master, template, repetition, clone))
+    violations = validate_master_tree_graph(tuple(graph))
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
@@ -655,11 +660,12 @@ def test_validate_master_tree_graph_reports_non_dense_instance_index() -> None:
 
 
 def test_validate_master_tree_graph_reports_non_dense_repetition_sort_order() -> None:
-    master, template, repetition, clone = _valid_repetition_graph()
+    graph = list(_valid_repetition_graph())
+    _master, _goal, _template, repetition, _clone = graph
     assert repetition.repetition_plan is not None
     repetition.repetition_plan.instances[0].sort_order = 1
 
-    violations = validate_master_tree_graph((master, template, repetition, clone))
+    violations = validate_master_tree_graph(tuple(graph))
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "sort_order must be dense" in v.message
