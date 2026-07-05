@@ -1,64 +1,137 @@
-"""Pure repetition create validation for write paths."""
+"""Pure repetition create and settings validation for write paths."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
-from calendar_backend.domain.enums import PlanKind, RepeatMode, RepetitionTimestampField
+from calendar_backend.domain.enums import RepeatMode, RepetitionTimestampField
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.plan_create import (
-    CreatePayload,
-    GoalCreatePayload,
-    RepetitionCreatePayload,
-)
+from calendar_backend.domain.plan_create import RepetitionCreatePayload
 from calendar_backend.domain.time import is_minute_aligned, require_utc
 
 
+@dataclass(frozen=True)
+class RepetitionSettingsState:
+    repeat_mode: RepeatMode
+    start_time: datetime
+    repeat_interval_minutes: int
+    manual_count: int | None
+    end_time: datetime | None
+    default_instance_critical: bool
+    generated_at: datetime | None
+
+
 def validate_repetition_create(payload: RepetitionCreatePayload) -> ServiceMessage | None:
-    template_error = _validate_repetition_template(
-        payload.template_type,
-        payload.template_payload,
-    )
+    from calendar_backend.domain.plan_create import validate_create_payload  # noqa: PLC0415
+
+    template_error = validate_create_payload(payload.template_type, payload.template_payload)
     if template_error is not None:
         return template_error
+    return _validate_repetition_settings_fields(
+        repeat_mode=payload.repeat_mode,
+        start_time=payload.start_time,
+        repeat_interval_minutes=payload.repeat_interval_minutes,
+        manual_count=payload.manual_count,
+        end_time=payload.end_time,
+    )
+
+
+def validate_repetition_settings_update(
+    current: RepetitionSettingsState,
+    proposed: RepetitionSettingsState,
+) -> ServiceMessage | None:
+    if current.generated_at is not None:
+        lock_error: ServiceMessage | None = None
+        if proposed.repeat_mode != current.repeat_mode:
+            lock_error = ServiceMessage(
+                code=MessageCode.INVALID_REPETITION_SETTINGS,
+                message="repeat_mode is locked after generation",
+                details={},
+            )
+        elif proposed.start_time != current.start_time:
+            lock_error = ServiceMessage(
+                code=MessageCode.INVALID_REPETITION_SETTINGS,
+                message="start_time is locked after generation",
+                details={},
+            )
+        elif proposed.repeat_interval_minutes != current.repeat_interval_minutes:
+            lock_error = ServiceMessage(
+                code=MessageCode.INVALID_REPETITION_SETTINGS,
+                message="repeat_interval_minutes is locked after generation",
+                details={},
+            )
+        elif (
+            current.manual_count is not None
+            and proposed.manual_count is not None
+            and proposed.manual_count < current.manual_count
+        ):
+            lock_error = ServiceMessage(
+                code=MessageCode.REPETITION_COUNT_DECREASE_AFTER_GENERATION,
+                message="manual_count may not decrease after generation",
+                details={
+                    "current_manual_count": str(current.manual_count),
+                    "proposed_manual_count": str(proposed.manual_count),
+                },
+            )
+        elif current.repeat_mode == RepeatMode.DATE_RANGE:
+            if current.end_time is not None and proposed.end_time is None:
+                lock_error = ServiceMessage(
+                    code=MessageCode.INVALID_REPETITION_SETTINGS,
+                    message="end_time may not be cleared after generation",
+                    details={},
+                )
+            elif (
+                current.end_time is not None
+                and proposed.end_time is not None
+                and proposed.end_time < current.end_time
+            ):
+                lock_error = ServiceMessage(
+                    code=MessageCode.INVALID_REPETITION_SETTINGS,
+                    message="end_time may only be extended after generation",
+                    details={},
+                )
+            elif current.end_time is None and proposed.end_time is not None:
+                lock_error = ServiceMessage(
+                    code=MessageCode.INVALID_REPETITION_SETTINGS,
+                    message="end_time may not be set after generation when currently open-ended",
+                    details={},
+                )
+        if lock_error is not None:
+            return lock_error
+
+    return _validate_repetition_settings_fields(
+        repeat_mode=proposed.repeat_mode,
+        start_time=proposed.start_time,
+        repeat_interval_minutes=proposed.repeat_interval_minutes,
+        manual_count=proposed.manual_count,
+        end_time=proposed.end_time,
+    )
+
+
+def _validate_repetition_settings_fields(
+    *,
+    repeat_mode: RepeatMode,
+    start_time: datetime,
+    repeat_interval_minutes: int,
+    manual_count: int | None,
+    end_time: datetime | None,
+) -> ServiceMessage | None:
     for check in (
         _repetition_timestamp_error(
-            payload.start_time,
+            start_time,
             field_name=RepetitionTimestampField.START_TIME,
         ),
-        _repetition_interval_error(payload.repeat_interval_minutes),
+        _repetition_interval_error(repeat_interval_minutes),
         _repetition_mode_fields_error(
-            payload.repeat_mode,
-            payload.manual_count,
-            payload.end_time,
+            repeat_mode,
+            manual_count,
+            end_time,
         ),
-        _repetition_end_time_error(payload.start_time, payload.end_time),
+        _repetition_end_time_error(start_time, end_time),
     ):
         if check is not None:
             return check
-    return None
-
-
-# TODO(Prompt 10 / RepetitionService slice 1): Use validate_create_payload for templates.
-def _validate_repetition_template(
-    template_type: PlanKind,
-    template_payload: CreatePayload,
-) -> ServiceMessage | None:
-    if template_type != PlanKind.GOAL:
-        return ServiceMessage(
-            code=MessageCode.INVALID_CREATE_PAYLOAD,
-            message="Repetition template type is not supported yet",
-            details={"template_type": template_type.value},
-        )
-    if not isinstance(template_payload, GoalCreatePayload):
-        return ServiceMessage(
-            code=MessageCode.INVALID_CREATE_PAYLOAD,
-            message="Repetition template payload does not match template type",
-            details={
-                "template_type": template_type.value,
-                "payload_type": type(template_payload).__name__,
-            },
-        )
     return None
 
 

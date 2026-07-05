@@ -268,23 +268,7 @@ def _check_repetition_plans(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                 )
             )
 
-        # TODO(Prompt 10 / RepetitionService): relax when generation materializes instances.
-        if repetition_detail.generated_at is not None or repetition_detail.instances:
-            violations.append(
-                ServiceMessage(
-                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                    message=(
-                        "Repetition plan must be pre-generation (generated_at unset, no instances)"
-                    ),
-                    details={
-                        "repetition_plan_id": str(repetition_plan_id),
-                        "generated_at": (
-                            "set" if repetition_detail.generated_at is not None else "unset"
-                        ),
-                        "instance_count": str(len(repetition_detail.instances)),
-                    },
-                )
-            )
+        # Post-generation repetitions with instances are valid after Prompt 10 slice 1.
 
         template = plan_by_id.get(repetition_detail.template_root_id)
         if template is None:
@@ -299,12 +283,11 @@ def _check_repetition_plans(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                 )
             )
             continue
-        # TODO(Prompt 10 / RepetitionService): Relax plan_kind == GOAL for non-goal templates.
-        if template.plan_kind != PlanKind.GOAL or template.clone_status != CloneStatus.TEMPLATE:
+        if template.clone_status != CloneStatus.TEMPLATE:
             violations.append(
                 ServiceMessage(
                     code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                    message="Repetition template root must be a TEMPLATE goal plan",
+                    message="Repetition template root must be a TEMPLATE plan",
                     details={
                         "repetition_plan_id": str(repetition_plan_id),
                         "template_root_id": str(repetition_detail.template_root_id),

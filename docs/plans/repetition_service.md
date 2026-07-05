@@ -6,7 +6,7 @@
 
 Implement Prompt 10 from [docs/cursor_implementation_guide.md](../cursor_implementation_guide.md): **`RepetitionService`** for repetition settings locks, generation, refresh, and materialized `SYSTEM_REPETITION_WINDOW` constraints per engineering design and [repo convention §14](../../.cursor/repo_conventions.md). **Template semantics** follow guide §0.1 (supersedes PDF where they differ).
 
-**Template ownership:** Creating a repetition **always** creates its template root in the same operation (`template_type` + `template_payload` on the create call). **Template authoring is not a public `RepetitionService` concern** — it stays on [`GoalService.create_child`](../../calendar_backend/services/goal.py). **Template editing** uses existing subtype/tree services (`TaskService`, `PlanTreeService.rename`, etc.). `RepetitionService` does not wrap or duplicate template edits.
+**Template ownership:** External kickoff for repetition create remains [`GoalService.create_child(REPETITION, …)`](../../calendar_backend/services/goal.py) (validate + unpack payload + goal-chain attach). **Persistence** of shell + template root is [`PlanTreeService.make_repetition`](../../calendar_backend/services/plan_tree.py) (via private `_make_template_root` / `_insert_repetition_plan`). **Template authoring is not a public `RepetitionService` concern.** **Template editing** uses existing subtype/tree services (`TaskService`, `PlanTreeService.rename`, etc.). `RepetitionService` does not wrap or duplicate template edits.
 
 ### Template semantics (locked)
 
@@ -44,7 +44,7 @@ Implement Prompt 10 from [docs/cursor_implementation_guide.md](../cursor_impleme
 - **Template subtree children:** `GoalService.create_child(parent_id, …)` when `parent_id` is a template goal (or other valid goal parent in the subtree) — **normal goal chaining**, not master-chain placement. Nested `REPETITION` under a template goal uses `create_child(REPETITION, …)` with nested `RepetitionCreatePayload`.
 - **Non-goal templates:** `GOAL`, `TASK`, and `REPETITION` via `validate_create_payload` in slice 1.
 - **RepetitionService public API:** `update_settings`, `generate_instances`, `refresh_repetition`, `refresh_all_repetitions` only — **no** public template-child method.
-- **Private helpers:** Module-private persistence helpers in `goal.py` (e.g. shared repetition+template root wiring) are allowed; not exported from `RepetitionService`.
+- **Private helpers:** Module-private `_make_template_root` / `_insert_repetition_plan` in [`plan_tree.py`](../../calendar_backend/services/plan_tree.py) for repetition+template persistence; not exported from `RepetitionService`.
 - **Instance timing:** `instance_start_time = start_time + instance_index * repeat_interval_minutes`.
 - **Post-generation locks:** `repeat_mode`, `start_time`, `repeat_interval_minutes` immutable after `generated_at`; `manual_count` increase only ([`REPETITION_COUNT_DECREASE_AFTER_GENERATION`](../../calendar_backend/domain/errors.py)).
 - **`DATE_RANGE` `end_time` after generation:** may **extend only** (later timestamp); cannot shorten, clear, or switch modes.
@@ -99,7 +99,7 @@ flowchart TD
   - `generate_instances(repetition_plan_id, run_started_at) -> ServiceResult[RepetitionPlanDTO]`
   - `refresh_repetition(repetition_plan_id, run_started_at) -> ServiceResult[RepetitionPlanDTO]`
   - `refresh_all_repetitions(run_started_at) -> ServiceResult[None]`
-- **Template create/edit:** [`GoalService.create_child`](../../calendar_backend/services/goal.py) only; edits via `TaskService` / `PlanTreeService` / etc. No separate template-subtree `create_child` branch — template goals use normal chaining.
+- **Template create/edit:** External kickoff via [`GoalService.create_child(REPETITION, …)`](../../calendar_backend/services/goal.py); shell+template persistence via [`PlanTreeService.make_repetition`](../../calendar_backend/services/plan_tree.py); edits via `TaskService` / `PlanTreeService` / etc. No separate template-subtree `create_child` branch — template goals use normal chaining.
 - **Horizon dependency:** `DATE_RANGE` effective end from [`MasterHorizonService`](../../calendar_backend/services/master_horizon.py).
 - **Clone creation (slice 2+):** deep-clone template subtree; instance root `parent_id=repetition_plan_id`, `cloned_from_id=template_root_id`, `clone_status=LINKED`; template descendants in clone graph `LINKED` with matching `cloned_from_id`.
 - **`clone_status`:** `TEMPLATE` on template root only; template descendants `NOT_CLONED`.
@@ -116,21 +116,21 @@ flowchart TD
 
 **Files expected to change:**
 - [`calendar_backend/domain/repetitions.py`](../../calendar_backend/domain/repetitions.py) — `validate_create_payload` for templates; `validate_repetition_settings_update`; remove `_validate_repetition_template`
-- [`calendar_backend/services/goal.py`](../../calendar_backend/services/goal.py) — multi-kind template root on `create_child(REPETITION, …)`; private `_persist_repetition_with_template` (or similar) as needed
+- [`calendar_backend/services/goal.py`](../../calendar_backend/services/goal.py) — validate + unpack `RepetitionCreatePayload`; call `PlanTreeService.make_repetition`; chain-attach shell only
+- [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py) — `make_repetition` with `template_type` / `template_payload`; private `_make_template_root`, `_insert_repetition_plan`
 - [`calendar_backend/services/repetition.py`](../../calendar_backend/services/repetition.py) (new) — `RepetitionService`, `update_settings` only
 - [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py) — relax template `plan_kind == GOAL`; adjust pre-generation-only repetition check
 - [`tests/domain/test_repetitions.py`](../../tests/domain/test_repetitions.py) — non-goal template + lock-rule validation
 - [`tests/services/test_goal_service.py`](../../tests/services/test_goal_service.py) — template-root kinds; template-goal child uses goal chain
 
 **May also change:**
-- [`calendar_backend/services/plan_tree.py`](../../calendar_backend/services/plan_tree.py) — optional `clone_status` on `make_task` for task template roots
 - [`calendar_backend/domain/errors.py`](../../calendar_backend/domain/errors.py) — only if new codes needed beyond `REPETITION_COUNT_DECREASE_AFTER_GENERATION`
 - [`tests/domain/test_invariant_validation.py`](../../tests/domain/test_invariant_validation.py) — post-generation / non-goal template graphs
 
 **Implementation steps:**
 1. Replace `_validate_repetition_template` with `validate_create_payload(template_type, template_payload)` in `validate_repetition_create`.
 2. Add `validate_repetition_settings_update(...)`: before generation — full create rules; after generation — lock `repeat_mode`, `start_time`, `repeat_interval_minutes`; allow `manual_count` increase only; `DATE_RANGE` `end_time` extend-only.
-3. Refactor `GoalService.create_child(REPETITION, …)`: build template root from `template_type` (`make_goal` / `make_task` / nested `make_repetition` + template wiring); set `template_root_id`; shell in master chain; template root `attach_under_parent` under shell only.
+3. Refactor `GoalService.create_child(REPETITION, …)`: validate + unpack payload; call `PlanTreeService.make_repetition` (creates template via `_make_template_root`, shell, `attach_under_parent`); `_attach_to_goal_chain` for shell only.
 4. Template-subtree children: use existing `create_child` when parent is a template goal — normal `_attach_to_goal_chain` on that goal (no special branch).
 5. Implement `RepetitionService.update_settings` only (no generation, no template APIs).
 6. Update repetition/template invariants per carry-over TODOs.
@@ -321,10 +321,10 @@ uv run pytest -m "not slow and not failure_expected"
 |-----------------|-------------|---------------|
 | `RepetitionService` | Yes | Settings, generation, refresh; §14 repetition subtype owner |
 | `validate_repetition_settings_update` | Yes | Shared lock rules ([§11](../../.cursor/repo_conventions.md)) |
-| Private `_persist_repetition_with_template` in `goal.py` | Maybe | Deduplicate repetition+template root wiring; not public API |
+| Private `_make_template_root` / `_insert_repetition_plan` in `plan_tree.py` | Yes | Repetition+template root wiring inside `make_repetition`; not public API |
 | Private clone/propagate/window helpers in `repetition.py` | Yes | Generate + refresh |
 | Separate template-subtree `create_child` branch | **No** | Template goals use normal `GoalService` chaining |
-| Public `create_template_child` on `RepetitionService` | **No** | Template create stays on `GoalService` |
+| Public `create_template_child` on `RepetitionService` | **No** | Repetition create kickoff on `GoalService`; persistence on `PlanTreeService.make_repetition` |
 | Clone registry / strategy | No | One algorithm in V1 |
 
 ## Dependency changes
