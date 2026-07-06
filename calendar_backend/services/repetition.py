@@ -4,21 +4,23 @@ from __future__ import annotations
 
 import uuid
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.dtos import RepetitionPlanDTO, repetition_plan_dto_from_rows
-from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
+from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import (
     GoalChildChainID,
     GoalChildChainItemID,
     PlanID,
     RepetitionInstanceID,
+    TimeConstraintGroupID,
+    TimeWindowID,
     new_id,
 )
 from calendar_backend.domain.repetitions import (
@@ -30,6 +32,7 @@ from calendar_backend.domain.repetitions import (
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.master_horizon import get_master_horizon_end, validate_run_started_at
@@ -181,26 +184,66 @@ class RepetitionService:
                     repetition_plan_id=repetition_plan_id,
                     now=run_started_at,
                 )
+                instance_start = instance_start_time(
+                    repetition_plan.start_time,
+                    repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
+                    instance_index=instance_index,
+                )
                 txn.add(
                     RepetitionInstance(
                         repetition_instance_id=new_id(RepetitionInstanceID),
                         repetition_plan_id=repetition_plan.plan_id,
                         instance_index=instance_index,
                         root_clone_id=root_clone_id,
-                        instance_start_time=instance_start_time(
-                            repetition_plan.start_time,
-                            repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
-                            instance_index=instance_index,
-                        ),
+                        instance_start_time=instance_start,
                         is_critical=is_critical,
                         sort_order=sort_order,
                     )
+                )
+                _upsert_repetition_instance_window(
+                    txn,
+                    instance_root_plan_id=PlanID(root_clone_id),
+                    window_start=instance_start,
+                    window_end=instance_start
+                    + timedelta(minutes=repetition_plan.repeat_interval_minutes),
                 )
 
             repetition_plan.generated_at = run_started_at
             plan.updated_at = run_started_at
             txn.flush()
             return ok(repetition_plan_dto_from_rows(plan, repetition_plan))
+
+
+def _upsert_repetition_instance_window(
+    session: Session,
+    *,
+    instance_root_plan_id: PlanID,
+    window_start: datetime,
+    window_end: datetime,
+) -> None:
+    group = session.scalar(
+        select(TimeConstraintGroup)
+        .where(TimeConstraintGroup.plan_id == instance_root_plan_id)
+        .where(TimeConstraintGroup.constraint_kind == ConstraintKind.SYSTEM_REPETITION_WINDOW)
+    )
+    if group is None:
+        group = TimeConstraintGroup(
+            time_constraint_group_id=new_id(TimeConstraintGroupID),
+            plan_id=instance_root_plan_id,
+            constraint_kind=ConstraintKind.SYSTEM_REPETITION_WINDOW,
+        )
+        session.add(group)
+
+    session.execute(delete(TimeWindow).where(TimeWindow.group_id == group.time_constraint_group_id))
+
+    session.add(
+        TimeWindow(
+            time_window_id=new_id(TimeWindowID),
+            group_id=group.time_constraint_group_id,
+            start_time=window_start,
+            end_time=window_end,
+        )
+    )
 
 
 def _clone_template_subtree(
