@@ -283,3 +283,115 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 - **Not PlanTreeService:** chain reorder, cross-chain move, or empty-chain cleanup after move.
 
 **Supersedes:** Guide §0.1 row “Plan creation vs tree mutations” and [`docs/plans/plan_tree_service.md`](../docs/plans/plan_tree_service.md) assumptions that listed `move_plan` on `PlanTreeService`; PDF §7 monolithic plan-tree service readings for move ownership.
+
+---
+
+## 15. Mutating service owns its aggregate
+
+**Scope:** All `calendar_backend/services/` modules and orchestration that calls them.
+
+**Rule:**
+
+- The service that **mutates** an aggregate (plan, constraint group, repetition, settings, etc.) **owns** persistence access for that aggregate’s rows: loads, saves, deletes, and aggregate-specific read helpers used by siblings.
+- **Consumers call the owner** — do not embed duplicate `select` / `session.get` / private loaders for another aggregate’s data. Expose a small read helper on the owner when another service needs a value (for example horizon end on `MasterHorizonService`).
+- **Bundled creates stay on the factory** — when a structure is always created as a unit (repetition shell + template, goal + initial chains), one `make_*` / create path owns the full subtree; subtype services do not get standalone APIs for sub-parts that are never authored alone.
+- **Layout vs identity vs subtype behavior** — apply the [§14](#14-plan-service-ownership-boundaries) split spirit to plan services; apply the same *who owns what* thinking to non-plan services (horizon on `MasterHorizonService`, USER constraints on `TimeConstraintService`, etc.).
+
+**Examples:**
+
+- `RepetitionService.generate_instances` calls `get_master_horizon_end` — does not own horizon SQL.
+- `make_repetition` creates shell + template; no `RepetitionService.create_template_child` for normal flows.
+- `GoalService` owns chain reorder helpers; `PlanTreeService` does not.
+
+**Aligns with:** [§3](#3-orm-relationships-for-graph-reads-explicit-sql-for-filtered-writes), [§14](#14-plan-service-ownership-boundaries).
+
+---
+
+## 16. Trust-boundary surface discipline
+
+**Scope:** Service public APIs, [`domain/dtos.py`](../../calendar_backend/domain/dtos.py), and domain validators called at write boundaries.
+
+**Rule:**
+
+- At boundaries where in-repo callers are known, keep the **smallest honest contract**:
+  - **Types** — prefer concrete shapes (`tuple[...]`) over widened unions (`list | tuple`, `Sequence`) unless the container type is intentionally open ([§6](#6-opinionated-collection-types-prefer-tuple-over-sequence)).
+  - **DTOs** — expose only types returned standalone; nest element shapes as module-private value types with inline projection when there is no separate consumer.
+  - **Normalization** — validate and normalize **once** at the boundary that accepts external or untrusted input; do not re-sort, re-validate, or re-wrap in downstream mappers when the calling path already guarantees shape.
+  - **Conditional work** — structure branches so it is obvious which inputs trigger loads, validation, or side effects; avoid ambiguous “sometimes used” reads or half-applied conditionals.
+
+**Examples:**
+
+- `time_constraint_group_dto_from_rows(windows: tuple[TimeWindow, ...])` — no list branch, no re-sort after `merge_or_windows`.
+- Open-end `DATE_RANGE` generation: load master horizon end only on the path that needs it — not a fuzzy partial load used inconsistently.
+
+**Aligns with:** [§5](#5-domain-vs-services-placement-session-free-vs-persistence), [§6](#6-opinionated-collection-types-prefer-tuple-over-sequence), [§10](#10-type-checker-only-artifacts-minimal).
+
+---
+
+## 17. One enforcement home per rule (semantic layering)
+
+**Scope:** Schema (`models/` + migrations), write-path validators, and ORM invariant modules.
+
+**Rule:**
+
+- Each business rule should have **one primary enforcement home** chosen by what it protects:
+
+  | Layer | Owns |
+  |-------|------|
+  | **SQLite schema** (CHECK, UNIQUE, partial index) | Single-row committed shape the DB can express and that should survive any access path |
+  | **Write-path domain/service validators** | Input and mutation policy at trust boundaries (UTC, payload pairing, unsupported API) |
+  | **ORM invariant modules** | Cross-row and graph **ideal committed shape** the schema does not express ([§7](#7-plan-tree-invariant-ideal-shape)) |
+
+- Do **not** duplicate the same rule across layers ([§8](#8-no-db-schema-replay-in-invariants), [§12](#12-no-utc-timezone-checks-on-loaded-orm-rows-v1)).
+- When adding a CHECK, it must match the **same semantics** as the write boundary — not a looser “DB convenience” variant ([§11](#11-boundary-validators-imply-persisted-shape-enforcement)).
+- Choose schema vs service vs invariant by **semantic rationale** (structural integrity vs API policy vs graph shape), not “wherever is easiest.”
+
+**Examples:**
+
+- `duration_minutes > 0` — CHECK and `validate_task_create` agree; not `>= 0` in DB with `> 0` in service only.
+- Master uniqueness — partial unique index; not re-checked in invariants on loaded graphs.
+- Repetition template parentage — invariant graph rule, not a standalone CHECK.
+
+**Aligns with:** [§7](#7-plan-tree-invariant-ideal-shape)–[§12](#12-no-utc-timezone-checks-on-loaded-orm-rows-v1).
+
+---
+
+## 18. Decompose for readability, not reuse theater
+
+**Scope:** `calendar_backend/services/`, `calendar_backend/domain/`, and orchestration helpers.
+
+**Rule:**
+
+- Prefer the **simplest readable implementation** that satisfies known requirements (see [abstraction discipline](../rules/15-abstraction-discipline.mdc)).
+- **Extract** when a helper names a meaningful domain step, isolates a side effect, removes **current** duplication (for example the same guard block at multiple entry points), or separates passes required by FK/remap ordering.
+- **Do not extract** pass-through wrappers, single-use generic machinery (reflection-style row copiers), or new modules that **reintroduce** the problem they were meant to fix (for example lazy-import workarounds).
+- For **tree/subtree persistence** (clone, delete, create), favor explicit passes that show per-table field rules and ID remaps over opaque generic copiers — multiple passes are fine when dependencies require them.
+
+**Examples:**
+
+- Inline BFS clone loops with visible remap rules — preferred over generic `_copy_row`-style copiers when field semantics differ by table/kind.
+- `_load_user_group` consolidating four mutation entry points — good extraction.
+- Breakout validation module that brought back lazy imports — revert; keep simpler structure.
+
+**Aligns with:** [§15](#15-mutating-service-owns-its-aggregate); [abstraction discipline](../rules/15-abstraction-discipline.mdc).
+
+---
+
+## 19. Tests document guarantees, not accidents
+
+**Scope:** `tests/services/`, `tests/integration/`, and schema tests.
+
+**Rule:**
+
+- Integration tests should reflect **realistic domain scale** in fixtures (intervals, horizons, counts) so the suite stays fast without abandoning the behavior under test.
+- Assert **product-meaningful guarantees** — behaviors callers rely on or invariants are meant to protect.
+- Do **not** add tests for incidental implementation details the design does not treat as promises (for example “method X happens not to cause side effect Y” when Y is not a requirement).
+- Slice and plan test bullets are **illustrative minimums**; cover what the slice **objective** introduces, including edge cases that matter for correctness.
+
+**Examples:**
+
+- Weekly interval for multi-year open-end repetition tests — realistic cardinality.
+- `test_generate_instances_repetition_template_root` — meaningful graph edge case.
+- No test that `reopen` does not detach — incidental, not a guarantee.
+
+**Aligns with:** [§7](#7-plan-tree-invariant-ideal-shape); [testing and checks](../rules/20-testing-and-checks.mdc), [planning slices](../rules/30-planning-slices.mdc).

@@ -55,6 +55,11 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 | Plan service ownership (PDF §7) | Monolithic `PlanTreeService` with create/move/rename/delete | **`GoalService.create_child`** + **`GoalService.move_plan`** for goal child-chain layout; **`PlanTreeService`** for rename/delete and repo-internal `make_*` / `attach_under_parent` ([repo convention §14](../.cursor/repo_conventions.md), [plan_tree_service.md](plans/plan_tree_service.md)) |
 | Repetition templates (PDF) | Template layout, clone marking, and deletion semantics as read from PDF alone | **§0.1 Template semantics** below — template root + shell structure, otherwise-normal plans, goal chains under template goals, `TEMPLATE` on root only, template-root delete includes repetition shell |
 | Schema enforcement before migration | Defer DB INSERT-failure tests until migration lands; or skip schema tests | **§13** — add schema tests in the ORM change; mark `failure_expected` until `upgrade head`; unmark in `/db-revision-continue` |
+| Cross-service persistence access | Any service may load any aggregate inline | **§15** — mutating service owns its aggregate; consumers call owner read helpers; bundled `make_*` owns coupled subtrees |
+| Boundary DTO/API width | Defensive mappers, public nested DTOs, `list \| tuple` at known callers | **§16** — smallest honest contract at trust boundaries; normalize once; explicit conditional branches |
+| Rule placement (schema vs boundary vs invariant) | “Enforce wherever easiest”; looser CHECK + stricter service | **§17** — one enforcement home per rule; CHECK semantics match write boundary; choose layer by semantic rationale |
+| Helper/module extraction | Generic row copiers; breakout modules for one-off concerns | **§18** — decompose for readability and current duplication; explicit tree passes over opaque copiers |
+| Integration test intent | Test every observable side effect; slice test bullets as exhaustive caps | **§19** — realistic fixture scale; assert meaningful guarantees; illustrative slice test minimums |
 
 ### TimeConstraintGroup
 
