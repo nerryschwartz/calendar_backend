@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from calendar_backend.domain.enums import PlanKind, RepeatMode
-from calendar_backend.domain.errors import MessageCode
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.plan_create import (
     GoalCreatePayload,
     RepetitionCreatePayload,
@@ -13,6 +13,8 @@ from calendar_backend.domain.plan_create import (
 )
 from calendar_backend.domain.repetitions import (
     RepetitionSettingsState,
+    compute_instance_indices,
+    instance_start_time,
     validate_repetition_create,
     validate_repetition_settings_update,
 )
@@ -178,3 +180,46 @@ def test_validate_repetition_settings_update_allows_end_time_extension_after_gen
         generated_at=_START,
     )
     assert validate_repetition_settings_update(current, proposed) is None
+
+
+def test_compute_instance_indices_manual_count() -> None:
+    result = compute_instance_indices(
+        repeat_mode=RepeatMode.MANUAL_COUNT,
+        start_time=_START,
+        repeat_interval_minutes=60,
+        manual_count=3,
+        end_time=None,
+        master_horizon_end=None,
+    )
+    assert result == (0, 1, 2)
+
+
+def test_compute_instance_indices_date_range_explicit_end() -> None:
+    result = compute_instance_indices(
+        repeat_mode=RepeatMode.DATE_RANGE,
+        start_time=_START,
+        repeat_interval_minutes=60,
+        manual_count=None,
+        end_time=_END,
+        master_horizon_end=None,
+    )
+    assert result == (0, 1)
+
+
+def test_compute_instance_indices_date_range_open_end_requires_horizon() -> None:
+    result = compute_instance_indices(
+        repeat_mode=RepeatMode.DATE_RANGE,
+        start_time=_START,
+        repeat_interval_minutes=60,
+        manual_count=None,
+        end_time=None,
+        master_horizon_end=None,
+    )
+    assert isinstance(result, ServiceMessage)
+    assert result.code == MessageCode.MASTER_HORIZON_NOT_FOUND
+
+
+def test_instance_start_time_offsets_by_index() -> None:
+    assert instance_start_time(
+        _START, repeat_interval_minutes=60, instance_index=2
+    ) == _START + timedelta(hours=2)
