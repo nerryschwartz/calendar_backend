@@ -2,22 +2,37 @@
 
 from __future__ import annotations
 
+import uuid
+from collections import deque
 from datetime import datetime
 from typing import cast
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.dtos import RepetitionPlanDTO, repetition_plan_dto_from_rows
-from calendar_backend.domain.enums import PlanKind, RepeatMode
-from calendar_backend.domain.errors import ServiceMessage
-from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
+from calendar_backend.domain.ids import (
+    GoalChildChainID,
+    GoalChildChainItemID,
+    PlanID,
+    RepetitionInstanceID,
+    new_id,
+)
 from calendar_backend.domain.repetitions import (
     RepetitionSettingsState,
+    compute_instance_indices,
+    instance_start_time,
     validate_repetition_settings_update,
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.services.master_horizon import get_master_horizon_end, validate_run_started_at
 from calendar_backend.services.plan_tree import load_plan_with_subtype
 
 
@@ -101,3 +116,235 @@ class RepetitionService:
             plan.updated_at = now
             txn.flush()
             return ok(repetition_plan_dto_from_rows(plan, repetition_plan))
+
+    def generate_instances(
+        self,
+        repetition_plan_id: PlanID,
+        run_started_at: datetime,
+    ) -> ServiceResult[RepetitionPlanDTO]:
+        validation_error = validate_run_started_at(run_started_at)
+        if validation_error is not None:
+            return fail(validation_error)
+
+        with transaction(self._session) as txn:
+            loaded = load_plan_with_subtype(
+                txn, repetition_plan_id, expected_kind=PlanKind.REPETITION
+            )
+            if isinstance(loaded, ServiceMessage):
+                return fail(loaded)
+            plan, repetition_plan = loaded
+
+            if repetition_plan.generated_at is not None:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.REPETITION_ALREADY_GENERATED,
+                        message="Repetition instances were already generated",
+                        details={"repetition_plan_id": str(repetition_plan_id)},
+                    )
+                )
+
+            template_root = txn.get(Plan, repetition_plan.template_root_id)
+            if template_root is None:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.PLAN_NOT_FOUND,
+                        message="Repetition template root not found",
+                        details={
+                            "repetition_plan_id": str(repetition_plan_id),
+                            "template_root_id": str(repetition_plan.template_root_id),
+                        },
+                    )
+                )
+
+            needs_horizon = (
+                repetition_plan.repeat_mode == RepeatMode.DATE_RANGE
+                and repetition_plan.end_time is None
+            )
+            master_horizon_end = get_master_horizon_end(txn) if needs_horizon else None
+
+            indices_result = compute_instance_indices(
+                repeat_mode=repetition_plan.repeat_mode,
+                start_time=repetition_plan.start_time,
+                repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
+                manual_count=repetition_plan.manual_count,
+                end_time=repetition_plan.end_time,
+                master_horizon_end=master_horizon_end,
+            )
+            if isinstance(indices_result, ServiceMessage):
+                return fail(indices_result)
+
+            is_critical = repetition_plan.default_instance_critical
+            for sort_order, instance_index in enumerate(indices_result):
+                root_clone_id = _clone_template_subtree(
+                    txn,
+                    template_root_id=PlanID(template_root.plan_id),
+                    repetition_plan_id=repetition_plan_id,
+                    now=run_started_at,
+                )
+                txn.add(
+                    RepetitionInstance(
+                        repetition_instance_id=new_id(RepetitionInstanceID),
+                        repetition_plan_id=repetition_plan.plan_id,
+                        instance_index=instance_index,
+                        root_clone_id=root_clone_id,
+                        instance_start_time=instance_start_time(
+                            repetition_plan.start_time,
+                            repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
+                            instance_index=instance_index,
+                        ),
+                        is_critical=is_critical,
+                        sort_order=sort_order,
+                    )
+                )
+
+            repetition_plan.generated_at = run_started_at
+            plan.updated_at = run_started_at
+            txn.flush()
+            return ok(repetition_plan_dto_from_rows(plan, repetition_plan))
+
+
+def _clone_template_subtree(
+    txn: Session,
+    *,
+    template_root_id: PlanID,
+    repetition_plan_id: PlanID,
+    now: datetime,
+) -> uuid.UUID:
+    template_plans = _collect_template_subtree(txn, template_root_id)
+    clone_by_template_id: dict[uuid.UUID, uuid.UUID] = {}
+
+    for template_plan in template_plans:
+        parent_id = (
+            repetition_plan_id
+            if template_plan.plan_id == template_root_id
+            else clone_by_template_id[template_plan.parent_id]  # pyright: ignore[reportArgumentType]  # type checker: parent cloned earlier in BFS order
+        )
+        clone_plan_id = new_id(PlanID)
+        template_plan_id = PlanID(template_plan.plan_id)
+        clone_by_template_id[template_plan.plan_id] = clone_plan_id
+        txn.add(
+            Plan(
+                plan_id=clone_plan_id,
+                plan_kind=template_plan.plan_kind,
+                name=template_plan.name,
+                parent_id=parent_id,
+                is_master=False,
+                cloned_from_id=template_plan.plan_id,
+                clone_status=CloneStatus.LINKED,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+        goal_plan = txn.get(GoalPlan, template_plan_id)
+        if goal_plan is not None:
+            txn.add(GoalPlan(plan_id=clone_plan_id))
+            continue
+
+        task_plan = txn.get(TaskPlan, template_plan_id)
+        if task_plan is not None:
+            txn.add(
+                TaskPlan(
+                    plan_id=clone_plan_id,
+                    duration_minutes=task_plan.duration_minutes,
+                    divisible=task_plan.divisible,
+                    minimum_chunk_size_minutes=task_plan.minimum_chunk_size_minutes,
+                    user_completed=False,
+                    completed_at=None,
+                )
+            )
+            continue
+
+        repetition_plan = txn.get(RepetitionPlan, template_plan_id)
+        if repetition_plan is not None:
+            txn.add(
+                RepetitionPlan(
+                    plan_id=clone_plan_id,
+                    repeat_mode=repetition_plan.repeat_mode,
+                    start_time=repetition_plan.start_time,
+                    repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
+                    manual_count=repetition_plan.manual_count,
+                    end_time=repetition_plan.end_time,
+                    template_root_id=repetition_plan.template_root_id,
+                    default_instance_critical=repetition_plan.default_instance_critical,
+                    generated_at=None,
+                )
+            )
+
+    for template_plan in template_plans:
+        clone_plan_id = clone_by_template_id[template_plan.plan_id]
+        template_plan_id = PlanID(template_plan.plan_id)
+
+        clone_repetition = txn.get(RepetitionPlan, clone_plan_id)
+        if clone_repetition is not None:
+            source_repetition = txn.get(RepetitionPlan, template_plan_id)
+            assert source_repetition is not None  # type checker: clone has repetition row
+            cloned_template_root_id = clone_by_template_id.get(source_repetition.template_root_id)
+            if cloned_template_root_id is not None:
+                clone_repetition.template_root_id = cloned_template_root_id
+
+        if txn.get(GoalPlan, template_plan_id) is None:
+            continue
+
+        clone_goal_id = PlanID(clone_plan_id)
+        chains = txn.scalars(
+            select(GoalChildChain)
+            .where(GoalChildChain.parent_goal_id == template_plan_id)
+            .order_by(GoalChildChain.sort_order)
+        ).all()
+        for chain in chains:
+            clone_chain_id = new_id(GoalChildChainID)
+            txn.add(
+                GoalChildChain(
+                    goal_child_chain_id=clone_chain_id,
+                    parent_goal_id=clone_goal_id,
+                    is_critical=chain.is_critical,
+                    sort_order=chain.sort_order,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            items = txn.scalars(
+                select(GoalChildChainItem)
+                .where(GoalChildChainItem.chain_id == chain.goal_child_chain_id)
+                .order_by(GoalChildChainItem.position)
+            ).all()
+            for item in items:
+                clone_child_id = clone_by_template_id.get(item.child_plan_id)
+                if clone_child_id is None:
+                    continue
+                txn.add(
+                    GoalChildChainItem(
+                        goal_child_chain_item_id=new_id(GoalChildChainItemID),
+                        chain_id=clone_chain_id,
+                        child_plan_id=clone_child_id,
+                        position=item.position,
+                    )
+                )
+
+    return clone_by_template_id[template_root_id]
+
+
+def _collect_template_subtree(txn: Session, template_root_id: PlanID) -> tuple[Plan, ...]:
+    root = txn.get(Plan, template_root_id)
+    if root is None:
+        return ()
+
+    ordered: list[Plan] = []
+    seen: set[uuid.UUID] = set()
+    queue: deque[Plan] = deque([root])
+    while queue:
+        plan = queue.popleft()
+        if plan.plan_id in seen:
+            continue
+        seen.add(plan.plan_id)
+        ordered.append(plan)
+        for child_id in txn.scalars(
+            select(Plan.plan_id).where(Plan.parent_id == plan.plan_id)
+        ).all():
+            if child_id in seen:
+                continue
+            child = txn.get(Plan, child_id)
+            if child is not None:
+                queue.append(child)
+    return tuple(ordered)

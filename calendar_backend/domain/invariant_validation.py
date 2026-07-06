@@ -283,7 +283,10 @@ def _check_repetition_plans(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                 )
             )
             continue
-        if template.clone_status != CloneStatus.TEMPLATE:
+        if (
+            plan.clone_status not in (CloneStatus.LINKED, CloneStatus.DETACHED)
+            and template.clone_status != CloneStatus.TEMPLATE
+        ):
             violations.append(
                 ServiceMessage(
                     code=MessageCode.CHAIN_INVARIANT_VIOLATION,

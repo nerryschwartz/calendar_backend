@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from calendar_backend.domain.enums import RepeatMode, RepetitionTimestampField
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
@@ -107,6 +107,54 @@ def validate_repetition_settings_update(
         manual_count=proposed.manual_count,
         end_time=proposed.end_time,
     )
+
+
+def compute_instance_indices(
+    *,
+    repeat_mode: RepeatMode,
+    start_time: datetime,
+    repeat_interval_minutes: int,
+    manual_count: int | None,
+    end_time: datetime | None,
+    master_horizon_end: datetime | None,
+) -> tuple[int, ...] | ServiceMessage:
+    if repeat_mode == RepeatMode.MANUAL_COUNT:
+        assert manual_count is not None  # type checker: validated by settings fields
+        return tuple(range(manual_count))
+
+    if end_time is not None:
+        effective_end = end_time
+    elif master_horizon_end is not None:
+        effective_end = master_horizon_end
+    else:
+        return ServiceMessage(
+            code=MessageCode.MASTER_HORIZON_NOT_FOUND,
+            message="Master horizon end is required for open-ended DATE_RANGE repetition",
+            details={},
+        )
+
+    indices: list[int] = []
+    instance_index = 0
+    while True:
+        instance_start = instance_start_time(
+            start_time,
+            repeat_interval_minutes=repeat_interval_minutes,
+            instance_index=instance_index,
+        )
+        if instance_start >= effective_end:
+            break
+        indices.append(instance_index)
+        instance_index += 1
+    return tuple(indices)
+
+
+def instance_start_time(
+    start_time: datetime,
+    *,
+    repeat_interval_minutes: int,
+    instance_index: int,
+) -> datetime:
+    return start_time + timedelta(minutes=instance_index * repeat_interval_minutes)
 
 
 def _validate_repetition_settings_fields(

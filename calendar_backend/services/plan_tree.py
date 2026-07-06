@@ -222,6 +222,7 @@ class PlanTreeService:
             clone_status=clone_status,
             now=now,
         )
+        txn.flush()
         self.attach_under_parent(
             txn,
             child_plan_id=PlanID(template_plan.plan_id),

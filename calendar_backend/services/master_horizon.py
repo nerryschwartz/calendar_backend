@@ -20,6 +20,7 @@ from calendar_backend.domain.ids import (
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock, is_minute_aligned, require_utc
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
+from calendar_backend.models.plans import Plan
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.master_plan import MasterPlanService
 
@@ -30,7 +31,7 @@ class MasterHorizonService:
         self._clock = clock or SystemClock()
 
     def refresh_master_horizon(self, run_started_at: datetime) -> ServiceResult[MasterHorizonDTO]:
-        validation_error = _validate_run_started_at(run_started_at)
+        validation_error = validate_run_started_at(run_started_at)
         if validation_error is not None:
             return fail(validation_error)
 
@@ -67,7 +68,7 @@ class MasterHorizonService:
             return fail(*exc.errors)
 
 
-def _validate_run_started_at(run_started_at: datetime) -> ServiceMessage | None:
+def validate_run_started_at(run_started_at: datetime) -> ServiceMessage | None:
     try:
         require_utc(run_started_at)
     except ValueError:
@@ -85,6 +86,25 @@ def _validate_run_started_at(run_started_at: datetime) -> ServiceMessage | None:
         )
 
     return None
+
+
+def get_master_horizon_end(session: Session) -> datetime | None:
+    master = session.scalar(select(Plan).where(Plan.is_master))
+    if master is None:
+        return None
+    group = session.scalar(
+        select(TimeConstraintGroup)
+        .where(TimeConstraintGroup.plan_id == master.plan_id)
+        .where(TimeConstraintGroup.constraint_kind == ConstraintKind.SYSTEM_MASTER_HORIZON)
+    )
+    if group is None:
+        return None
+    window = session.scalar(
+        select(TimeWindow).where(TimeWindow.group_id == group.time_constraint_group_id)
+    )
+    if window is None:
+        return None
+    return window.end_time
 
 
 def _upsert_master_horizon_window(
