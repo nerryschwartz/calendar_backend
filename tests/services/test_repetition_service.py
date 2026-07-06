@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
+from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
@@ -14,6 +14,7 @@ from calendar_backend.domain.plan_create import (
     TaskCreatePayload,
 )
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import (
@@ -95,6 +96,38 @@ def _assert_tree_invariant(session: Session) -> None:
     assert result.success, result.errors
 
 
+def _assert_repetition_window_on_instance_root(
+    session: Session,
+    *,
+    root_clone_id: PlanID,
+    expected_start: datetime,
+    repeat_interval_minutes: int,
+) -> None:
+    group = session.scalar(
+        select(TimeConstraintGroup)
+        .where(TimeConstraintGroup.plan_id == root_clone_id)
+        .where(TimeConstraintGroup.constraint_kind == ConstraintKind.SYSTEM_REPETITION_WINDOW)
+    )
+    assert group is not None
+    window = session.scalar(
+        select(TimeWindow).where(TimeWindow.group_id == group.time_constraint_group_id)
+    )
+    assert window is not None
+    assert window.start_time.replace(tzinfo=UTC) == expected_start
+    assert window.end_time.replace(tzinfo=UTC) == expected_start + timedelta(
+        minutes=repeat_interval_minutes
+    )
+
+
+def _assert_no_repetition_window(session: Session, plan_id: PlanID) -> None:
+    group = session.scalar(
+        select(TimeConstraintGroup)
+        .where(TimeConstraintGroup.plan_id == plan_id)
+        .where(TimeConstraintGroup.constraint_kind == ConstraintKind.SYSTEM_REPETITION_WINDOW)
+    )
+    assert group is None
+
+
 @pytest.mark.integration
 def test_generate_instances_manual_count_goal_template(
     service_db_session: Session,
@@ -131,7 +164,14 @@ def test_generate_instances_manual_count_goal_template(
         assert instance.instance_start_time.replace(tzinfo=UTC) == _START + timedelta(
             minutes=60 * index
         )
+        _assert_repetition_window_on_instance_root(
+            service_db_session,
+            root_clone_id=PlanID(root_clone.plan_id),
+            expected_start=instance.instance_start_time.replace(tzinfo=UTC),
+            repeat_interval_minutes=repetition.repeat_interval_minutes,
+        )
 
+    _assert_no_repetition_window(service_db_session, PlanID(repetition.template_root_id))
     _assert_tree_invariant(service_db_session)
 
 
@@ -170,7 +210,14 @@ def test_generate_instances_task_template_root(
         assert root_clone.plan_kind == PlanKind.TASK
         assert root_clone.clone_status == CloneStatus.LINKED
         assert service_db_session.get(TaskPlan, root_clone.plan_id) is not None
+        _assert_repetition_window_on_instance_root(
+            service_db_session,
+            root_clone_id=PlanID(root_clone.plan_id),
+            expected_start=instance.instance_start_time.replace(tzinfo=UTC),
+            repeat_interval_minutes=repetition.repeat_interval_minutes,
+        )
 
+    _assert_no_repetition_window(service_db_session, PlanID(repetition.template_root_id))
     _assert_tree_invariant(service_db_session)
 
 
@@ -226,6 +273,14 @@ def test_generate_instances_clones_template_goal_child_chain(
     assert clone_item is not None
     assert clone_item.child_plan_id == clone_child.plan_id
 
+    _assert_repetition_window_on_instance_root(
+        service_db_session,
+        root_clone_id=PlanID(root_clone.plan_id),
+        expected_start=instance.instance_start_time.replace(tzinfo=UTC),
+        repeat_interval_minutes=repetition.repeat_interval_minutes,
+    )
+    _assert_no_repetition_window(service_db_session, PlanID(repetition.template_root_id))
+    _assert_no_repetition_window(service_db_session, PlanID(clone_child.plan_id))
     _assert_tree_invariant(service_db_session)
 
 
@@ -277,6 +332,8 @@ def test_generate_instances_date_range_with_explicit_end(
     result = _repetition_service(service_db_session).generate_instances(repetition_id, RUN_AT)
 
     assert result.success
+    repetition_plan = service_db_session.get(RepetitionPlan, repetition_id)
+    assert repetition_plan is not None
     instances = service_db_session.scalars(
         select(RepetitionInstance)
         .where(RepetitionInstance.repetition_plan_id == repetition_id)
@@ -284,6 +341,14 @@ def test_generate_instances_date_range_with_explicit_end(
     ).all()
     assert len(instances) == 3
     assert instances[-1].instance_start_time.replace(tzinfo=UTC) == _START + timedelta(hours=2)
+    for instance in instances:
+        _assert_repetition_window_on_instance_root(
+            service_db_session,
+            root_clone_id=PlanID(instance.root_clone_id),
+            expected_start=instance.instance_start_time.replace(tzinfo=UTC),
+            repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
+        )
+    _assert_no_repetition_window(service_db_session, PlanID(repetition_plan.template_root_id))
     _assert_tree_invariant(service_db_session)
 
 
@@ -352,6 +417,14 @@ def test_generate_instances_repetition_template_root(
     assert cloned_inner_goal.clone_status == CloneStatus.LINKED
     assert cloned_inner_goal.cloned_from_id == blueprint_inner_goal_id
 
+    _assert_repetition_window_on_instance_root(
+        service_db_session,
+        root_clone_id=PlanID(root_clone.plan_id),
+        expected_start=instance.instance_start_time.replace(tzinfo=UTC),
+        repeat_interval_minutes=outer_repetition.repeat_interval_minutes,
+    )
+    _assert_no_repetition_window(service_db_session, blueprint_inner_repetition_id)
+    _assert_no_repetition_window(service_db_session, PlanID(cloned_inner_goal.plan_id))
     _assert_tree_invariant(service_db_session)
 
 
@@ -386,4 +459,17 @@ def test_generate_instances_date_range_open_end_uses_master_horizon(
         .where(RepetitionInstance.repetition_plan_id == repetition_id)
     )
     assert actual_count == expected_count
+    repetition_plan = service_db_session.get(RepetitionPlan, repetition_id)
+    assert repetition_plan is not None
+    instances = service_db_session.scalars(
+        select(RepetitionInstance).where(RepetitionInstance.repetition_plan_id == repetition_id)
+    ).all()
+    for instance in instances:
+        _assert_repetition_window_on_instance_root(
+            service_db_session,
+            root_clone_id=PlanID(instance.root_clone_id),
+            expected_start=instance.instance_start_time.replace(tzinfo=UTC),
+            repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
+        )
+    _assert_no_repetition_window(service_db_session, PlanID(repetition_plan.template_root_id))
     _assert_tree_invariant(service_db_session)

@@ -192,6 +192,7 @@ def _valid_repetition_graph() -> tuple[Plan, ...]:
         name="clone",
     )
     _attach_goal(clone)
+    clone.constraint_groups = [_repetition_window_group(clone_id, _utc(10, 0), _utc(11, 0))]
 
     repetition_plan.instances = [
         _repetition_instance(
@@ -219,6 +220,29 @@ def _horizon_group(plan_id: uuid.UUID) -> TimeConstraintGroup:
             group_id=group_id,
             start_time=_utc(10, 0),
             end_time=_utc(12, 0),
+        )
+    ]
+    return group
+
+
+def _repetition_window_group(
+    plan_id: uuid.UUID,
+    start_time: datetime,
+    end_time: datetime,
+) -> TimeConstraintGroup:
+    group_id = uuid.uuid4()
+    window_id = uuid.uuid4()
+    group = TimeConstraintGroup(
+        time_constraint_group_id=group_id,
+        plan_id=plan_id,
+        constraint_kind=ConstraintKind.SYSTEM_REPETITION_WINDOW,
+    )
+    group.windows = [
+        TimeWindow(
+            time_window_id=window_id,
+            group_id=group_id,
+            start_time=start_time,
+            end_time=end_time,
         )
     ]
     return group
@@ -669,6 +693,36 @@ def test_validate_master_tree_graph_reports_non_dense_repetition_sort_order() ->
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "sort_order must be dense" in v.message
+        for v in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_missing_repetition_instance_window() -> None:
+    graph = list(_valid_repetition_graph())
+    _master, _goal, _template, _repetition, clone = graph
+    clone.constraint_groups = []
+
+    violations = validate_master_tree_graph(tuple(graph))
+
+    assert any(
+        v.code == MessageCode.CONSTRAINT_INVARIANT_VIOLATION
+        and "exactly one SYSTEM_REPETITION_WINDOW group" in v.message
+        for v in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_repetition_window_on_template_root() -> None:
+    graph = list(_valid_repetition_graph())
+    _master, _goal, template, _repetition, _clone = graph
+    template.constraint_groups = [
+        _repetition_window_group(template.plan_id, _utc(10, 0), _utc(11, 0))
+    ]
+
+    violations = validate_master_tree_graph(tuple(graph))
+
+    assert any(
+        v.code == MessageCode.CONSTRAINT_INVARIANT_VIOLATION
+        and "only allowed on generated repetition instance roots" in v.message
         for v in violations
     )
 
