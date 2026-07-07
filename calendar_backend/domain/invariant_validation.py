@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid
 from collections import deque
+from datetime import datetime, timedelta
 
 from calendar_backend.domain.constraints import merge_or_windows
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind
@@ -46,6 +47,7 @@ def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage,
     violations.extend(_check_chains(plans))
     violations.extend(_check_repetition_plans(plans))
     violations.extend(_check_repetition_instances(plans))
+    violations.extend(_check_repetition_instance_windows(plans))
     violations.extend(_check_constraints(plans))
     return tuple(violations)
 
@@ -268,23 +270,7 @@ def _check_repetition_plans(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                 )
             )
 
-        # TODO(Prompt 10 / RepetitionService): relax when generation materializes instances.
-        if repetition_detail.generated_at is not None or repetition_detail.instances:
-            violations.append(
-                ServiceMessage(
-                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                    message=(
-                        "Repetition plan must be pre-generation (generated_at unset, no instances)"
-                    ),
-                    details={
-                        "repetition_plan_id": str(repetition_plan_id),
-                        "generated_at": (
-                            "set" if repetition_detail.generated_at is not None else "unset"
-                        ),
-                        "instance_count": str(len(repetition_detail.instances)),
-                    },
-                )
-            )
+        # Post-generation repetitions with instances are valid after Prompt 10 slice 1.
 
         template = plan_by_id.get(repetition_detail.template_root_id)
         if template is None:
@@ -299,12 +285,14 @@ def _check_repetition_plans(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                 )
             )
             continue
-        # TODO(Prompt 10 / RepetitionService): Relax plan_kind == GOAL for non-goal templates.
-        if template.plan_kind != PlanKind.GOAL or template.clone_status != CloneStatus.TEMPLATE:
+        if (
+            plan.clone_status not in (CloneStatus.LINKED, CloneStatus.DETACHED)
+            and template.clone_status != CloneStatus.TEMPLATE
+        ):
             violations.append(
                 ServiceMessage(
                     code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                    message="Repetition template root must be a TEMPLATE goal plan",
+                    message="Repetition template root must be a TEMPLATE plan",
                     details={
                         "repetition_plan_id": str(repetition_plan_id),
                         "template_root_id": str(repetition_detail.template_root_id),
@@ -505,6 +493,105 @@ def _check_repetition_instances(plans: tuple[Plan, ...]) -> list[ServiceMessage]
     return violations
 
 
+def _check_repetition_instance_windows(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+    violations: list[ServiceMessage] = []
+    required_windows: dict[uuid.UUID, tuple[datetime, datetime]] = {}
+
+    for plan in plans:
+        if plan.repetition_plan is None:
+            continue
+        if plan.repetition_plan.generated_at is None:
+            continue
+
+        repeat_interval_minutes = plan.repetition_plan.repeat_interval_minutes
+        for instance in plan.repetition_plan.instances:
+            window_start = instance.instance_start_time
+            window_end = window_start + timedelta(minutes=repeat_interval_minutes)
+            required_windows[instance.root_clone_id] = (window_start, window_end)
+
+    for plan in plans:
+        repetition_window_groups = [
+            group
+            for group in plan.constraint_groups
+            if group.constraint_kind == ConstraintKind.SYSTEM_REPETITION_WINDOW
+        ]
+        expected = required_windows.get(plan.plan_id)
+
+        if expected is not None:
+            window_start, window_end = expected
+            if len(repetition_window_groups) != 1:
+                violations.append(
+                    ServiceMessage(
+                        code=MessageCode.CONSTRAINT_INVARIANT_VIOLATION,
+                        message=(
+                            "Generated repetition instance root must have exactly one "
+                            "SYSTEM_REPETITION_WINDOW group"
+                        ),
+                        details={
+                            "plan_id": str(plan.plan_id),
+                            "group_count": str(len(repetition_window_groups)),
+                        },
+                    )
+                )
+                continue
+
+            group = repetition_window_groups[0]
+            if len(group.windows) != 1:
+                violations.append(
+                    ServiceMessage(
+                        code=MessageCode.CONSTRAINT_INVARIANT_VIOLATION,
+                        message=(
+                            "Generated repetition instance root SYSTEM_REPETITION_WINDOW "
+                            "group must have exactly one window"
+                        ),
+                        details={
+                            "plan_id": str(plan.plan_id),
+                            "constraint_group_id": str(group.time_constraint_group_id),
+                            "window_count": str(len(group.windows)),
+                        },
+                    )
+                )
+                continue
+
+            window = group.windows[0]
+            if window.start_time != window_start or window.end_time != window_end:
+                violations.append(
+                    ServiceMessage(
+                        code=MessageCode.CONSTRAINT_INVARIANT_VIOLATION,
+                        message=(
+                            "Repetition instance root SYSTEM_REPETITION_WINDOW must match "
+                            "shifted instance interval"
+                        ),
+                        details={
+                            "plan_id": str(plan.plan_id),
+                            "constraint_group_id": str(group.time_constraint_group_id),
+                            "expected_start": window_start.isoformat(),
+                            "expected_end": window_end.isoformat(),
+                            "actual_start": window.start_time.isoformat(),
+                            "actual_end": window.end_time.isoformat(),
+                        },
+                    )
+                )
+            continue
+
+        if repetition_window_groups:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CONSTRAINT_INVARIANT_VIOLATION,
+                    message=(
+                        "SYSTEM_REPETITION_WINDOW is only allowed on generated "
+                        "repetition instance roots"
+                    ),
+                    details={
+                        "plan_id": str(plan.plan_id),
+                        "group_count": str(len(repetition_window_groups)),
+                    },
+                )
+            )
+
+    return violations
+
+
 def _violations_for_persisted_group_windows(
     windows: tuple[TimeWindow, ...],
     *,
@@ -600,14 +687,15 @@ def _check_constraints(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                     )
                     continue
             elif group.constraint_kind == ConstraintKind.SYSTEM_REPETITION_WINDOW:
-                if not group.windows:
+                if len(group.windows) != 1:
                     violations.append(
                         ServiceMessage(
                             code=MessageCode.CONSTRAINT_INVARIANT_VIOLATION,
-                            message="SYSTEM_REPETITION_WINDOW group must have at least one window",
+                            message="SYSTEM_REPETITION_WINDOW group must have exactly one window",
                             details={
                                 "plan_id": str(plan.plan_id),
                                 "constraint_group_id": str(group.time_constraint_group_id),
+                                "window_count": str(len(group.windows)),
                             },
                         )
                     )

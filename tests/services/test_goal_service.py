@@ -285,6 +285,78 @@ def test_create_child_repetition_under_master_persists_template_subtree(
 
 
 @pytest.mark.integration
+def test_create_child_repetition_task_template_root(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    service = _goal_service(service_db_session)
+    result = service.create_child(
+        master_plan_id,
+        PlanKind.REPETITION,
+        RepetitionCreatePayload(
+            name="weekly",
+            repeat_mode=RepeatMode.MANUAL_COUNT,
+            start_time=_START,
+            repeat_interval_minutes=60,
+            manual_count=3,
+            end_time=None,
+            default_instance_critical=False,
+            template_type=PlanKind.TASK,
+            template_payload=TaskCreatePayload("template task", 30, False, None),
+        ),
+        is_critical=False,
+    )
+
+    assert result.success and result.value is not None
+    repetition = service_db_session.get(RepetitionPlan, result.value.plan_id)
+    assert repetition is not None
+    template = service_db_session.get(Plan, repetition.template_root_id)
+    assert template is not None
+    assert template.plan_kind == PlanKind.TASK
+    assert template.clone_status == CloneStatus.TEMPLATE
+    assert service_db_session.get(TaskPlan, template.plan_id) is not None
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_create_child_under_template_goal_uses_goal_chain(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    service = _goal_service(service_db_session)
+    repetition_result = service.create_child(
+        master_plan_id,
+        PlanKind.REPETITION,
+        _repetition_payload(),
+        is_critical=False,
+    )
+    assert repetition_result.success and repetition_result.value is not None
+    repetition = service_db_session.get(RepetitionPlan, repetition_result.value.plan_id)
+    assert repetition is not None
+    template_goal_id = PlanID(repetition.template_root_id)
+
+    child_result = service.create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("template child", 45, True, 15),
+        is_critical=True,
+    )
+    assert child_result.success and child_result.value is not None
+
+    chain_item = service_db_session.scalar(
+        select(GoalChildChainItem).where(
+            GoalChildChainItem.child_plan_id == child_result.value.plan_id
+        )
+    )
+    assert chain_item is not None
+    chain = service_db_session.get(GoalChildChain, chain_item.chain_id)
+    assert chain is not None
+    assert chain.parent_goal_id == repetition.template_root_id
+    assert chain.is_critical is True
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
 def test_create_child_under_nested_goal(
     service_db_session: Session, master_plan_id: PlanID
 ) -> None:

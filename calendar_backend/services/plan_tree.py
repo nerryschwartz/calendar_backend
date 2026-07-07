@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal, overload
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -14,6 +16,12 @@ from calendar_backend.domain.dtos import PlanDeletionPreviewDTO
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID, new_id
+from calendar_backend.domain.plan_create import (
+    CreatePayload,
+    GoalCreatePayload,
+    RepetitionCreatePayload,
+    TaskCreatePayload,
+)
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
@@ -25,11 +33,19 @@ from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPl
 from calendar_backend.models.repetitions import RepetitionInstance
 
 
+@dataclass(frozen=True)
+class _PlanFromPayloadResult:
+    plan: Plan
+    task_plan: TaskPlan | None = None
+    repetition_plan: RepetitionPlan | None = None
+
+
 class PlanTreeService:
     """Plan-wide identity/existence mutations and repo-internal insert/attach primitives.
 
-    Sibling services (for example ``GoalService``) may call ``make_*`` and
-    ``attach_under_parent``; those methods are not part of the external API.
+    Sibling services (for example ``GoalService``) may call ``make_*``,
+    ``make_from_create_payload``, and ``attach_under_parent``; those methods are
+    not part of the external API.
     """
 
     def __init__(self, session: Session, clock: Clock | None = None) -> None:
@@ -142,6 +158,7 @@ class PlanTreeService:
         duration_minutes: int,
         divisible: bool,
         minimum_chunk_size_minutes: int | None,
+        clone_status: CloneStatus = CloneStatus.NOT_CLONED,
         now: datetime,
     ) -> tuple[Plan, TaskPlan]:
         plan_id = new_id(PlanID)
@@ -152,7 +169,7 @@ class PlanTreeService:
             parent_id=None,
             is_master=False,
             cloned_from_id=None,
-            clone_status=CloneStatus.NOT_CLONED,
+            clone_status=clone_status,
             created_at=now,
             updated_at=now,
         )
@@ -178,8 +195,55 @@ class PlanTreeService:
         repeat_interval_minutes: int,
         manual_count: int | None,
         end_time: datetime | None,
+        default_instance_critical: bool,
+        template_type: PlanKind,
+        template_payload: CreatePayload,
+        clone_status: CloneStatus = CloneStatus.NOT_CLONED,
+        now: datetime,
+    ) -> tuple[Plan, RepetitionPlan]:
+        template_result = self.make_from_create_payload(
+            txn,
+            kind=template_type,
+            payload=template_payload,
+            clone_status=CloneStatus.TEMPLATE,
+            now=now,
+        )
+        template_plan = template_result.plan
+        shell, repetition_detail = self._insert_repetition_plan(
+            txn,
+            name=name,
+            repeat_mode=repeat_mode,
+            start_time=start_time,
+            repeat_interval_minutes=repeat_interval_minutes,
+            manual_count=manual_count,
+            end_time=end_time,
+            template_root_id=PlanID(template_plan.plan_id),
+            default_instance_critical=default_instance_critical,
+            clone_status=clone_status,
+            now=now,
+        )
+        txn.flush()
+        self.attach_under_parent(
+            txn,
+            child_plan_id=PlanID(template_plan.plan_id),
+            parent_id=PlanID(shell.plan_id),
+            now=now,
+        )
+        return shell, repetition_detail
+
+    def _insert_repetition_plan(
+        self,
+        txn: Session,
+        *,
+        name: str,
+        repeat_mode: RepeatMode,
+        start_time: datetime,
+        repeat_interval_minutes: int,
+        manual_count: int | None,
+        end_time: datetime | None,
         template_root_id: PlanID,
         default_instance_critical: bool,
+        clone_status: CloneStatus,
         now: datetime,
     ) -> tuple[Plan, RepetitionPlan]:
         plan_id = new_id(PlanID)
@@ -190,7 +254,7 @@ class PlanTreeService:
             parent_id=None,
             is_master=False,
             cloned_from_id=None,
-            clone_status=CloneStatus.NOT_CLONED,
+            clone_status=clone_status,
             created_at=now,
             updated_at=now,
         )
@@ -208,6 +272,61 @@ class PlanTreeService:
         )
         txn.add(repetition_detail)
         return plan, repetition_detail
+
+    def make_from_create_payload(
+        self,
+        txn: Session,
+        *,
+        kind: PlanKind,
+        payload: CreatePayload,
+        clone_status: CloneStatus = CloneStatus.NOT_CLONED,
+        now: datetime,
+    ) -> _PlanFromPayloadResult:
+        if kind == PlanKind.GOAL:
+            assert isinstance(
+                payload, GoalCreatePayload
+            )  # type checker: validate_create_payload already enforced match
+            plan = self.make_goal(
+                txn,
+                name=payload.name,
+                clone_status=clone_status,
+                now=now,
+            )
+            return _PlanFromPayloadResult(plan=plan)
+
+        if kind == PlanKind.TASK:
+            assert isinstance(
+                payload, TaskCreatePayload
+            )  # type checker: validate_create_payload already enforced match
+            plan, task_plan = self.make_task(
+                txn,
+                name=payload.name,
+                duration_minutes=payload.duration_minutes,
+                divisible=payload.divisible,
+                minimum_chunk_size_minutes=payload.minimum_chunk_size_minutes,
+                clone_status=clone_status,
+                now=now,
+            )
+            return _PlanFromPayloadResult(plan=plan, task_plan=task_plan)
+
+        assert isinstance(
+            payload, RepetitionCreatePayload
+        )  # type checker: validate_create_payload already enforced match
+        plan, repetition_plan = self.make_repetition(
+            txn,
+            name=payload.name,
+            repeat_mode=payload.repeat_mode,
+            start_time=payload.start_time,
+            repeat_interval_minutes=payload.repeat_interval_minutes,
+            manual_count=payload.manual_count,
+            end_time=payload.end_time,
+            default_instance_critical=payload.default_instance_critical,
+            template_type=payload.template_type,
+            template_payload=payload.template_payload,
+            clone_status=clone_status,
+            now=now,
+        )
+        return _PlanFromPayloadResult(plan=plan, repetition_plan=repetition_plan)
 
     def attach_under_parent(
         self,
@@ -351,6 +470,71 @@ def _plan_deletion_waves(
         waves.append(ready)
 
     return tuple(waves)
+
+
+@overload
+def load_plan_with_subtype(
+    txn: Session,
+    plan_id: PlanID,
+    *,
+    expected_kind: Literal[PlanKind.TASK],
+) -> tuple[Plan, TaskPlan] | ServiceMessage: ...
+
+
+@overload
+def load_plan_with_subtype(
+    txn: Session,
+    plan_id: PlanID,
+    *,
+    expected_kind: Literal[PlanKind.REPETITION],
+) -> tuple[Plan, RepetitionPlan] | ServiceMessage: ...
+
+
+def load_plan_with_subtype(
+    txn: Session,
+    plan_id: PlanID,
+    *,
+    expected_kind: PlanKind,
+) -> tuple[Plan, TaskPlan | RepetitionPlan] | ServiceMessage:
+    """Load a plan and its subtype detail row; sibling services only."""
+    plan = txn.get(Plan, plan_id)
+    if plan is None:
+        return ServiceMessage(
+            code=MessageCode.PLAN_NOT_FOUND,
+            message="Plan not found",
+            details={"plan_id": str(plan_id)},
+        )
+    if plan.plan_kind != expected_kind:
+        if expected_kind == PlanKind.TASK:
+            kind_message = "Plan is not a task"
+        else:
+            kind_message = "Plan is not a repetition"
+        return ServiceMessage(
+            code=MessageCode.PLAN_SUBTYPE_MISMATCH,
+            message=kind_message,
+            details={
+                "plan_id": str(plan_id),
+                "plan_kind": plan.plan_kind.value,
+            },
+        )
+    if expected_kind == PlanKind.TASK:
+        task_plan = plan.task_plan
+        if task_plan is None:
+            return ServiceMessage(
+                code=MessageCode.PLAN_SUBTYPE_MISMATCH,
+                message="Task plan is missing task_plan detail row",
+                details={"plan_id": str(plan_id)},
+            )
+        return plan, task_plan
+
+    repetition_plan = plan.repetition_plan
+    if repetition_plan is None:
+        return ServiceMessage(
+            code=MessageCode.PLAN_SUBTYPE_MISMATCH,
+            message="Repetition plan is missing repetition_plan detail row",
+            details={"plan_id": str(plan_id)},
+        )
+    return plan, repetition_plan
 
 
 def detach_linked_self_and_descendants(txn: Session, plan: Plan, now: datetime) -> None:

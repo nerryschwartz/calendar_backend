@@ -53,7 +53,13 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 | Type-checker-only artifacts | Unmarked overloads, asserts, casts, or pyright ignores | **§10** — minimal form; prefer checker comments; comment code that exists primarily for Pyright |
 | Boundary validator → persisted shape | Write-path validation with no matching CHECK or invariant | **§11** — CHECK when single-table; invariant when graph or CHECK-unfriendly; no invariant replay of CHECKs (**§8**); no UTC checks on loaded ORM rows (**§12**) |
 | Plan service ownership (PDF §7) | Monolithic `PlanTreeService` with create/move/rename/delete | **`GoalService.create_child`** + **`GoalService.move_plan`** for goal child-chain layout; **`PlanTreeService`** for rename/delete and repo-internal `make_*` / `attach_under_parent` ([repo convention §14](../.cursor/repo_conventions.md), [plan_tree_service.md](plans/plan_tree_service.md)) |
+| Repetition templates (PDF) | Template layout, clone marking, and deletion semantics as read from PDF alone | **§0.1 Template semantics** below — template root + shell structure, otherwise-normal plans, goal chains under template goals, `TEMPLATE` on root only, template-root delete includes repetition shell |
 | Schema enforcement before migration | Defer DB INSERT-failure tests until migration lands; or skip schema tests | **§13** — add schema tests in the ORM change; mark `failure_expected` until `upgrade head`; unmark in `/db-revision-continue` |
+| Cross-service persistence access | Any service may load any aggregate inline | **§15** — mutating service owns its aggregate; consumers call owner read helpers; bundled `make_*` owns coupled subtrees |
+| Boundary DTO/API width | Defensive mappers, public nested DTOs, `list \| tuple` at known callers | **§16** — smallest honest contract at trust boundaries; normalize once; explicit conditional branches |
+| Rule placement (schema vs boundary vs invariant) | “Enforce wherever easiest”; looser CHECK + stricter service | **§17** — one enforcement home per rule; CHECK semantics match write boundary; choose layer by semantic rationale |
+| Helper/module extraction | Generic row copiers; breakout modules for one-off concerns | **§18** — decompose for readability and current duplication; explicit tree passes over opaque copiers |
+| Integration test intent | Test every observable side effect; slice test bullets as exhaustive caps | **§19** — realistic fixture scale; assert meaningful guarantees; illustrative slice test minimums |
 
 ### TimeConstraintGroup
 
@@ -65,6 +71,32 @@ When a repo convention conflicts with this guide, a finalized plan, the PDF, or 
 - **`instance_index`** — occurrence slot for cloning, constraint shifting, and generation identity (`start_time + n * repeat_interval`). Not a priority field.
 - **`is_critical`** — whether this instance counts toward repetition logical completion (analogous to `GoalChildChain.is_critical`). New instances inherit from `RepetitionPlan.default_instance_critical` at generation; `RepetitionService` may update per instance later.
 - **`sort_order`** — priority within the critical or non-critical bucket under one `RepetitionPlan` (analogous to `GoalChildChain.sort_order`: separate dense 0..n-1 sequences per `(repetition_plan_id, is_critical)`). Affects resolution traversal and assignment priority; **does not** impose scheduling precedence between instances (instances still do not precedence-constrain each other).
+
+### Template semantics
+
+**Supersedes PDF** on repetition template structure, normal-plan behavior, and template-root deletion. See also [repetition_service.md](plans/repetition_service.md).
+
+**Structure:**
+- **Repetition shell** — `plan_kind=REPETITION`, `clone_status=NOT_CLONED`, member of the **master** goal child chain; owns `RepetitionPlan`, instances, and generation settings.
+- **Template root** — separate plan referenced by `RepetitionPlan.template_root_id`; `clone_status=TEMPLATE`; direct child of the repetition shell (`parent_id`); **not** in any goal child chain.
+- **Instance clones** — `clone_status=LINKED` (or `DETACHED` after local edit); children of the repetition shell; `cloned_from_id` points at the matching template node.
+
+**Otherwise normal plans:**
+- Template-subtree nodes are ordinary plans for create/edit/move/rename, USER constraints, and goal-child chains **on template goals** (`is_critical` applies there for clone-relative priority).
+- Only repetition-create wiring is special: shell → master chain; template root → `attach_under_parent` under shell (no chain row on the root).
+- `GoalService.create_child` under a template goal uses normal `_attach_to_goal_chain` on that goal — not a separate template API.
+
+**`clone_status`:**
+- **`TEMPLATE` on template root only**; template descendants **`NOT_CLONED`**.
+- Refresh propagates template → `LINKED` clones by `cloned_from_id`; descendant `clone_status` need not be `TEMPLATE`.
+
+**Scheduling:**
+- Template subtree is unscheduled (no `SYSTEM_REPETITION_WINDOW` on template nodes).
+- Instance root clones receive shifted `SYSTEM_REPETITION_WINDOW` constraints (Prompt 10).
+
+**Deletion (supersedes PDF):**
+- Templates follow ordinary rules: descendant cascade, whole-chain expansion, critical-chain parent inclusion.
+- **Additional rule:** when the delete set includes a plan that is some `RepetitionPlan.template_root_id`, also include that **repetition shell** (then ordinary descendant expansion removes instance clones). Applies to template-root delete only (including indirect delete via critical-chain upward rules).
 
 ### 0.2 ORM and slice consistency
 
@@ -1552,13 +1584,15 @@ Use /request-questions first.
 Create a Cursor implementation plan for RepetitionService.
 
 Context:
-- Repetition shell + empty goal template creation is GoalService.create_child(REPETITION, …) (Prompt 8); RepetitionService owns generation, refresh, template subtree expansion, and non-goal templates (deferred until this service).
+- Repetition shell + template root creation is GoalService.create_child(REPETITION, …) (Prompt 8); template semantics per §0.1 (supersedes PDF).
+- GoalService owns template authoring (including children under template goals via normal goal chaining); RepetitionService owns generation, refresh, and repetition settings only.
 - Implement generation, refresh, clone propagation, descendant-only detachment rules, and materialized SYSTEM_REPETITION_WINDOW constraints.
 - RepetitionInstance rows use is_critical and sort_order (critical-first, then sort_order within bucket) per §0.1; set is_critical from default_instance_critical at generation; assign sort_order in RepetitionService.
-- Template subtree is unscheduled.
+- Template subtree is unscheduled; clone_status TEMPLATE on template root only; descendants NOT_CLONED.
 - Instance 0 is a scheduled clone shifted by 0 * repeat_interval.
 - After generation, mode/start_time/repeat_interval are locked.
 - manual_count may increase after generation but may not decrease.
+- DATE_RANGE end_time may extend after generation but may not shorten or clear.
 - date_range with unset end_time resolves to master horizon end and expands as horizon rolls.
 - Detached clones are not overwritten by template refresh, but ordinary deletion still cascades through descendants.
 
@@ -1582,7 +1616,8 @@ Create a Cursor implementation plan for TaskResolutionService.
 
 Context:
 - resolve_tasks(run_started_at) refreshes master horizon and repetitions, then reads the current master tree.
-- Traverse repetitions in critical-first instance order (is_critical, then sort_order within bucket), analogous to goal child chains.
+- Traverse **instance clones** (LINKED/DETACHED), not template blueprint nodes; repetitions in critical-first instance order (is_critical, then sort_order within bucket), analogous to goal child chains.
+- Within each instance clone subtree, respect goal-child-chain criticality cloned from the template (§0.1).
 - Output task buckets: valid/invalid and complete/incomplete as specified by the design.
 - Include inherited effective constraints and constraint sources.
 - Completed predecessors should be ignored.
@@ -1602,6 +1637,9 @@ Store the finalized plan in docs/plans/.
 
 ### Prompt 12: Deletion previews and conflict deletion suggestions
 
+**Deferred carry-over:**
+- [`calendar_backend/domain/deletion.py`](../../calendar_backend/domain/deletion.py): template-root delete includes owning repetition shell — `# TODO(Prompt 12)` (see §0.1 Template semantics)
+
 ```text
 Use /request-questions first.
 
@@ -1613,6 +1651,8 @@ Context:
 - ConflictDeletionSuggestionService ranks candidate deletion previews for assignment conflicts.
 - Ordinary deletion cascades to descendants.
 - Chain deletion cascade and critical chain deletion behavior must be represented.
+- Template semantics per §0.1 (supersedes PDF): templates are otherwise normal plans for chain/critical rules; when delete set includes a repetition template_root_id, also include that repetition shell.
+- Extend compute_deletion_impact in domain/deletion.py if not already done (carry-over from repetition_service.md).
 - This plan should not implement task assignment solving.
 
 Split into slices:
@@ -1635,6 +1675,7 @@ Create a Cursor implementation plan for scheduling interfaces and deterministic 
 Context:
 - Implement AssignmentSolver protocol/interface and solver result types.
 - Implement deterministic heuristic fallback that never violates hard constraints.
+- Assignment operates on resolved instance-clone tasks, not template blueprint nodes (§0.1).
 - No OR-Tools yet.
 - Scheduling granularity is 1 minute.
 - Hard feasibility includes full duration assignment, valid windows, non-overlap, minimum chunk size, and precedence constraints.
@@ -1660,6 +1701,7 @@ Create a Cursor implementation plan for TaskAssignmentService and conflict analy
 
 Context:
 - TaskAssignmentService.assign_tasks(resolved, run_started_at) coordinates solvers and persists successful TASK entries.
+- Persist calendar entries for instance-clone tasks only, not template nodes (§0.1).
 - It requires resolved.run_started_at to match assignment run_started_at.
 - It refuses to run if invalid_incomplete_tasks is non-empty.
 - On success, atomically replace future TASK entries.
@@ -1717,6 +1759,7 @@ Context:
 - refresh_schedule composes task resolution, task assignment, and free-time assignment.
 - It is manually invoked in V1.
 - No automatic full orchestration after every edit/completion.
+- Repetition refresh (Prompt 10) runs before resolution; template edits propagate to LINKED clones per §0.1.
 - Successful full orchestration clears failure state.
 - Failed assignment persists summary metadata and leaves active task calendar unchanged.
 - If task assignment succeeds and free-time assignment fails, preserve task assignment semantics as specified by the design.
@@ -1794,6 +1837,7 @@ Create a Cursor implementation plan for test hardening after core services exist
 Context:
 - Review the updated V1 design document's testing strategy.
 - Add missing invariant, domain validation, repetition, resolution, assignment, free-time, deletion, and integration tests.
+- Include template semantics cases per §0.1: template-goal chaining, template-root delete includes shell, refresh vs DETACHED clones.
 - Do not change production behavior unless a test exposes a real bug.
 - Keep tests readable and deterministic.
 - Each slice build posts a Test catalog in chat (see §9 Test-creation slice convention).
@@ -1819,7 +1863,7 @@ Use /request-questions first.
 Create a Cursor implementation plan for a final V1 design conformance audit.
 
 Context:
-- Compare the implemented code against the updated V1 engineering design document.
+- Compare the implemented code against the updated V1 engineering design document and guide §0.1 supersessions (including template semantics).
 - Do not add new features.
 - Identify missing behavior, accidental non-goals, layer violations, unnecessary abstractions, weak tests, and schema drift issues.
 - Produce a plan split into audit/fix slices.

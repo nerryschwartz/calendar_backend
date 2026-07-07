@@ -143,85 +143,29 @@ def _persist_create_child(
     is_critical: bool,
     now: datetime,
 ) -> ServiceResult[GoalPlanDTO | TaskPlanDTO | RepetitionPlanDTO]:
-    if kind == PlanKind.GOAL:
-        assert isinstance(
-            payload, GoalCreatePayload
-        )  # type checker: validate_create_payload already enforced match
-        plan = plan_tree.make_goal(txn, name=payload.name, now=now)
-        _attach_to_goal_chain(
-            plan_tree,
-            txn,
-            parent_goal_id=parent_id,
-            child_plan_id=PlanID(plan.plan_id),
-            is_critical=is_critical,
-            now=now,
-        )
-        txn.flush()
-        return ok(goal_plan_dto_from_plan(plan))
-
-    if kind == PlanKind.TASK:
-        assert isinstance(
-            payload, TaskCreatePayload
-        )  # type checker: validate_create_payload already enforced match
-        plan, task_plan = plan_tree.make_task(
-            txn,
-            name=payload.name,
-            duration_minutes=payload.duration_minutes,
-            divisible=payload.divisible,
-            minimum_chunk_size_minutes=payload.minimum_chunk_size_minutes,
-            now=now,
-        )
-        _attach_to_goal_chain(
-            plan_tree,
-            txn,
-            parent_goal_id=parent_id,
-            child_plan_id=PlanID(plan.plan_id),
-            is_critical=is_critical,
-            now=now,
-        )
-        txn.flush()
-        return ok(task_plan_dto_from_rows(plan, task_plan))
-
-    assert isinstance(
-        payload, RepetitionCreatePayload
-    )  # type checker: validate_create_payload already enforced match
-    assert isinstance(
-        payload.template_payload, GoalCreatePayload
-    )  # type checker: repetition create validates goal template
-    template_plan = plan_tree.make_goal(
+    created = plan_tree.make_from_create_payload(
         txn,
-        name=payload.template_payload.name,
-        clone_status=CloneStatus.TEMPLATE,
-        now=now,
-    )
-    repetition_plan_row, repetition_detail = plan_tree.make_repetition(
-        txn,
-        name=payload.name,
-        repeat_mode=payload.repeat_mode,
-        start_time=payload.start_time,
-        repeat_interval_minutes=payload.repeat_interval_minutes,
-        manual_count=payload.manual_count,
-        end_time=payload.end_time,
-        template_root_id=PlanID(template_plan.plan_id),
-        default_instance_critical=payload.default_instance_critical,
-        now=now,
-    )
-    plan_tree.attach_under_parent(
-        txn,
-        child_plan_id=PlanID(template_plan.plan_id),
-        parent_id=PlanID(repetition_plan_row.plan_id),
+        kind=kind,
+        payload=payload,
+        clone_status=CloneStatus.NOT_CLONED,
         now=now,
     )
     _attach_to_goal_chain(
         plan_tree,
         txn,
         parent_goal_id=parent_id,
-        child_plan_id=PlanID(repetition_plan_row.plan_id),
+        child_plan_id=PlanID(created.plan.plan_id),
         is_critical=is_critical,
         now=now,
     )
     txn.flush()
-    return ok(repetition_plan_dto_from_rows(repetition_plan_row, repetition_detail))
+    if kind == PlanKind.GOAL:
+        return ok(goal_plan_dto_from_plan(created.plan))
+    if kind == PlanKind.TASK:
+        assert created.task_plan is not None  # type checker: kind TASK implies task row
+        return ok(task_plan_dto_from_rows(created.plan, created.task_plan))
+    assert created.repetition_plan is not None  # type checker: kind REPETITION implies detail row
+    return ok(repetition_plan_dto_from_rows(created.plan, created.repetition_plan))
 
 
 def _load_parent_goal(

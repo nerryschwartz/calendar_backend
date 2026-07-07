@@ -12,8 +12,10 @@ from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.tasks import validate_task_scheduling_fields
 from calendar_backend.domain.time import Clock, SystemClock
-from calendar_backend.models.plans import Plan, TaskPlan
-from calendar_backend.services.plan_tree import detach_linked_self_and_descendants
+from calendar_backend.services.plan_tree import (
+    detach_linked_self_and_descendants,
+    load_plan_with_subtype,
+)
 
 
 class TaskService:
@@ -37,7 +39,7 @@ class TaskService:
             return fail(validation_error)
 
         with transaction(self._session) as txn:
-            loaded = _load_task_plan(txn, plan_id)
+            loaded = load_plan_with_subtype(txn, plan_id, expected_kind=PlanKind.TASK)
             if isinstance(loaded, ServiceMessage):
                 return fail(loaded)
             plan, task_plan = loaded
@@ -53,7 +55,7 @@ class TaskService:
 
     def mark_complete(self, plan_id: PlanID) -> ServiceResult[TaskPlanDTO]:
         with transaction(self._session) as txn:
-            loaded = _load_task_plan(txn, plan_id)
+            loaded = load_plan_with_subtype(txn, plan_id, expected_kind=PlanKind.TASK)
             if isinstance(loaded, ServiceMessage):
                 return fail(loaded)
             plan, task_plan = loaded
@@ -77,7 +79,7 @@ class TaskService:
 
     def reopen(self, plan_id: PlanID) -> ServiceResult[TaskPlanDTO]:
         with transaction(self._session) as txn:
-            loaded = _load_task_plan(txn, plan_id)
+            loaded = load_plan_with_subtype(txn, plan_id, expected_kind=PlanKind.TASK)
             if isinstance(loaded, ServiceMessage):
                 return fail(loaded)
             plan, task_plan = loaded
@@ -88,30 +90,3 @@ class TaskService:
             plan.updated_at = now
             txn.flush()
             return ok(task_plan_dto_from_rows(plan, task_plan))
-
-
-def _load_task_plan(txn: Session, plan_id: PlanID) -> tuple[Plan, TaskPlan] | ServiceMessage:
-    plan = txn.get(Plan, plan_id)
-    if plan is None:
-        return ServiceMessage(
-            code=MessageCode.PLAN_NOT_FOUND,
-            message="Plan not found",
-            details={"plan_id": str(plan_id)},
-        )
-    if plan.plan_kind != PlanKind.TASK:
-        return ServiceMessage(
-            code=MessageCode.PLAN_SUBTYPE_MISMATCH,
-            message="Plan is not a task",
-            details={
-                "plan_id": str(plan_id),
-                "plan_kind": plan.plan_kind.value,
-            },
-        )
-    task_plan = plan.task_plan
-    if task_plan is None:
-        return ServiceMessage(
-            code=MessageCode.PLAN_SUBTYPE_MISMATCH,
-            message="Task plan is missing task_plan detail row",
-            details={"plan_id": str(plan_id)},
-        )
-    return plan, task_plan

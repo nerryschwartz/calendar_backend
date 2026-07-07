@@ -78,7 +78,7 @@ Build workflow: use `/build-plan-slice` per slice against this file; stop after 
 3. Implement `PlanTreeService.make_goal`, `make_task`, `make_repetition`, `attach_under_parent` (orphan inserts / tree link only; docstring: sibling services only).
 4. Implement `GoalService.create_child` with `@overload` returns (annotate type-checker-only code per repo convention §10); private `_load_parent_goal`, `_attach_to_goal_chain`.
 5. **`GOAL` / `TASK` branches:** `make_*` → `_attach_to_goal_chain` (sets `parent_id` + new chain at end of `(parent_goal_id, is_critical)` bucket, single item at `position=0`).
-6. **`REPETITION` branch:** validate settings; `make_goal` (template, `clone_status=TEMPLATE`) → `make_repetition` with `template_root_id` → `attach_under_parent` (template under shell) → `_attach_to_goal_chain` (shell under goal parent); reject non-goal templates.
+6. **`REPETITION` branch:** validate settings; `PlanTreeService.make_repetition` (repetition scalars + `template_type` / `template_payload`) creates template via `_make_template_root`, shell via `_insert_repetition_plan`, and `attach_under_parent` (template under shell); `GoalService` only `_attach_to_goal_chain` (shell under goal parent).
 7. Map validation failures to `fail(...)`; `GoalService` opens `transaction()`, passes `txn` to `PlanTreeService` helpers.
 8. Do **not** call `PlanTreeInvariantService` in production path yet (optional in slice 5 tests).
 9. Persisted-shape enforcement for create validators follows [repo convention §11](../../.cursor/repo_conventions.md): ORM CHECKs on subtype tables + invariant catch-up in `domain/invariant_validation.py` (migration for CHECKs is a separate db-revision step).
