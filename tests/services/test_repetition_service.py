@@ -26,6 +26,7 @@ from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from calendar_backend.services.repetition import RepetitionService
+from calendar_backend.services.task import TaskService
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -55,6 +56,10 @@ def _goal_service(session: Session) -> GoalService:
 
 def _repetition_service(session: Session) -> RepetitionService:
     return RepetitionService(session, FakeClock(RUN_AT))
+
+
+def _task_service(session: Session) -> TaskService:
+    return TaskService(session, FakeClock(RUN_AT))
 
 
 def _repetition_payload(
@@ -126,6 +131,58 @@ def _assert_no_repetition_window(session: Session, plan_id: PlanID) -> None:
         .where(TimeConstraintGroup.constraint_kind == ConstraintKind.SYSTEM_REPETITION_WINDOW)
     )
     assert group is None
+
+
+def _setup_goal_repetition_with_task_child(
+    session: Session,
+    master_plan_id: PlanID,
+    *,
+    manual_count: int = 1,
+) -> tuple[PlanID, PlanID, PlanID]:
+    repetition_id = _create_repetition(
+        session, master_plan_id, _repetition_payload(manual_count=manual_count)
+    )
+    repetition = session.get(RepetitionPlan, repetition_id)
+    assert repetition is not None
+    template_goal_id = PlanID(repetition.template_root_id)
+    child_result = _goal_service(session).create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("template task", 30, False, None),
+        is_critical=False,
+    )
+    assert child_result.success and child_result.value is not None
+    return repetition_id, template_goal_id, child_result.value.plan_id
+
+
+def _instance_root_clone_id(
+    session: Session,
+    repetition_id: PlanID,
+    instance_index: int,
+) -> PlanID:
+    instance = session.scalar(
+        select(RepetitionInstance)
+        .where(RepetitionInstance.repetition_plan_id == repetition_id)
+        .where(RepetitionInstance.instance_index == instance_index)
+    )
+    assert instance is not None
+    return PlanID(instance.root_clone_id)
+
+
+def _clone_for_template(
+    session: Session,
+    *,
+    parent_clone_id: PlanID,
+    template_plan_id: PlanID,
+) -> PlanID:
+    clone = session.scalar(
+        select(Plan).where(
+            Plan.parent_id == parent_clone_id,
+            Plan.cloned_from_id == template_plan_id,
+        )
+    )
+    assert clone is not None
+    return PlanID(clone.plan_id)
 
 
 @pytest.mark.integration
@@ -472,4 +529,200 @@ def test_generate_instances_date_range_open_end_uses_master_horizon(
             repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
         )
     _assert_no_repetition_window(service_db_session, PlanID(repetition_plan.template_root_id))
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_refresh_rejects_before_generation(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id, _, _ = _setup_goal_repetition_with_task_child(service_db_session, master_plan_id)
+
+    result = _repetition_service(service_db_session).refresh_repetition(repetition_id, RUN_AT)
+
+    assert not result.success
+    assert any(error.code == MessageCode.REPETITION_NOT_GENERATED for error in result.errors)
+
+
+@pytest.mark.integration
+def test_refresh_adds_instances_when_manual_count_increases(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id, _, _ = _setup_goal_repetition_with_task_child(
+        service_db_session, master_plan_id, manual_count=1
+    )
+    service = _repetition_service(service_db_session)
+
+    assert service.generate_instances(repetition_id, RUN_AT).success
+    assert service.update_settings(repetition_id, manual_count=3).success
+    assert service.refresh_repetition(repetition_id, RUN_AT).success
+
+    repetition = service_db_session.get(RepetitionPlan, repetition_id)
+    assert repetition is not None
+    instances = service_db_session.scalars(
+        select(RepetitionInstance)
+        .where(RepetitionInstance.repetition_plan_id == repetition_id)
+        .order_by(RepetitionInstance.instance_index)
+    ).all()
+    assert len(instances) == 3
+    assert [instance.instance_index for instance in instances] == [0, 1, 2]
+    for instance in instances:
+        _assert_repetition_window_on_instance_root(
+            service_db_session,
+            root_clone_id=PlanID(instance.root_clone_id),
+            expected_start=instance.instance_start_time.replace(tzinfo=UTC),
+            repeat_interval_minutes=repetition.repeat_interval_minutes,
+        )
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_refresh_all_repetitions_smoke(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_ids = [
+        _setup_goal_repetition_with_task_child(service_db_session, master_plan_id)[0]
+        for _ in range(2)
+    ]
+    service = _repetition_service(service_db_session)
+    for repetition_id in repetition_ids:
+        assert service.generate_instances(repetition_id, RUN_AT).success
+
+    result = service.refresh_all_repetitions(RUN_AT)
+
+    assert result.success
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_refresh_skips_detached_subtree_after_task_detach(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id, _, template_task_id = _setup_goal_repetition_with_task_child(
+        service_db_session, master_plan_id
+    )
+    service = _repetition_service(service_db_session)
+    assert service.generate_instances(repetition_id, RUN_AT).success
+
+    root_clone_id = _instance_root_clone_id(service_db_session, repetition_id, 0)
+    task_clone_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_id,
+        template_plan_id=template_task_id,
+    )
+    assert (
+        _task_service(service_db_session)
+        .update_scheduling_fields(task_clone_id, 45, False, None)
+        .success
+    )
+    detached_plan = service_db_session.get(Plan, task_clone_id)
+    assert detached_plan is not None
+    assert detached_plan.clone_status == CloneStatus.DETACHED
+
+    assert (
+        _task_service(service_db_session)
+        .update_scheduling_fields(template_task_id, 50, False, None)
+        .success
+    )
+    assert service.refresh_repetition(repetition_id, RUN_AT).success
+
+    detached_task = service_db_session.get(TaskPlan, task_clone_id)
+    assert detached_task is not None
+    assert detached_task.duration_minutes == 45
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_refresh_propagates_to_sibling_instance_when_other_detached(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id, _, template_task_id = _setup_goal_repetition_with_task_child(
+        service_db_session, master_plan_id, manual_count=2
+    )
+    service = _repetition_service(service_db_session)
+    assert service.generate_instances(repetition_id, RUN_AT).success
+
+    root_clone_0 = _instance_root_clone_id(service_db_session, repetition_id, 0)
+    root_clone_1 = _instance_root_clone_id(service_db_session, repetition_id, 1)
+    task_clone_0 = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_0,
+        template_plan_id=template_task_id,
+    )
+    task_clone_1 = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_1,
+        template_plan_id=template_task_id,
+    )
+
+    assert (
+        _task_service(service_db_session)
+        .update_scheduling_fields(task_clone_0, 45, False, None)
+        .success
+    )
+    assert (
+        _task_service(service_db_session)
+        .update_scheduling_fields(template_task_id, 60, False, None)
+        .success
+    )
+    assert service.refresh_repetition(repetition_id, RUN_AT).success
+
+    detached_task = service_db_session.get(TaskPlan, task_clone_0)
+    linked_task = service_db_session.get(TaskPlan, task_clone_1)
+    assert detached_task is not None
+    assert linked_task is not None
+    assert detached_task.duration_minutes == 45
+    assert linked_task.duration_minutes == 60
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_refresh_materializes_new_template_goal_child_on_linked_instances(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id, template_goal_id, _ = _setup_goal_repetition_with_task_child(
+        service_db_session, master_plan_id, manual_count=2
+    )
+    service = _repetition_service(service_db_session)
+    assert service.generate_instances(repetition_id, RUN_AT).success
+
+    new_child_result = _goal_service(service_db_session).create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("new template child", 20, False, None),
+        is_critical=False,
+    )
+    assert new_child_result.success and new_child_result.value is not None
+    new_template_child_id = new_child_result.value.plan_id
+
+    assert service.refresh_repetition(repetition_id, RUN_AT).success
+
+    for instance_index in (0, 1):
+        root_clone_id = _instance_root_clone_id(service_db_session, repetition_id, instance_index)
+        clone_child = service_db_session.scalar(
+            select(Plan).where(
+                Plan.parent_id == root_clone_id,
+                Plan.cloned_from_id == new_template_child_id,
+            )
+        )
+        assert clone_child is not None
+        assert clone_child.clone_status == CloneStatus.LINKED
+        assert service_db_session.get(TaskPlan, clone_child.plan_id) is not None
+
+        clone_item = service_db_session.scalar(
+            select(GoalChildChainItem).where(
+                GoalChildChainItem.child_plan_id == clone_child.plan_id,
+            )
+        )
+        assert clone_item is not None
+        clone_chain = service_db_session.get(GoalChildChain, clone_item.chain_id)
+        assert clone_chain is not None
+        assert clone_chain.parent_goal_id == root_clone_id
+
     _assert_tree_invariant(service_db_session)
