@@ -22,7 +22,7 @@ from calendar_backend.services.app_settings import (
     AppSettingsService,
 )
 from calendar_backend.services.goal import GoalService
-from calendar_backend.services.master_horizon import MasterHorizonService
+from calendar_backend.services.master_horizon import MasterHorizonService, get_master_horizon_end
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from calendar_backend.services.repetition import RepetitionService
@@ -412,6 +412,20 @@ def test_generate_instances_date_range_with_explicit_end(
 _WEEKLY_INTERVAL_MINUTES = 10_080
 
 
+def _expected_open_end_instance_count(
+    *,
+    start_time: datetime,
+    repeat_interval_minutes: int,
+    horizon_end: datetime,
+) -> int:
+    start = start_time if start_time.tzinfo is not None else start_time.replace(tzinfo=UTC)
+    end = horizon_end if horizon_end.tzinfo is not None else horizon_end.replace(tzinfo=UTC)
+    count = 0
+    while start + timedelta(minutes=repeat_interval_minutes * count) < end:
+        count += 1
+    return count
+
+
 @pytest.mark.integration
 def test_generate_instances_repetition_template_root(
     service_db_session: Session,
@@ -724,5 +738,99 @@ def test_refresh_materializes_new_template_goal_child_on_linked_instances(
         clone_chain = service_db_session.get(GoalChildChain, clone_item.chain_id)
         assert clone_chain is not None
         assert clone_chain.parent_goal_id == root_clone_id
+
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_refresh_adds_instances_when_master_horizon_expands(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    payload = RepetitionCreatePayload(
+        name="horizon bound",
+        repeat_mode=RepeatMode.DATE_RANGE,
+        start_time=RUN_AT,
+        repeat_interval_minutes=_WEEKLY_INTERVAL_MINUTES,
+        manual_count=None,
+        end_time=None,
+        default_instance_critical=False,
+        template_type=PlanKind.GOAL,
+        template_payload=GoalCreatePayload(name="template"),
+    )
+    repetition_id = _create_repetition(service_db_session, master_plan_id, payload)
+    service = _repetition_service(service_db_session)
+    assert service.generate_instances(repetition_id, RUN_AT).success
+
+    instances_before = service_db_session.scalars(
+        select(RepetitionInstance)
+        .where(RepetitionInstance.repetition_plan_id == repetition_id)
+        .order_by(RepetitionInstance.instance_index)
+    ).all()
+    snapshot = {
+        instance.instance_index: (
+            instance.repetition_instance_id,
+            PlanID(instance.root_clone_id),
+            instance.instance_start_time.replace(tzinfo=UTC),
+        )
+        for instance in instances_before
+    }
+    horizon_end_h1 = get_master_horizon_end(service_db_session)
+    assert horizon_end_h1 is not None
+    assert len(instances_before) == _expected_open_end_instance_count(
+        start_time=RUN_AT,
+        repeat_interval_minutes=_WEEKLY_INTERVAL_MINUTES,
+        horizon_end=horizon_end_h1.replace(tzinfo=UTC)
+        if horizon_end_h1.tzinfo is None
+        else horizon_end_h1,
+    )
+
+    h2 = RUN_AT + timedelta(weeks=2)
+    assert (
+        MasterHorizonService(service_db_session, FakeClock(h2)).refresh_master_horizon(h2).success
+    )
+    assert service.refresh_repetition(repetition_id, h2).success
+
+    repetition_plan = service_db_session.get(RepetitionPlan, repetition_id)
+    assert repetition_plan is not None
+    instances_after = service_db_session.scalars(
+        select(RepetitionInstance)
+        .where(RepetitionInstance.repetition_plan_id == repetition_id)
+        .order_by(RepetitionInstance.instance_index)
+    ).all()
+    horizon_end_h2 = get_master_horizon_end(service_db_session)
+    assert horizon_end_h2 is not None
+    assert len(instances_after) > len(instances_before)
+    assert len(instances_after) == _expected_open_end_instance_count(
+        start_time=RUN_AT,
+        repeat_interval_minutes=_WEEKLY_INTERVAL_MINUTES,
+        horizon_end=horizon_end_h2.replace(tzinfo=UTC)
+        if horizon_end_h2.tzinfo is None
+        else horizon_end_h2,
+    )
+    instance_indices = [instance.instance_index for instance in instances_after]
+    assert instance_indices == list(range(len(instances_after)))
+
+    for instance in instances_after:
+        if instance.instance_index in snapshot:
+            prior_id, prior_root_clone_id, prior_start = snapshot[instance.instance_index]
+            assert instance.repetition_instance_id == prior_id
+            assert PlanID(instance.root_clone_id) == prior_root_clone_id
+            assert instance.instance_start_time.replace(tzinfo=UTC) == prior_start
+        _assert_repetition_window_on_instance_root(
+            service_db_session,
+            root_clone_id=PlanID(instance.root_clone_id),
+            expected_start=instance.instance_start_time.replace(tzinfo=UTC),
+            repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
+        )
+
+    assert service.refresh_repetition(repetition_id, h2).success
+    instances_unchanged = service_db_session.scalars(
+        select(RepetitionInstance)
+        .where(RepetitionInstance.repetition_plan_id == repetition_id)
+        .order_by(RepetitionInstance.instance_index)
+    ).all()
+    assert len(instances_unchanged) == len(instances_after)
+    assert [instance.instance_index for instance in instances_unchanged] == instance_indices
 
     _assert_tree_invariant(service_db_session)
