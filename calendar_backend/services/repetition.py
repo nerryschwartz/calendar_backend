@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import delete, select
@@ -70,14 +70,16 @@ class RepetitionService:
                 return fail(loaded)
             plan, repetition_plan = loaded
 
+            stored_start_time = _datetime_from_storage(repetition_plan.start_time)
+            assert stored_start_time is not None
             current = RepetitionSettingsState(
                 repeat_mode=repetition_plan.repeat_mode,
-                start_time=repetition_plan.start_time,
+                start_time=stored_start_time,
                 repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
                 manual_count=repetition_plan.manual_count,
-                end_time=repetition_plan.end_time,
+                end_time=_datetime_from_storage(repetition_plan.end_time),
                 default_instance_critical=repetition_plan.default_instance_critical,
-                generated_at=repetition_plan.generated_at,
+                generated_at=_datetime_from_storage(repetition_plan.generated_at),
             )
             if manual_count is _UNSET:
                 merged_manual_count = current.manual_count
@@ -452,10 +454,20 @@ def _is_linked_for_refresh(txn: Session, plan_id: PlanID) -> bool:
     while current is not None:
         if current.clone_status == CloneStatus.DETACHED:
             return False
+        if current.clone_status in (CloneStatus.NOT_CLONED, CloneStatus.TEMPLATE):
+            return True
         if current.parent_id is None:
-            return current.clone_status == CloneStatus.LINKED
+            return False
         current = txn.get(Plan, current.parent_id)
     return False
+
+
+def _datetime_from_storage(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
 
 
 def _propagate_linked_clone_from_template(
