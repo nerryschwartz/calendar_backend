@@ -29,6 +29,13 @@ from calendar_backend.domain.ids import (
     TimeWindowID,
     new_id,
 )
+from calendar_backend.domain.resolution import (
+    ChainPathStep,
+    ConstraintSource,
+    ResolvedPrecedenceConstraint,
+    ResolvedTask,
+    ResolveTasksResult,
+)
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import (
     Clock,
@@ -45,9 +52,11 @@ __all__ = [
     "CalendarEntryType",
     "CalendarRunID",
     "CalendarRunStatus",
+    "ChainPathStep",
     "Clock",
     "CloneStatus",
     "ConstraintKind",
+    "ConstraintSource",
     "FreeTimeActivityID",
     "FreeTimeActivityPrerequisiteID",
     "FreeTimeWeekStartDay",
@@ -60,6 +69,9 @@ __all__ = [
     "RepeatMode",
     "RepetitionInstanceID",
     "RepetitionTimestampField",
+    "ResolveTasksResult",
+    "ResolvedPrecedenceConstraint",
+    "ResolvedTask",
     "ServiceMessage",
     "ServiceResult",
     "ServiceTransactionAborted",
