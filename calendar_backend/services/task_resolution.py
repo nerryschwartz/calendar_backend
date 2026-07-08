@@ -1,4 +1,10 @@
-"""Task resolution service: refresh horizon/repetitions and resolve the master tree."""
+"""Task resolution service: refresh horizon/repetitions and resolve the master tree.
+
+Resolution does not write calendar entries. Downstream assignment (Prompt 14)
+``assign_tasks`` must refuse when ``ResolveTasksResult.invalid_incomplete`` is
+non-empty (``MessageCode.INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT``). Invalid
+completed tasks do not block assignment.
+"""
 
 from __future__ import annotations
 
@@ -24,11 +30,17 @@ from calendar_backend.services.repetition import RepetitionService
 
 
 class TaskResolutionService:
+    """Resolve the master plan tree into task buckets for scheduling."""
+
     def __init__(self, session: Session, clock: Clock | None = None) -> None:
         self._session = session
         self._clock = clock or SystemClock()
 
     def resolve_tasks(self, run_started_at: datetime) -> ServiceResult[ResolveTasksResult]:
+        """Refresh horizon/repetitions, validate the tree, and return resolved tasks.
+
+        ``ResolveTasksResult.run_started_at`` echoes the validated input.
+        """
         validation_error = validate_run_started_at(run_started_at)
         if validation_error is not None:
             return fail(validation_error)
@@ -63,7 +75,7 @@ def _resolve_from_current_tree(
     *,
     plans: tuple[Plan, ...],
 ) -> ResolveTasksResult:
-    """Resolve tasks, effective constraints, and precedence from the loaded graph."""
+    """Read-only resolution test seam: graph load without refresh side effects."""
     return resolve_tasks_from_graph(run_started_at, plans)
 
 

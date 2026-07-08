@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
@@ -280,7 +281,7 @@ def resolve_tasks_from_graph(
         invalid_incomplete,
         invalid_completed,
     ) = _partition_resolved_tasks(enriched_tasks)
-    return ResolveTasksResult(
+    result = ResolveTasksResult(
         run_started_at=run_started_at,
         valid_incomplete=valid_incomplete,
         valid_completed=valid_completed,
@@ -289,6 +290,8 @@ def resolve_tasks_from_graph(
         precedence_constraints=precedence_constraints,
         warnings=(),
     )
+    validate_resolve_tasks_result(result)
+    return result
 
 
 def _collect_descendant_ids(
@@ -347,6 +350,49 @@ def _ordered_repetition_instances(
     )
 
 
+def is_invalid_task(task: ResolvedTask) -> bool:
+    return bool(task.validation_errors)
+
+
+def is_invalid_incomplete_task(task: ResolvedTask) -> bool:
+    return is_invalid_task(task) and not task.user_completed
+
+
+def _is_valid_incomplete_task(task: ResolvedTask) -> bool:
+    return not is_invalid_task(task) and not task.user_completed
+
+
+def _is_valid_completed_task(task: ResolvedTask) -> bool:
+    return not is_invalid_task(task) and task.user_completed
+
+
+def _is_invalid_completed_task(task: ResolvedTask) -> bool:
+    return is_invalid_task(task) and task.user_completed
+
+
+def validate_resolve_tasks_result(result: ResolveTasksResult) -> None:
+    seen_plan_ids: set[PlanID] = set()
+
+    def check_bucket(
+        bucket_name: str,
+        tasks: tuple[ResolvedTask, ...],
+        matches_bucket: Callable[[ResolvedTask], bool],
+    ) -> None:
+        for task in tasks:
+            if not matches_bucket(task):
+                raise ValueError(
+                    f"{bucket_name} contains task with mismatched validity or completion"
+                )
+            if task.plan_id in seen_plan_ids:
+                raise ValueError(f"task {task.plan_id} appears in multiple resolution buckets")
+            seen_plan_ids.add(task.plan_id)
+
+    check_bucket("valid_incomplete", result.valid_incomplete, _is_valid_incomplete_task)
+    check_bucket("valid_completed", result.valid_completed, _is_valid_completed_task)
+    check_bucket("invalid_incomplete", result.invalid_incomplete, is_invalid_incomplete_task)
+    check_bucket("invalid_completed", result.invalid_completed, _is_invalid_completed_task)
+
+
 def _partition_resolved_tasks(
     tasks: list[ResolvedTask],
 ) -> tuple[
@@ -360,11 +406,11 @@ def _partition_resolved_tasks(
     invalid_incomplete: list[ResolvedTask] = []
     invalid_completed: list[ResolvedTask] = []
     for task in tasks:
-        is_invalid = bool(task.validation_errors)
-        if is_invalid and task.user_completed:
-            invalid_completed.append(task)
-        elif is_invalid:
-            invalid_incomplete.append(task)
+        if is_invalid_task(task):
+            if task.user_completed:
+                invalid_completed.append(task)
+            else:
+                invalid_incomplete.append(task)
         elif task.user_completed:
             valid_completed.append(task)
         else:
