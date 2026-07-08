@@ -1,14 +1,19 @@
-"""Frozen DTOs for task resolution output per design §8.2."""
+"""Frozen DTOs and pure task-resolution helpers per design §8.2 / §9.1."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import uuid
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from calendar_backend.domain.enums import ConstraintKind
-from calendar_backend.domain.errors import ServiceMessage
+from calendar_backend.domain.enums import ConstraintKind, PlanKind
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import GoalChildChainID, PlanID, TimeConstraintGroupID
-from calendar_backend.domain.time import TimeWindow
+from calendar_backend.domain.time import TimeWindow, validate_time_window
+from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
+from calendar_backend.models.repetitions import RepetitionInstance
 
 ChainPathStep = tuple[GoalChildChainID, int]
 
@@ -55,3 +60,352 @@ class ResolveTasksResult:
     invalid_completed: tuple[ResolvedTask, ...]
     precedence_constraints: tuple[ResolvedPrecedenceConstraint, ...]
     warnings: tuple[ServiceMessage, ...]
+
+
+@dataclass(frozen=True)
+class ResolutionIndexes:
+    plans_by_id: dict[uuid.UUID, Plan]
+    template_subtree_ids: frozenset[uuid.UUID]
+    master_plan_id: PlanID
+
+
+def build_resolution_indexes(plans: tuple[Plan, ...]) -> ResolutionIndexes:
+    plans_by_id = {plan.plan_id: plan for plan in plans}
+    children_by_parent: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for plan in plans:
+        if plan.parent_id is not None:
+            children_by_parent.setdefault(plan.parent_id, []).append(plan.plan_id)
+
+    template_roots: list[uuid.UUID] = []
+    for plan in plans:
+        if plan.repetition_plan is not None:
+            template_roots.append(plan.repetition_plan.template_root_id)
+
+    template_subtree_ids: set[uuid.UUID] = set()
+    for template_root_id in template_roots:
+        template_subtree_ids.update(
+            _collect_descendant_ids(template_root_id, children_by_parent, include_root=True)
+        )
+
+    masters = [plan for plan in plans if plan.is_master]
+    if len(masters) != 1:
+        raise ValueError("resolution requires exactly one master plan in loaded graph")
+    master_plan_id = PlanID(masters[0].plan_id)
+
+    return ResolutionIndexes(
+        plans_by_id=plans_by_id,
+        template_subtree_ids=frozenset(template_subtree_ids),
+        master_plan_id=master_plan_id,
+    )
+
+
+def constraint_errors_for_plan(plan: Plan) -> tuple[ServiceMessage, ...]:
+    errors: list[ServiceMessage] = []
+    for group in plan.constraint_groups:
+        for window_index, window in enumerate(group.windows):
+            try:
+                validate_time_window(
+                    TimeWindow(start_time=window.start_time, end_time=window.end_time)
+                )
+            except ValueError as exc:
+                message = str(exc)
+                details = {
+                    "plan_id": str(plan.plan_id),
+                    "constraint_group_id": str(group.time_constraint_group_id),
+                    "window_index": str(window_index),
+                }
+                if "minute-aligned" in message:
+                    errors.append(
+                        ServiceMessage(
+                            code=MessageCode.NON_MINUTE_ALIGNED_WINDOW,
+                            message=message,
+                            details=details,
+                        )
+                    )
+                else:
+                    errors.append(
+                        ServiceMessage(
+                            code=MessageCode.INVALID_TIME_WINDOW,
+                            message=message,
+                            details=details,
+                        )
+                    )
+    return tuple(errors)
+
+
+def resolve_tasks_from_graph(
+    run_started_at: datetime,
+    plans: tuple[Plan, ...],
+) -> ResolveTasksResult:
+    indexes = build_resolution_indexes(plans)
+    collector = _TaskCollector(indexes=indexes)
+    collector.traverse_goal_chains(
+        indexes.master_plan_id,
+        parent_path=(indexes.master_plan_id,),
+        criticality_path=(),
+        chain_path=(),
+        inherited_errors=(),
+    )
+    (
+        valid_incomplete,
+        valid_completed,
+        invalid_incomplete,
+        invalid_completed,
+    ) = _partition_resolved_tasks(collector.tasks)
+    return ResolveTasksResult(
+        run_started_at=run_started_at,
+        valid_incomplete=valid_incomplete,
+        valid_completed=valid_completed,
+        invalid_incomplete=invalid_incomplete,
+        invalid_completed=invalid_completed,
+        precedence_constraints=(),
+        warnings=(),
+    )
+
+
+def _collect_descendant_ids(
+    root_id: uuid.UUID,
+    children_by_parent: dict[uuid.UUID, list[uuid.UUID]],
+    *,
+    include_root: bool,
+) -> set[uuid.UUID]:
+    collected: set[uuid.UUID] = set()
+    queue: deque[uuid.UUID] = deque([root_id])
+    while queue:
+        plan_id = queue.popleft()
+        if plan_id in collected:
+            continue
+        collected.add(plan_id)
+        queue.extend(children_by_parent.get(plan_id, ()))
+    if not include_root:
+        collected.discard(root_id)
+    return collected
+
+
+def _ordered_chains(goal_plan: GoalPlan) -> tuple[GoalChildChain, ...]:
+    return tuple(
+        sorted(
+            goal_plan.chains,
+            key=lambda chain: (
+                not chain.is_critical,
+                chain.sort_order,
+                str(chain.goal_child_chain_id),
+            ),
+        )
+    )
+
+
+def _sorted_chain_items(chain: GoalChildChain) -> tuple[GoalChildChainItem, ...]:
+    return tuple(
+        sorted(
+            chain.items,
+            key=lambda item: (item.position, str(item.goal_child_chain_item_id)),
+        )
+    )
+
+
+def _ordered_repetition_instances(
+    repetition_plan: RepetitionPlan,
+) -> tuple[RepetitionInstance, ...]:
+    return tuple(
+        sorted(
+            repetition_plan.instances,
+            key=lambda instance: (
+                not instance.is_critical,
+                instance.sort_order,
+                str(instance.repetition_instance_id),
+            ),
+        )
+    )
+
+
+def _partition_resolved_tasks(
+    tasks: list[ResolvedTask],
+) -> tuple[
+    tuple[ResolvedTask, ...],
+    tuple[ResolvedTask, ...],
+    tuple[ResolvedTask, ...],
+    tuple[ResolvedTask, ...],
+]:
+    valid_incomplete: list[ResolvedTask] = []
+    valid_completed: list[ResolvedTask] = []
+    invalid_incomplete: list[ResolvedTask] = []
+    invalid_completed: list[ResolvedTask] = []
+    for task in tasks:
+        is_invalid = bool(task.validation_errors)
+        if is_invalid and task.user_completed:
+            invalid_completed.append(task)
+        elif is_invalid:
+            invalid_incomplete.append(task)
+        elif task.user_completed:
+            valid_completed.append(task)
+        else:
+            valid_incomplete.append(task)
+    return (
+        tuple(valid_incomplete),
+        tuple(valid_completed),
+        tuple(invalid_incomplete),
+        tuple(invalid_completed),
+    )
+
+
+@dataclass(frozen=True)
+class _WalkContext:
+    parent_path: tuple[PlanID, ...]
+    criticality_path: tuple[bool, ...]
+    chain_path: tuple[ChainPathStep, ...]
+    inherited_errors: tuple[ServiceMessage, ...]
+    priority_path: tuple[int, ...]
+
+
+@dataclass
+class _TaskCollector:
+    indexes: ResolutionIndexes
+    tasks: list[ResolvedTask] = field(default_factory=lambda: [])
+    _priority_counter: int = 0
+
+    def traverse_goal_chains(
+        self,
+        goal_id: PlanID,
+        *,
+        parent_path: tuple[PlanID, ...],
+        criticality_path: tuple[bool, ...],
+        chain_path: tuple[ChainPathStep, ...],
+        inherited_errors: tuple[ServiceMessage, ...],
+        priority_path: tuple[int, ...] = (),
+    ) -> None:
+        plan = self.indexes.plans_by_id[goal_id]
+        if plan.goal_plan is None:
+            return
+
+        goal_errors = constraint_errors_for_plan(plan)
+        subtree_errors = inherited_errors + goal_errors
+
+        for chain in _ordered_chains(plan.goal_plan):
+            for item in _sorted_chain_items(chain):
+                child_id = PlanID(item.child_plan_id)
+                if child_id in self.indexes.template_subtree_ids:
+                    continue
+                child = self.indexes.plans_by_id.get(item.child_plan_id)
+                if child is None:
+                    continue
+
+                step_chain_path = (
+                    *chain_path,
+                    (GoalChildChainID(chain.goal_child_chain_id), item.position),
+                )
+                step_criticality = (*criticality_path, chain.is_critical)
+                child_parent_path = (*parent_path, child_id)
+                step_priority = (*priority_path, self._priority_counter)
+                self._priority_counter += 1
+
+                child_context = _WalkContext(
+                    parent_path=child_parent_path,
+                    criticality_path=step_criticality,
+                    chain_path=step_chain_path,
+                    inherited_errors=subtree_errors,
+                    priority_path=step_priority,
+                )
+                self._visit_chain_child(child, child_context)
+
+    def _visit_chain_child(self, plan: Plan, context: _WalkContext) -> None:
+        if plan.plan_kind == PlanKind.GOAL:
+            self.traverse_goal_chains(
+                PlanID(plan.plan_id),
+                parent_path=context.parent_path,
+                criticality_path=context.criticality_path,
+                chain_path=context.chain_path,
+                inherited_errors=context.inherited_errors,
+                priority_path=context.priority_path,
+            )
+            return
+
+        if plan.plan_kind == PlanKind.TASK:
+            self._emit_task(plan, context)
+            return
+
+        if plan.plan_kind == PlanKind.REPETITION:
+            self._expand_repetition(plan, context)
+
+    def _expand_repetition(self, plan: Plan, context: _WalkContext) -> None:
+        repetition_plan = plan.repetition_plan
+        if repetition_plan is None or repetition_plan.generated_at is None:
+            return
+
+        for instance_index, instance in enumerate(_ordered_repetition_instances(repetition_plan)):
+            root_id = PlanID(instance.root_clone_id)
+            if root_id in self.indexes.template_subtree_ids:
+                continue
+            root_plan = self.indexes.plans_by_id.get(instance.root_clone_id)
+            if root_plan is None:
+                continue
+
+            instance_priority = (*context.priority_path, instance_index)
+            instance_context = _WalkContext(
+                parent_path=(*context.parent_path, root_id),
+                criticality_path=(*context.criticality_path, instance.is_critical),
+                chain_path=context.chain_path,
+                inherited_errors=context.inherited_errors,
+                priority_path=instance_priority,
+            )
+            self._enter_subtree_root(root_plan, instance_context)
+
+    def _enter_subtree_root(self, plan: Plan, context: _WalkContext) -> None:
+        if plan.plan_id in self.indexes.template_subtree_ids:
+            return
+
+        if plan.plan_kind == PlanKind.GOAL:
+            self.traverse_goal_chains(
+                PlanID(plan.plan_id),
+                parent_path=context.parent_path,
+                criticality_path=context.criticality_path,
+                chain_path=context.chain_path,
+                inherited_errors=context.inherited_errors,
+                priority_path=context.priority_path,
+            )
+            return
+
+        if plan.plan_kind == PlanKind.TASK:
+            self._emit_task(plan, context)
+            return
+
+        if plan.plan_kind == PlanKind.REPETITION:
+            self._expand_repetition(plan, context)
+
+    def _emit_task(self, plan: Plan, context: _WalkContext) -> None:
+        task_plan = plan.task_plan
+        if task_plan is None:
+            return
+
+        validation_errors = list(context.inherited_errors)
+        validation_errors.extend(constraint_errors_for_plan(plan))
+        if task_plan.duration_minutes <= 0:
+            validation_errors.append(
+                ServiceMessage(
+                    code=MessageCode.INVALID_DURATION,
+                    message="Task duration must be positive",
+                    details={
+                        "plan_id": str(plan.plan_id),
+                        "duration_minutes": str(task_plan.duration_minutes),
+                    },
+                )
+            )
+
+        self.tasks.append(
+            ResolvedTask(
+                plan_id=PlanID(plan.plan_id),
+                name=plan.name,
+                duration_minutes=task_plan.duration_minutes,
+                divisible=task_plan.divisible,
+                minimum_chunk_size_minutes=task_plan.minimum_chunk_size_minutes,
+                user_completed=task_plan.user_completed,
+                completed_at=task_plan.completed_at,
+                effective_time_windows=(),
+                constraint_sources=(),
+                priority_path=context.priority_path,
+                criticality_path=context.criticality_path,
+                parent_path=context.parent_path,
+                chain_path=context.chain_path,
+                validation_errors=tuple(validation_errors),
+            )
+        )

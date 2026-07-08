@@ -32,9 +32,13 @@ from calendar_backend.domain.ids import (
 from calendar_backend.domain.resolution import (
     ChainPathStep,
     ConstraintSource,
+    ResolutionIndexes,
     ResolvedPrecedenceConstraint,
     ResolvedTask,
     ResolveTasksResult,
+    build_resolution_indexes,
+    constraint_errors_for_plan,
+    resolve_tasks_from_graph,
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import (
@@ -69,6 +73,7 @@ __all__ = [
     "RepeatMode",
     "RepetitionInstanceID",
     "RepetitionTimestampField",
+    "ResolutionIndexes",
     "ResolveTasksResult",
     "ResolvedPrecedenceConstraint",
     "ResolvedTask",
@@ -81,11 +86,14 @@ __all__ = [
     "TimeWindow",
     "TimeWindowID",
     "WrongPlanTypeError",
+    "build_resolution_indexes",
+    "constraint_errors_for_plan",
     "fail",
     "is_minute_aligned",
     "new_id",
     "ok",
     "require_utc",
+    "resolve_tasks_from_graph",
     "truncate_to_minute",
     "validate_time_window",
 ]
