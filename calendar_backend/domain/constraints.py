@@ -61,3 +61,29 @@ def merge_or_windows(windows: tuple[TimeWindow, ...]) -> tuple[TimeWindow, ...]:
             merged.append(window)
 
     return tuple(merged)
+
+
+def intersect_time_windows(
+    left: tuple[TimeWindow, ...],
+    right: tuple[TimeWindow, ...],
+) -> tuple[TimeWindow, ...]:
+    """Intersect two merged half-open window sets. Inputs must already be valid and merged."""
+    if not left or not right:
+        return ()
+
+    result: list[TimeWindow] = []
+    left_index = 0
+    right_index = 0
+    while left_index < len(left) and right_index < len(right):
+        left_window = left[left_index]
+        right_window = right[right_index]
+        overlap_start = max(left_window.start_time, right_window.start_time)
+        overlap_end = min(left_window.end_time, right_window.end_time)
+        if overlap_start < overlap_end:
+            result.append(TimeWindow(start_time=overlap_start, end_time=overlap_end))
+        if left_window.end_time <= right_window.end_time:
+            left_index += 1
+        else:
+            right_index += 1
+
+    return tuple(result)
