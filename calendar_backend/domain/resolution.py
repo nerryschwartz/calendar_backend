@@ -210,6 +210,51 @@ def _apply_effective_constraints(
     return enriched
 
 
+def collect_precedence_constraints(
+    tasks: tuple[ResolvedTask, ...],
+    plans: tuple[Plan, ...],
+    indexes: ResolutionIndexes,
+) -> tuple[ResolvedPrecedenceConstraint, ...]:
+    task_by_id = {task.plan_id: task for task in tasks}
+    edges: list[ResolvedPrecedenceConstraint] = []
+
+    for plan in plans:
+        if plan.plan_id in indexes.template_subtree_ids:
+            continue
+        if plan.goal_plan is None:
+            continue
+
+        for chain in plan.goal_plan.chains:
+            incomplete_predecessor: PlanID | None = None
+            for item in _sorted_chain_items(chain):
+                successor_id = PlanID(item.child_plan_id)
+                successor = task_by_id.get(successor_id)
+                if successor is None:
+                    continue
+
+                if incomplete_predecessor is not None:
+                    edges.append(
+                        ResolvedPrecedenceConstraint(
+                            predecessor_task_id=incomplete_predecessor,
+                            successor_task_id=successor_id,
+                            source_chain_id=GoalChildChainID(chain.goal_child_chain_id),
+                            reason="goal_child_chain_order",
+                        )
+                    )
+
+                if not successor.user_completed:
+                    incomplete_predecessor = successor_id
+
+    edges.sort(
+        key=lambda edge: (
+            str(edge.source_chain_id),
+            str(edge.successor_task_id),
+            str(edge.predecessor_task_id),
+        )
+    )
+    return tuple(edges)
+
+
 def resolve_tasks_from_graph(
     run_started_at: datetime,
     plans: tuple[Plan, ...],
@@ -224,6 +269,11 @@ def resolve_tasks_from_graph(
         inherited_errors=(),
     )
     enriched_tasks = _apply_effective_constraints(collector.tasks, indexes)
+    precedence_constraints = collect_precedence_constraints(
+        tuple(enriched_tasks),
+        plans,
+        indexes,
+    )
     (
         valid_incomplete,
         valid_completed,
@@ -236,7 +286,7 @@ def resolve_tasks_from_graph(
         valid_completed=valid_completed,
         invalid_incomplete=invalid_incomplete,
         invalid_completed=invalid_completed,
-        precedence_constraints=(),
+        precedence_constraints=precedence_constraints,
         warnings=(),
     )
 
