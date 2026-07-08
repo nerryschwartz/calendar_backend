@@ -63,6 +63,7 @@ def _resolve_from_current_tree(
     *,
     plans: tuple[Plan, ...],
 ) -> ResolveTasksResult:
+    """Resolve tasks and compute inherited effective constraints from the loaded graph."""
     return resolve_tasks_from_graph(run_started_at, plans)
 
 

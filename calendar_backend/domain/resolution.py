@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
+from calendar_backend.domain.constraints import intersect_time_windows, merge_or_windows
 from calendar_backend.domain.enums import ConstraintKind, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import GoalChildChainID, PlanID, TimeConstraintGroupID
 from calendar_backend.domain.time import TimeWindow, validate_time_window
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 
@@ -133,6 +135,81 @@ def constraint_errors_for_plan(plan: Plan) -> tuple[ServiceMessage, ...]:
     return tuple(errors)
 
 
+def compute_effective_constraints(
+    parent_path: tuple[PlanID, ...],
+    indexes: ResolutionIndexes,
+) -> tuple[tuple[TimeWindow, ...], tuple[ConstraintSource, ...]]:
+    effective: tuple[TimeWindow, ...] | None = None
+    sources: list[ConstraintSource] = []
+
+    for plan_id in parent_path:
+        plan = indexes.plans_by_id.get(plan_id)
+        if plan is None:
+            continue
+
+        ordered_groups = sorted(
+            plan.constraint_groups,
+            key=lambda group: (group.constraint_kind, str(group.time_constraint_group_id)),
+        )
+        for group in ordered_groups:
+            if not group.windows:
+                continue
+
+            sources.append(
+                ConstraintSource(
+                    plan_id=PlanID(plan.plan_id),
+                    constraint_kind=group.constraint_kind,
+                    constraint_group_id=TimeConstraintGroupID(group.time_constraint_group_id),
+                )
+            )
+
+            valid_windows = _valid_windows_for_group(group)
+            if not valid_windows:
+                continue
+
+            merged_group = merge_or_windows(valid_windows)
+            if effective is None:
+                effective = merged_group
+            else:
+                effective = intersect_time_windows(effective, merged_group)
+                if not effective:
+                    break
+
+        if effective is not None and not effective:
+            break
+
+    return (effective or (), tuple(sources))
+
+
+def _valid_windows_for_group(group: TimeConstraintGroup) -> tuple[TimeWindow, ...]:
+    valid: list[TimeWindow] = []
+    for window in group.windows:
+        domain_window = TimeWindow(start_time=window.start_time, end_time=window.end_time)
+        try:
+            validate_time_window(domain_window)
+        except ValueError:
+            continue
+        valid.append(domain_window)
+    return tuple(valid)
+
+
+def _apply_effective_constraints(
+    tasks: list[ResolvedTask],
+    indexes: ResolutionIndexes,
+) -> list[ResolvedTask]:
+    enriched: list[ResolvedTask] = []
+    for task in tasks:
+        effective, sources = compute_effective_constraints(task.parent_path, indexes)
+        enriched.append(
+            replace(
+                task,
+                effective_time_windows=effective,
+                constraint_sources=sources,
+            )
+        )
+    return enriched
+
+
 def resolve_tasks_from_graph(
     run_started_at: datetime,
     plans: tuple[Plan, ...],
@@ -146,12 +223,13 @@ def resolve_tasks_from_graph(
         chain_path=(),
         inherited_errors=(),
     )
+    enriched_tasks = _apply_effective_constraints(collector.tasks, indexes)
     (
         valid_incomplete,
         valid_completed,
         invalid_incomplete,
         invalid_completed,
-    ) = _partition_resolved_tasks(collector.tasks)
+    ) = _partition_resolved_tasks(enriched_tasks)
     return ResolveTasksResult(
         run_started_at=run_started_at,
         valid_incomplete=valid_incomplete,
