@@ -45,6 +45,14 @@ def test_fail_with_metadata() -> None:
     assert result.metadata == {"field": "start_time"}
 
 
+def test_fail_with_value_populates_service_result_value() -> None:
+    error = _message(MessageCode.INVALID_DURATION, "bad duration")
+    result: ServiceResult[str] = fail(error, _value="payload")
+    assert result.success is False
+    assert result.value == "payload"
+    assert result.errors == (error,)
+
+
 def test_service_result_is_frozen() -> None:
     result = ok("payload")
     with pytest.raises(FrozenInstanceError):
