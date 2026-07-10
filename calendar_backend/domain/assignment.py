@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from calendar_backend.domain.deletion import AssignmentConflict, build_assignment_conflict
@@ -173,12 +173,13 @@ def occupied_intervals_from_calendar_entries(
     for entry in entries:
         if entry.entry_type != CalendarEntryType.TASK:
             continue
-        if entry.start_time >= run_started_at:
+        start_time = _sqlite_utc(entry.start_time)
+        if start_time >= run_started_at:
             continue
         intervals.append(
             OccupiedInterval(
-                start_time=entry.start_time,
-                end_time=entry.end_time,
+                start_time=start_time,
+                end_time=_sqlite_utc(entry.end_time),
                 source_plan_id=(
                     PlanID(entry.source_plan_id) if entry.source_plan_id is not None else None
                 ),
@@ -194,3 +195,8 @@ def occupied_intervals_from_calendar_entries(
             ),
         )
     )
+
+
+def _sqlite_utc(dt: datetime) -> datetime:
+    """Normalize SQLite-read naive datetimes to UTC for comparisons."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
