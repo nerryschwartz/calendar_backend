@@ -15,6 +15,7 @@ from calendar_backend.domain.ids import (
     PlanID,
 )
 from calendar_backend.models.calendar import CalendarEntry
+from calendar_backend.scheduling.input import OccupiedInterval
 
 
 @dataclass(frozen=True)
@@ -56,4 +57,36 @@ def calendar_entry_dto_from_row(entry: CalendarEntry) -> CalendarEntryDTO:
         calendar_run_id=(
             CalendarRunID(entry.calendar_run_id) if entry.calendar_run_id is not None else None
         ),
+    )
+
+
+def occupied_intervals_from_calendar_entries(
+    entries: tuple[CalendarEntry, ...],
+    run_started_at: datetime,
+) -> tuple[OccupiedInterval, ...]:
+    """Map persisted TASK calendar rows to hard occupied intervals for the solver."""
+    intervals: list[OccupiedInterval] = []
+    for entry in entries:
+        if entry.entry_type != CalendarEntryType.TASK:
+            continue
+        if entry.start_time >= run_started_at:
+            continue
+        intervals.append(
+            OccupiedInterval(
+                start_time=entry.start_time,
+                end_time=entry.end_time,
+                source_plan_id=(
+                    PlanID(entry.source_plan_id) if entry.source_plan_id is not None else None
+                ),
+            )
+        )
+    return tuple(
+        sorted(
+            intervals,
+            key=lambda interval: (
+                interval.start_time,
+                interval.end_time,
+                str(interval.source_plan_id) if interval.source_plan_id is not None else "",
+            ),
+        )
     )

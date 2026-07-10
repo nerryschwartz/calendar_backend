@@ -54,8 +54,7 @@ def assignment_input_from_resolved(
     *,
     occupied_intervals: tuple[OccupiedInterval, ...] = (),
 ) -> AssignmentInput:
-    # TODO(Prompt 14 / TaskAssignmentService): production mapper loads
-    # occupied_intervals from calendar.
+    """Build solver input from resolution output and caller-supplied occupied intervals."""
     assignment_input = AssignmentInput(
         run_started_at=resolved.run_started_at,
         tasks=tuple(_schedulable_task_from_resolved(task) for task in resolved.valid_incomplete),
