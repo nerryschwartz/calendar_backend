@@ -170,6 +170,75 @@ def plan_deletion_preview_dto_from_deletion_preview(
     )
 
 
+def generate_deletion_operations(
+    conflict: AssignmentConflict,
+    *,
+    master_plan_id: PlanID | None = None,
+) -> tuple[DeletionOperation, ...]:
+    seen: set[PlanID] = set()
+    unique_ids: list[PlanID] = []
+    for plan_id in conflict.conflicting_plan_ids:
+        if plan_id in seen:
+            continue
+        seen.add(plan_id)
+        if master_plan_id is not None and plan_id == master_plan_id:
+            continue
+        unique_ids.append(plan_id)
+    return tuple(DeletionOperation(root_plan_id=plan_id) for plan_id in sorted(unique_ids, key=str))
+
+
+def _priority_sum_for_affected(
+    conflict: AssignmentConflict,
+    affected_plan_ids: tuple[PlanID, ...],
+) -> int:
+    priority_by_id = dict(conflict.affected_priority_by_plan_id)
+    return sum(priority_by_id.get(plan_id, 0) for plan_id in affected_plan_ids)
+
+
+def compute_ranking_keys(
+    preview: DeletionPreview,
+    conflict: AssignmentConflict,
+) -> tuple[int, ...]:
+    return (
+        *preview.affected_depth_counts_from_master,
+        _priority_sum_for_affected(conflict, preview.affected_plan_ids),
+        len(preview.affected_plan_ids),
+    )
+
+
+def build_deletion_candidate(
+    operation: DeletionOperation,
+    preview: DeletionPreview,
+    conflict: AssignmentConflict,
+) -> DeletionCandidate:
+    ranking_keys = compute_ranking_keys(preview, conflict)
+    explanation = (
+        f"delete plan {operation.root_plan_id} — "
+        f"{len(preview.affected_plan_ids)} plans affected, "
+        f"depth counts {preview.affected_depth_counts_from_master}"
+    )
+    return DeletionCandidate(
+        legal_operation=operation,
+        deletion_preview=preview,
+        ranking_keys=ranking_keys,
+        explanation=explanation,
+    )
+
+
+def rank_deletion_candidates(
+    candidates: tuple[DeletionCandidate, ...],
+) -> tuple[DeletionCandidate, ...]:
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.ranking_keys,
+                str(candidate.legal_operation.root_plan_id),
+            ),
+        )
+    )
+
+
 def _deletion_indexes(
     plans: tuple[Plan, ...],
 ) -> tuple[
