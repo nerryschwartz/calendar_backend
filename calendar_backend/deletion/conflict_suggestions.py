@@ -33,8 +33,8 @@ class ConflictDeletionSuggestionService:
     ) -> ServiceResult[tuple[DeletionCandidate, ...]]:
         """Preview and rank legal single-root delete operations for conflicting plans.
 
-        # TODO(Prompt 14 / ConflictAnalysisService): accept fully analyzed conflicts
-        # from ConflictAnalysisService instead of minimal AssignmentConflict input.
+        Expects fully analyzed ``AssignmentConflict`` values from
+        ``ConflictAnalysisService`` (reason_code, task_ids, explanation, priorities).
         """
         with transaction(self._session) as txn:
             master_plan_id_value = txn.scalar(select(Plan.plan_id).where(Plan.is_master.is_(True)))

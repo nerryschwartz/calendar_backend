@@ -9,13 +9,20 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
+from calendar_backend.deletion.conflict_analysis import ConflictAnalysisService
 from calendar_backend.domain.assignment import (
     AssignmentResult,
     calendar_entry_dto_from_row,
     calendar_entry_insert_specs_from_assignments,
     occupied_intervals_from_calendar_entries,
 )
-from calendar_backend.domain.enums import CalendarEntryType, CalendarRunStatus, SolverStatus
+from calendar_backend.domain.deletion import AssignmentConflict
+from calendar_backend.domain.enums import (
+    CalendarEntryType,
+    CalendarRunStatus,
+    LastFailureReason,
+    SolverStatus,
+)
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import CalendarEntryID, CalendarRunID, new_id
 from calendar_backend.domain.resolution import ResolveTasksResult
@@ -24,7 +31,11 @@ from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.scheduling.heuristic import HeuristicAssignmentSolver
-from calendar_backend.scheduling.input import OccupiedInterval, assignment_input_from_resolved
+from calendar_backend.scheduling.input import (
+    AssignmentInput,
+    OccupiedInterval,
+    assignment_input_from_resolved,
+)
 from calendar_backend.scheduling.types import AssignmentSolverResult
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.master_horizon import validate_run_started_at
@@ -59,13 +70,29 @@ class TaskAssignmentService:
         with transaction(self._session) as txn:
             occupied_intervals = _load_occupied_intervals(txn, run_started_at)
 
-        solver_result, runtime_ms = _solve_assignment(
+        assignment_input = assignment_input_from_resolved(
             resolved,
             occupied_intervals=occupied_intervals,
         )
+        solver_result, runtime_ms = _solve_assignment(assignment_input)
         if solver_result.status == SolverStatus.INFEASIBLE:
             assert solver_result.failure is not None
-            return fail(solver_result.failure)
+            analysis_result = ConflictAnalysisService().analyze(
+                assignment_input,
+                resolved,
+                solver_result,
+            )
+            assert analysis_result.success and analysis_result.value is not None
+            with transaction(self._session) as txn:
+                assignment_result = _persist_failed_assignment(
+                    txn,
+                    self._clock,
+                    run_started_at=run_started_at,
+                    solver_result=solver_result,
+                    conflicts=analysis_result.value,
+                    runtime_ms=runtime_ms,
+                )
+            return fail(solver_result.failure, _value=assignment_result)
 
         with transaction(self._session) as txn:
             assignment_result = _persist_successful_assignment(
@@ -140,18 +167,54 @@ def _load_occupied_intervals(
 
 
 def _solve_assignment(
-    resolved: ResolveTasksResult,
-    *,
-    occupied_intervals: tuple[OccupiedInterval, ...],
+    assignment_input: AssignmentInput,
 ) -> tuple[AssignmentSolverResult, int]:
-    assignment_input = assignment_input_from_resolved(
-        resolved,
-        occupied_intervals=occupied_intervals,
-    )
     started = time.perf_counter()
     solver_result = HeuristicAssignmentSolver().solve(assignment_input)
     runtime_ms = int((time.perf_counter() - started) * 1000)
     return solver_result, runtime_ms
+
+
+def _persist_failed_assignment(
+    session: Session,
+    clock: Clock,
+    *,
+    run_started_at: datetime,
+    solver_result: AssignmentSolverResult,
+    conflicts: tuple[AssignmentConflict, ...],
+    runtime_ms: int,
+) -> AssignmentResult:
+    now = clock.now_utc()
+
+    calendar_run = _new_calendar_run(
+        run_started_at=run_started_at,
+        clock=clock,
+        status=CalendarRunStatus.FAILED,
+        solver_status=SolverStatus.INFEASIBLE,
+        conflict_count=len(conflicts),
+        warning_count=len(solver_result.warnings),
+        runtime_ms=runtime_ms,
+        run_finished_at=now,
+    )
+    session.add(calendar_run)
+    session.flush()
+
+    active_state = _load_or_create_active_calendar_state(session, clock)
+    active_state.last_refresh_failed = True
+    active_state.last_failure_at = now
+    active_state.last_failure_reason = LastFailureReason.ASSIGNMENT_FAILED
+    active_state.updated_at = now
+    session.flush()
+
+    return AssignmentResult(
+        run_started_at=run_started_at,
+        optimization_status=SolverStatus.INFEASIBLE,
+        calendar_entries=(),
+        conflicts=conflicts,
+        warnings=solver_result.warnings,
+        runtime_ms=runtime_ms,
+        calendar_run_id=CalendarRunID(calendar_run.calendar_run_id),
+    )
 
 
 def _persist_successful_assignment(

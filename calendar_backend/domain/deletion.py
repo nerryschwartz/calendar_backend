@@ -41,6 +41,29 @@ class AssignmentConflict:
     is_approximate: bool = True
 
 
+def build_assignment_conflict(
+    *,
+    reason_code: MessageCode,
+    conflicting_plan_ids: tuple[PlanID, ...],
+    task_ids: tuple[PlanID, ...],
+    explanation: str,
+    affected_priority_by_plan_id: tuple[tuple[PlanID, int], ...],
+    is_global: bool,
+    is_approximate: bool = True,
+) -> AssignmentConflict:
+    return AssignmentConflict(
+        conflicting_plan_ids=tuple(sorted(conflicting_plan_ids, key=str)),
+        affected_priority_by_plan_id=tuple(
+            sorted(affected_priority_by_plan_id, key=lambda item: str(item[0]))
+        ),
+        reason_code=reason_code,
+        task_ids=tuple(sorted(task_ids, key=str)),
+        explanation=explanation,
+        is_global=is_global,
+        is_approximate=is_approximate,
+    )
+
+
 @dataclass(frozen=True)
 class DeletionCandidate:
     legal_operation: DeletionOperation

@@ -37,6 +37,7 @@ def fail[T](
 ) -> ServiceResult[T]:
     return ServiceResult(
         success=False,
+        value=_value,
         errors=errors,
         metadata={} if metadata is None else dict(metadata),
     )

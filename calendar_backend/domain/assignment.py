@@ -4,20 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import UUID
 
-from calendar_backend.domain.deletion import AssignmentConflict
+from calendar_backend.domain.deletion import AssignmentConflict, build_assignment_conflict
 from calendar_backend.domain.enums import CalendarEntryType, SolverStatus
-from calendar_backend.domain.errors import ServiceMessage
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import (
     CalendarEntryID,
     CalendarRunID,
     FreeTimeActivityID,
     PlanID,
 )
-from calendar_backend.domain.resolution import ResolvedTask
+from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.scheduling.input import OccupiedInterval
-from calendar_backend.scheduling.types import TaskAssignment
+from calendar_backend.scheduling.input import AssignmentInput, OccupiedInterval
+from calendar_backend.scheduling.types import AssignmentSolverResult, TaskAssignment
+
+_GLOBAL_ASSIGNMENT_FAILURE_CODES: frozenset[MessageCode] = frozenset(
+    {
+        MessageCode.INSUFFICIENT_TOTAL_CAPACITY,
+        MessageCode.PRECEDENCE_IMPOSSIBLE,
+        MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+        MessageCode.TASK_OVERLAP_REQUIRED,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -92,6 +102,66 @@ def calendar_entry_insert_specs_from_assignments(
             key=lambda spec: (spec.start_time, spec.end_time, str(spec.source_plan_id)),
         )
     )
+
+
+def analyze_assignment_conflicts(
+    assignment_input: AssignmentInput,
+    resolved: ResolveTasksResult,
+    solver_result: AssignmentSolverResult,
+) -> tuple[AssignmentConflict, ...]:
+    """Derive one diagnostic AssignmentConflict from a failed solver result."""
+    del assignment_input  # reserved for staged analysis extensions; v1 uses solver failure only
+    if solver_result.status != SolverStatus.INFEASIBLE or solver_result.failure is None:
+        return ()
+
+    failure = solver_result.failure
+    resolved_tasks_by_id = {task.plan_id: task for task in resolved.valid_incomplete}
+    conflicting_plan_ids = _conflicting_plan_ids_from_failure(failure, resolved)
+    task_ids = conflicting_plan_ids
+    return (
+        build_assignment_conflict(
+            reason_code=failure.code,
+            conflicting_plan_ids=conflicting_plan_ids,
+            task_ids=task_ids,
+            explanation=_conflict_explanation_from_failure(failure),
+            affected_priority_by_plan_id=_affected_priority_by_plan_id(
+                conflicting_plan_ids,
+                resolved_tasks_by_id,
+            ),
+            is_global=failure.code in _GLOBAL_ASSIGNMENT_FAILURE_CODES,
+        ),
+    )
+
+
+def _conflicting_plan_ids_from_failure(
+    failure: ServiceMessage,
+    resolved: ResolveTasksResult,
+) -> tuple[PlanID, ...]:
+    plan_id_value = failure.details.get("plan_id")
+    if plan_id_value is not None:
+        return (PlanID(UUID(plan_id_value)),)
+    return tuple(sorted((task.plan_id for task in resolved.valid_incomplete), key=str))
+
+
+def _affected_priority_by_plan_id(
+    plan_ids: tuple[PlanID, ...],
+    resolved_tasks_by_id: dict[PlanID, ResolvedTask],
+) -> tuple[tuple[PlanID, int], ...]:
+    priorities: list[tuple[PlanID, int]] = []
+    for plan_id in plan_ids:
+        task = resolved_tasks_by_id.get(plan_id)
+        if task is None:
+            continue
+        priority = task.priority_path[-1] if task.priority_path else 0
+        priorities.append((plan_id, priority))
+    return tuple(sorted(priorities, key=lambda item: str(item[0])))
+
+
+def _conflict_explanation_from_failure(failure: ServiceMessage) -> str:
+    plan_id_value = failure.details.get("plan_id")
+    if plan_id_value is None:
+        return failure.message
+    return f"{failure.message} (plan_id={plan_id_value})"
 
 
 def occupied_intervals_from_calendar_entries(
