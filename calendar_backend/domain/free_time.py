@@ -82,6 +82,30 @@ def blocked_activity_ids(
     return frozenset(blocked)
 
 
+def compute_effective_fractions(
+    activities: tuple[FreeTimeActivityDTO, ...],
+    blocked_activity_ids: frozenset[FreeTimeActivityID],
+) -> tuple[tuple[FreeTimeActivityID, Decimal], ...]:
+    survivors: list[FreeTimeActivityDTO] = []
+    for activity in activities:
+        if not activity.enabled:
+            continue
+        if activity.real_fraction <= 0:
+            continue
+        if activity.free_time_activity_id in blocked_activity_ids:
+            continue
+        survivors.append(activity)
+
+    total = sum((activity.real_fraction for activity in survivors), Decimal("0"))
+    if total <= 0:
+        return ()
+
+    effective = [
+        (activity.free_time_activity_id, activity.real_fraction / total) for activity in survivors
+    ]
+    return tuple(sorted(effective, key=lambda pair: str(pair[0])))
+
+
 def _is_plan_logically_complete(
     plan_id: PlanID,
     graph: FreeTimePlanGraph,
