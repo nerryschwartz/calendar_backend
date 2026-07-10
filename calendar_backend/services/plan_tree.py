@@ -22,7 +22,7 @@ from calendar_backend.domain.deletion import (
 from calendar_backend.domain.dtos import PlanDeletionPreviewDTO
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.ids import PlanID, new_id
+from calendar_backend.domain.ids import FreeTimeActivityID, PlanID, new_id
 from calendar_backend.domain.plan_create import (
     CreatePayload,
     GoalCreatePayload,
@@ -38,6 +38,9 @@ from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
 from calendar_backend.models.free_time import FreeTimeActivityPrerequisite
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.services.free_time_activity import (
+    cleanup_orphaned_activities_after_plan_delete,
+)
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,7 @@ class PlanTreeService:
                 )
 
             plans, _calendar_entries = _load_deletion_graph(txn)
-            _execute_plan_deletes(txn, preview, plans)
+            _execute_plan_deletes(txn, preview, plans, updated_at=self._clock.now_utc())
             txn.flush()
             return ok(None)
 
@@ -340,6 +343,8 @@ def _execute_plan_deletes(
     txn: Session,
     preview: DeletionPreview,
     plans: tuple[Plan, ...],
+    *,
+    updated_at: datetime,
 ) -> None:
     affected_plan_ids = preview.affected_plan_ids
     if not affected_plan_ids:
@@ -355,12 +360,24 @@ def _execute_plan_deletes(
             )
         )
 
+    orphan_candidate_activity_ids = tuple(
+        FreeTimeActivityID(activity_id)
+        for activity_id in txn.scalars(
+            select(FreeTimeActivityPrerequisite.free_time_activity_id)
+            .where(FreeTimeActivityPrerequisite.source_plan_id.in_(affected_plan_ids))
+            .distinct()
+        ).all()
+    )
+
     txn.execute(
-        # TODO(Prompt 15): FreeTimeActivityService should delete or disable orphan activities
-        # when plan-backed prerequisites are removed; rows deleted here for FK safety only.
         delete(FreeTimeActivityPrerequisite).where(
             FreeTimeActivityPrerequisite.source_plan_id.in_(affected_plan_ids)
         )
+    )
+    cleanup_orphaned_activities_after_plan_delete(
+        txn,
+        orphan_candidate_activity_ids,
+        updated_at=updated_at,
     )
 
     group_ids = [

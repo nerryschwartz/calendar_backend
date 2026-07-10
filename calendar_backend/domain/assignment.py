@@ -9,6 +9,7 @@ from uuid import UUID
 from calendar_backend.domain.deletion import AssignmentConflict, build_assignment_conflict
 from calendar_backend.domain.enums import CalendarEntryType, SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
+from calendar_backend.domain.free_time import FreeTimeCalendarEntryInsertSpec
 from calendar_backend.domain.ids import (
     CalendarEntryID,
     CalendarRunID,
@@ -16,6 +17,7 @@ from calendar_backend.domain.ids import (
     PlanID,
 )
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
+from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.scheduling.input import AssignmentInput, OccupiedInterval
 from calendar_backend.scheduling.types import AssignmentSolverResult, TaskAssignment
@@ -104,6 +106,22 @@ def calendar_entry_insert_specs_from_assignments(
     )
 
 
+def sorted_free_time_calendar_insert_specs(
+    specs: tuple[FreeTimeCalendarEntryInsertSpec, ...],
+) -> tuple[FreeTimeCalendarEntryInsertSpec, ...]:
+    """Deterministic ordering for FREE_TIME persistence: start, end, activity_id."""
+    return tuple(
+        sorted(
+            specs,
+            key=lambda spec: (
+                spec.start_time,
+                spec.end_time,
+                str(spec.source_free_time_activity_id),
+            ),
+        )
+    )
+
+
 def analyze_assignment_conflicts(
     assignment_input: AssignmentInput,
     resolved: ResolveTasksResult,
@@ -173,13 +191,13 @@ def occupied_intervals_from_calendar_entries(
     for entry in entries:
         if entry.entry_type != CalendarEntryType.TASK:
             continue
-        start_time = _sqlite_utc(entry.start_time)
+        start_time = sqlite_utc(entry.start_time)
         if start_time >= run_started_at:
             continue
         intervals.append(
             OccupiedInterval(
                 start_time=start_time,
-                end_time=_sqlite_utc(entry.end_time),
+                end_time=sqlite_utc(entry.end_time),
                 source_plan_id=(
                     PlanID(entry.source_plan_id) if entry.source_plan_id is not None else None
                 ),
@@ -197,6 +215,27 @@ def occupied_intervals_from_calendar_entries(
     )
 
 
-def _sqlite_utc(dt: datetime) -> datetime:
+def future_task_blocker_intervals_from_calendar_entries(
+    entries: tuple[CalendarEntry, ...],
+    run_started_at: datetime,
+) -> tuple[TimeWindow, ...]:
+    """Map persisted TASK calendar rows to future hard blockers for free-time gap discovery."""
+    intervals: list[TimeWindow] = []
+    for entry in entries:
+        if entry.entry_type != CalendarEntryType.TASK:
+            continue
+        start_time = sqlite_utc(entry.start_time)
+        if start_time < run_started_at:
+            continue
+        intervals.append(
+            TimeWindow(
+                start_time=start_time,
+                end_time=sqlite_utc(entry.end_time),
+            )
+        )
+    return tuple(sorted(intervals, key=lambda window: (window.start_time, window.end_time)))
+
+
+def sqlite_utc(dt: datetime) -> datetime:
     """Normalize SQLite-read naive datetimes to UTC for comparisons."""
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
