@@ -7,17 +7,21 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from calendar_backend.domain.constraints import merge_or_windows
 from calendar_backend.domain.enums import FreeTimeWeekStartDay, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.ids import FreeTimeActivityID, PlanID
+from calendar_backend.domain.ids import CalendarRunID, FreeTimeActivityID, PlanID
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
+
+if TYPE_CHECKING:
+    from calendar_backend.domain.assignment import CalendarEntryDTO
 
 _DECIMAL_ONE = Decimal("1")
 
@@ -49,6 +53,23 @@ class FreeTimeGap:
     start_time: datetime
     end_time: datetime
     week_start: datetime
+
+
+@dataclass(frozen=True)
+class FreeTimeCalendarEntryInsertSpec:
+    source_free_time_activity_id: FreeTimeActivityID
+    start_time: datetime
+    end_time: datetime
+    display_label: str
+
+
+@dataclass(frozen=True)
+class FreeTimeAssignmentResult:
+    run_started_at: datetime
+    calendar_entries: tuple[CalendarEntryDTO, ...]
+    warnings: tuple[ServiceMessage, ...]
+    runtime_ms: int
+    calendar_run_id: CalendarRunID
 
 
 @dataclass(frozen=True)
@@ -171,6 +192,66 @@ def discover_free_time_gaps(
             )
 
     return tuple(sorted(gaps, key=lambda gap: (gap.week_start, gap.start_time, gap.end_time)))
+
+
+def assign_free_time_to_gaps(
+    *,
+    gaps: tuple[FreeTimeGap, ...],
+    effective_fractions: tuple[tuple[FreeTimeActivityID, Decimal], ...],
+    activities_by_id: dict[FreeTimeActivityID, FreeTimeActivityDTO],
+) -> tuple[FreeTimeCalendarEntryInsertSpec, ...]:
+    """Greedy proportional fill per local week bucket with minimum block sizes.
+
+    Tie-breaks: weeks by ``week_start``; gaps by ``(start_time, end_time)``;
+    activities by ``str(activity_id)``. Unplaced quota and sub-minimum slack stay empty.
+    """
+    if not effective_fractions:
+        return ()
+
+    gaps_by_week: dict[datetime, list[FreeTimeGap]] = {}
+    for gap in gaps:
+        gaps_by_week.setdefault(gap.week_start, []).append(gap)
+
+    specs: list[FreeTimeCalendarEntryInsertSpec] = []
+    for week_start in sorted(gaps_by_week.keys()):
+        week_gaps = sorted(
+            gaps_by_week[week_start],
+            key=lambda gap: (gap.start_time, gap.end_time),
+        )
+        bucket_minutes = sum(_duration_minutes(gap.start_time, gap.end_time) for gap in week_gaps)
+        quotas = _minute_quotas_for_bucket(bucket_minutes, effective_fractions)
+        mutable_gaps = [_MutableGap(gap.start_time, gap.end_time) for gap in week_gaps]
+
+        for activity_id, _fraction in sorted(effective_fractions, key=lambda pair: str(pair[0])):
+            activity = activities_by_id[activity_id]
+            target_minutes = quotas.get(activity_id, 0)
+            if target_minutes <= 0:
+                continue
+            placements = _place_minutes_in_gaps(
+                mutable_gaps,
+                target_minutes=target_minutes,
+                minimum_block_size_minutes=activity.minimum_block_size_minutes,
+            )
+            for placement_start, placement_end in placements:
+                specs.append(
+                    FreeTimeCalendarEntryInsertSpec(
+                        source_free_time_activity_id=activity_id,
+                        start_time=placement_start,
+                        end_time=placement_end,
+                        display_label=activity.name,
+                    )
+                )
+
+    return tuple(
+        sorted(
+            specs,
+            key=lambda spec: (
+                spec.start_time,
+                spec.end_time,
+                str(spec.source_free_time_activity_id),
+            ),
+        )
+    )
 
 
 def _is_plan_logically_complete(
@@ -392,6 +473,77 @@ def _gaps_in_window(
         gaps.append((cursor, window.end_time))
 
     return tuple(gaps)
+
+
+@dataclass
+class _MutableGap:
+    start_time: datetime
+    end_time: datetime
+
+
+def _duration_minutes(start_time: datetime, end_time: datetime) -> int:
+    return int((end_time - start_time).total_seconds() // 60)
+
+
+def _minimum_placement_minutes(minimum_block_size_minutes: int) -> int:
+    return 1 if minimum_block_size_minutes <= 0 else minimum_block_size_minutes
+
+
+def _minute_quotas_for_bucket(
+    bucket_minutes: int,
+    effective_fractions: tuple[tuple[FreeTimeActivityID, Decimal], ...],
+) -> dict[FreeTimeActivityID, int]:
+    if bucket_minutes <= 0 or not effective_fractions:
+        return {}
+
+    exact = [
+        (activity_id, bucket_minutes * fraction) for activity_id, fraction in effective_fractions
+    ]
+    quotas = {activity_id: int(value) for activity_id, value in exact}
+    remainder = bucket_minutes - sum(quotas.values())
+    if remainder <= 0:
+        return quotas
+
+    remainders = sorted(
+        ((activity_id, value - int(value)) for activity_id, value in exact),
+        key=lambda item: (-item[1], str(item[0])),
+    )
+    for index in range(remainder):
+        activity_id = remainders[index][0]
+        quotas[activity_id] = quotas.get(activity_id, 0) + 1
+    return quotas
+
+
+def _place_minutes_in_gaps(
+    gaps: list[_MutableGap],
+    *,
+    target_minutes: int,
+    minimum_block_size_minutes: int,
+) -> tuple[tuple[datetime, datetime], ...]:
+    min_chunk = _minimum_placement_minutes(minimum_block_size_minutes)
+    placements: list[tuple[datetime, datetime]] = []
+    placed = 0
+
+    while placed < target_minutes:
+        progress = False
+        for gap in sorted(gaps, key=lambda item: (item.start_time, item.end_time)):
+            available = _duration_minutes(gap.start_time, gap.end_time)
+            if available < min_chunk:
+                continue
+            chunk = min(target_minutes - placed, available)
+            if chunk < min_chunk:
+                continue
+            placement_end = gap.start_time + timedelta(minutes=chunk)
+            placements.append((gap.start_time, placement_end))
+            gap.start_time = placement_end
+            placed += chunk
+            progress = True
+            if placed >= target_minutes:
+                break
+        if not progress:
+            break
+
+    return tuple(placements)
 
 
 def _collect_descendant_ids(

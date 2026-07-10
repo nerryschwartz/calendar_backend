@@ -9,6 +9,7 @@ from uuid import UUID
 from calendar_backend.domain.deletion import AssignmentConflict, build_assignment_conflict
 from calendar_backend.domain.enums import CalendarEntryType, SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
+from calendar_backend.domain.free_time import FreeTimeCalendarEntryInsertSpec
 from calendar_backend.domain.ids import (
     CalendarEntryID,
     CalendarRunID,
@@ -101,6 +102,22 @@ def calendar_entry_insert_specs_from_assignments(
         sorted(
             specs,
             key=lambda spec: (spec.start_time, spec.end_time, str(spec.source_plan_id)),
+        )
+    )
+
+
+def sorted_free_time_calendar_insert_specs(
+    specs: tuple[FreeTimeCalendarEntryInsertSpec, ...],
+) -> tuple[FreeTimeCalendarEntryInsertSpec, ...]:
+    """Deterministic ordering for FREE_TIME persistence: start, end, activity_id."""
+    return tuple(
+        sorted(
+            specs,
+            key=lambda spec: (
+                spec.start_time,
+                spec.end_time,
+                str(spec.source_free_time_activity_id),
+            ),
         )
     )
 
