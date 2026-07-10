@@ -211,6 +211,7 @@ class FreeTimeActivityService:
             txn.delete(prerequisite)
             loaded.updated_at = self._clock.now_utc()
             txn.flush()
+            txn.expire(loaded, ("prerequisites",))
             reloaded = _load_activity(txn, activity_id)
             assert reloaded is not None
             return ok(free_time_activity_dto_from_row(reloaded))
@@ -240,21 +241,11 @@ class FreeTimeActivityService:
 
 def cleanup_orphaned_activities_after_plan_delete(
     txn: Session,
-    affected_plan_ids: tuple[PlanID, ...],
+    candidate_activity_ids: tuple[FreeTimeActivityID, ...],
     *,
     updated_at: datetime,
 ) -> None:
     """Disable or delete activities that lost all prerequisites during plan delete."""
-    if not affected_plan_ids:
-        return
-
-    candidate_activity_ids = tuple(
-        txn.scalars(
-            select(FreeTimeActivityPrerequisite.free_time_activity_id)
-            .where(FreeTimeActivityPrerequisite.source_plan_id.in_(affected_plan_ids))
-            .distinct()
-        ).all()
-    )
     if not candidate_activity_ids:
         return
 

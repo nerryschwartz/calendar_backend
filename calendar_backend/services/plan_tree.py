@@ -22,7 +22,7 @@ from calendar_backend.domain.deletion import (
 from calendar_backend.domain.dtos import PlanDeletionPreviewDTO
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.ids import PlanID, new_id
+from calendar_backend.domain.ids import FreeTimeActivityID, PlanID, new_id
 from calendar_backend.domain.plan_create import (
     CreatePayload,
     GoalCreatePayload,
@@ -360,6 +360,15 @@ def _execute_plan_deletes(
             )
         )
 
+    orphan_candidate_activity_ids = tuple(
+        FreeTimeActivityID(activity_id)
+        for activity_id in txn.scalars(
+            select(FreeTimeActivityPrerequisite.free_time_activity_id)
+            .where(FreeTimeActivityPrerequisite.source_plan_id.in_(affected_plan_ids))
+            .distinct()
+        ).all()
+    )
+
     txn.execute(
         delete(FreeTimeActivityPrerequisite).where(
             FreeTimeActivityPrerequisite.source_plan_id.in_(affected_plan_ids)
@@ -367,7 +376,7 @@ def _execute_plan_deletes(
     )
     cleanup_orphaned_activities_after_plan_delete(
         txn,
-        affected_plan_ids,
+        orphan_candidate_activity_ids,
         updated_at=updated_at,
     )
 

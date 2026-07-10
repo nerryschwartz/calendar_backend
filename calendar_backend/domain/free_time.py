@@ -400,6 +400,9 @@ def validate_enabled_fractions_sum_to_one(
         total += activity.real_fraction
         contributing.append(str(activity.free_time_activity_id))
 
+    if not contributing:
+        return None
+
     if total == _DECIMAL_ONE:
         return None
 
