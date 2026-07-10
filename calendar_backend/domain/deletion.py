@@ -8,12 +8,10 @@ from dataclasses import dataclass
 
 from calendar_backend.domain.dtos import PlanDeletionPreviewDTO
 from calendar_backend.domain.enums import PlanKind
+from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import CalendarEntryID, PlanID
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.plans import Plan
-
-# TODO(Prompt 14 / ConflictAnalysisService): extend AssignmentConflict with
-# unschedulable_task_ids, blocking_constraint_ids, and other analyzed conflict metadata.
 
 
 @dataclass(frozen=True)
@@ -36,6 +34,11 @@ class DeletionPreview:
 class AssignmentConflict:
     conflicting_plan_ids: tuple[PlanID, ...]
     affected_priority_by_plan_id: tuple[tuple[PlanID, int], ...] = ()
+    reason_code: MessageCode | None = None
+    task_ids: tuple[PlanID, ...] = ()
+    explanation: str = ""
+    is_global: bool = False
+    is_approximate: bool = True
 
 
 @dataclass(frozen=True)
