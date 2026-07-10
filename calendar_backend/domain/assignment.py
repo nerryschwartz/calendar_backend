@@ -14,8 +14,18 @@ from calendar_backend.domain.ids import (
     FreeTimeActivityID,
     PlanID,
 )
+from calendar_backend.domain.resolution import ResolvedTask
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.scheduling.input import OccupiedInterval
+from calendar_backend.scheduling.types import TaskAssignment
+
+
+@dataclass(frozen=True)
+class CalendarEntryInsertSpec:
+    source_plan_id: PlanID
+    start_time: datetime
+    end_time: datetime
+    display_label: str
 
 
 @dataclass(frozen=True)
@@ -57,6 +67,30 @@ def calendar_entry_dto_from_row(entry: CalendarEntry) -> CalendarEntryDTO:
         calendar_run_id=(
             CalendarRunID(entry.calendar_run_id) if entry.calendar_run_id is not None else None
         ),
+    )
+
+
+def calendar_entry_insert_specs_from_assignments(
+    assignments: tuple[TaskAssignment, ...],
+    resolved_tasks_by_id: dict[PlanID, ResolvedTask],
+) -> tuple[CalendarEntryInsertSpec, ...]:
+    specs: list[CalendarEntryInsertSpec] = []
+    for assignment in assignments:
+        task = resolved_tasks_by_id[assignment.plan_id]
+        for segment in assignment.segments:
+            specs.append(
+                CalendarEntryInsertSpec(
+                    source_plan_id=assignment.plan_id,
+                    start_time=segment.start_time,
+                    end_time=segment.end_time,
+                    display_label=task.name,
+                )
+            )
+    return tuple(
+        sorted(
+            specs,
+            key=lambda spec: (spec.start_time, spec.end_time, str(spec.source_plan_id)),
+        )
     )
 
 
