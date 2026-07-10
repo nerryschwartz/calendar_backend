@@ -38,6 +38,9 @@ from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
 from calendar_backend.models.free_time import FreeTimeActivityPrerequisite
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.services.free_time_activity import (
+    cleanup_orphaned_activities_after_plan_delete,
+)
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,7 @@ class PlanTreeService:
                 )
 
             plans, _calendar_entries = _load_deletion_graph(txn)
-            _execute_plan_deletes(txn, preview, plans)
+            _execute_plan_deletes(txn, preview, plans, updated_at=self._clock.now_utc())
             txn.flush()
             return ok(None)
 
@@ -340,6 +343,8 @@ def _execute_plan_deletes(
     txn: Session,
     preview: DeletionPreview,
     plans: tuple[Plan, ...],
+    *,
+    updated_at: datetime,
 ) -> None:
     affected_plan_ids = preview.affected_plan_ids
     if not affected_plan_ids:
@@ -356,11 +361,14 @@ def _execute_plan_deletes(
         )
 
     txn.execute(
-        # TODO(Prompt 15): FreeTimeActivityService should delete or disable orphan activities
-        # when plan-backed prerequisites are removed; rows deleted here for FK safety only.
         delete(FreeTimeActivityPrerequisite).where(
             FreeTimeActivityPrerequisite.source_plan_id.in_(affected_plan_ids)
         )
+    )
+    cleanup_orphaned_activities_after_plan_delete(
+        txn,
+        affected_plan_ids,
+        updated_at=updated_at,
     )
 
     group_ids = [
