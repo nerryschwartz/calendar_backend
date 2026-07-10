@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from calendar_backend.domain.enums import SolverStatus
 from calendar_backend.domain.errors import ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.time import TimeWindow
-
-if TYPE_CHECKING:
-    # Slice 2 replaces this with: from calendar_backend.scheduling.input import AssignmentInput
-    @dataclass(frozen=True)
-    class AssignmentInput:
-        pass
+from calendar_backend.scheduling.input import AssignmentInput
 
 
 @dataclass(frozen=True)
