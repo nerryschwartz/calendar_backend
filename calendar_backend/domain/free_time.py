@@ -5,18 +5,31 @@ from __future__ import annotations
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from calendar_backend.domain.enums import PlanKind
+from calendar_backend.domain.constraints import merge_or_windows
+from calendar_backend.domain.enums import FreeTimeWeekStartDay, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import FreeTimeActivityID, PlanID
+from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 
 _DECIMAL_ONE = Decimal("1")
+
+_WEEKDAY_BY_START_DAY: dict[FreeTimeWeekStartDay, int] = {
+    FreeTimeWeekStartDay.MONDAY: 0,
+    FreeTimeWeekStartDay.TUESDAY: 1,
+    FreeTimeWeekStartDay.WEDNESDAY: 2,
+    FreeTimeWeekStartDay.THURSDAY: 3,
+    FreeTimeWeekStartDay.FRIDAY: 4,
+    FreeTimeWeekStartDay.SATURDAY: 5,
+    FreeTimeWeekStartDay.SUNDAY: 6,
+}
 
 
 @dataclass(frozen=True)
@@ -29,6 +42,13 @@ class FreeTimeActivityDTO:
     prerequisite_plan_ids: tuple[PlanID, ...]
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class FreeTimeGap:
+    start_time: datetime
+    end_time: datetime
+    week_start: datetime
 
 
 @dataclass(frozen=True)
@@ -104,6 +124,53 @@ def compute_effective_fractions(
         (activity.free_time_activity_id, activity.real_fraction / total) for activity in survivors
     ]
     return tuple(sorted(effective, key=lambda pair: str(pair[0])))
+
+
+def discover_free_time_gaps(
+    *,
+    run_started_at: datetime,
+    master_horizon_end: datetime,
+    task_blockers: tuple[TimeWindow, ...],
+    week_start_day: FreeTimeWeekStartDay,
+    local_timezone: str,
+) -> tuple[FreeTimeGap, ...]:
+    if run_started_at >= master_horizon_end:
+        return ()
+
+    clipped_blockers: list[TimeWindow] = []
+    for blocker in task_blockers:
+        start_time = max(blocker.start_time, run_started_at)
+        end_time = min(blocker.end_time, master_horizon_end)
+        if start_time < end_time:
+            clipped_blockers.append(TimeWindow(start_time=start_time, end_time=end_time))
+    merged_blockers = merge_or_windows(tuple(clipped_blockers))
+
+    gaps: list[FreeTimeGap] = []
+    for week_anchor_utc, bucket_start, bucket_end in _week_buckets(
+        run_started_at,
+        master_horizon_end,
+        week_start_day,
+        local_timezone,
+    ):
+        bucket = TimeWindow(start_time=bucket_start, end_time=bucket_end)
+        bucket_blockers = tuple(
+            TimeWindow(
+                start_time=max(blocker.start_time, bucket_start),
+                end_time=min(blocker.end_time, bucket_end),
+            )
+            for blocker in merged_blockers
+            if blocker.start_time < bucket_end and blocker.end_time > bucket_start
+        )
+        for gap_start, gap_end in _gaps_in_window(bucket, bucket_blockers):
+            gaps.append(
+                FreeTimeGap(
+                    start_time=gap_start,
+                    end_time=gap_end,
+                    week_start=week_anchor_utc,
+                )
+            )
+
+    return tuple(sorted(gaps, key=lambda gap: (gap.week_start, gap.start_time, gap.end_time)))
 
 
 def _is_plan_logically_complete(
@@ -263,6 +330,68 @@ def validate_enabled_fractions_sum_to_one(
             "activity_ids": ",".join(sorted(contributing)),
         },
     )
+
+
+def _week_buckets(
+    run_started_at: datetime,
+    master_horizon_end: datetime,
+    week_start_day: FreeTimeWeekStartDay,
+    local_timezone: str,
+) -> tuple[tuple[datetime, datetime, datetime], ...]:
+    """Return week_anchor_utc, bucket_start, bucket_end per local week in universe."""
+    tz = ZoneInfo(local_timezone)
+    local_run = run_started_at.astimezone(tz)
+    week_anchor_local = _local_week_start(local_run, week_start_day)
+    week_anchor_utc = week_anchor_local.astimezone(UTC)
+
+    buckets: list[tuple[datetime, datetime, datetime]] = []
+    while week_anchor_utc < master_horizon_end:
+        next_week_anchor_local = week_anchor_local + timedelta(days=7)
+        next_week_anchor_utc = next_week_anchor_local.astimezone(UTC)
+        bucket_start = max(week_anchor_utc, run_started_at)
+        bucket_end = min(next_week_anchor_utc, master_horizon_end)
+        if bucket_start < bucket_end:
+            buckets.append((week_anchor_utc, bucket_start, bucket_end))
+        week_anchor_local = next_week_anchor_local
+        week_anchor_utc = next_week_anchor_utc
+
+    return tuple(buckets)
+
+
+def _local_week_start(local_dt: datetime, week_start_day: FreeTimeWeekStartDay) -> datetime:
+    target_weekday = _WEEKDAY_BY_START_DAY[week_start_day]
+    days_since_start = (local_dt.weekday() - target_weekday) % 7
+    week_start_date = local_dt.date() - timedelta(days=days_since_start)
+    return datetime.combine(week_start_date, time.min, tzinfo=local_dt.tzinfo)
+
+
+def _gaps_in_window(
+    window: TimeWindow,
+    blockers: tuple[TimeWindow, ...],
+) -> tuple[tuple[datetime, datetime], ...]:
+    blocking = sorted(
+        (
+            segment
+            for segment in blockers
+            if segment.start_time < window.end_time and segment.end_time > window.start_time
+        ),
+        key=lambda segment: segment.start_time,
+    )
+
+    gaps: list[tuple[datetime, datetime]] = []
+    cursor = window.start_time
+    for segment in blocking:
+        gap_end = min(segment.start_time, window.end_time)
+        if cursor < gap_end:
+            gaps.append((cursor, gap_end))
+        cursor = max(cursor, segment.end_time)
+        if cursor >= window.end_time:
+            break
+
+    if cursor < window.end_time:
+        gaps.append((cursor, window.end_time))
+
+    return tuple(gaps)
 
 
 def _collect_descendant_ids(
