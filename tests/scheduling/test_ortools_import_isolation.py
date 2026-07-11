@@ -13,6 +13,7 @@ def test_non_exact_scheduling_modules_do_not_import_ortools() -> None:
     script = """
 import sys
 
+import calendar_backend.scheduling.decomposition
 import calendar_backend.scheduling.feasibility
 import calendar_backend.scheduling.heuristic
 import calendar_backend.scheduling.input
