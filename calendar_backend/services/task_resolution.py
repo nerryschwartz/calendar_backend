@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
+from calendar_backend.domain.assignment import sqlite_utc
 from calendar_backend.domain.errors import ServiceTransactionAborted
 from calendar_backend.domain.resolution import ResolveTasksResult, resolve_tasks_from_graph
 from calendar_backend.domain.results import ServiceResult, fail, ok
@@ -80,7 +81,7 @@ def _resolve_from_current_tree(
 
 
 def _load_plan_graph(session: Session) -> tuple[Plan, ...]:
-    return tuple(
+    plans = tuple(
         session.scalars(
             select(Plan).options(
                 selectinload(Plan.goal_plan)
@@ -92,3 +93,14 @@ def _load_plan_graph(session: Session) -> tuple[Plan, ...]:
             )
         ).all()
     )
+    _normalize_sqlite_constraint_window_timezones(plans)
+    return plans
+
+
+def _normalize_sqlite_constraint_window_timezones(plans: tuple[Plan, ...]) -> None:
+    """SQLite stores UTC datetimes as naive; resolution requires timezone-aware windows."""
+    for plan in plans:
+        for group in plan.constraint_groups:
+            for window in group.windows:
+                window.start_time = sqlite_utc(window.start_time)
+                window.end_time = sqlite_utc(window.end_time)
