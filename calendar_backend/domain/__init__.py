@@ -29,6 +29,7 @@ from calendar_backend.domain.ids import (
     TimeWindowID,
     new_id,
 )
+from calendar_backend.domain.orchestration import RefreshScheduleResult
 from calendar_backend.domain.resolution import (
     ChainPathStep,
     ConstraintSource,
@@ -70,6 +71,7 @@ __all__ = [
     "MessageCode",
     "PlanID",
     "PlanKind",
+    "RefreshScheduleResult",
     "RepeatMode",
     "RepetitionInstanceID",
     "RepetitionTimestampField",
