@@ -7,6 +7,7 @@ All ortools imports for the scheduling package must live in this module only.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -30,6 +31,7 @@ from calendar_backend.scheduling.types import (
 )
 
 _DEFAULT_TIME_LIMIT_SECONDS = 30
+_SEGMENT_COUNT_MISMATCH_PENALTY_MULTIPLIER = 4
 
 estimate_model_variable_count = decomposition.estimate_model_variable_count
 model_size_guard_exceeded = decomposition.model_size_guard_exceeded
@@ -51,6 +53,16 @@ class _TaskVariables:
     segments: tuple[_SegmentVariables, ...]
 
 
+@dataclass(frozen=True)
+class _ComponentContext:
+    component: AssignmentComponent
+    timeline_anchor: datetime
+    horizon_minutes: int
+    model: cp_model.CpModel
+    task_variables: tuple[_TaskVariables, ...]
+    hints_by_plan_id: dict[PlanID, tuple[TimeWindow, ...]]
+
+
 class ExactAssignmentSolver:
     """CP-SAT exact assignment solver; full pipeline deferred to later slices."""
 
@@ -66,12 +78,137 @@ class ExactAssignmentSolver:
 def _solve_single_component(  # pyright: ignore[reportUnusedFunction]
     component: AssignmentComponent,
 ) -> tuple[TaskAssignment, ...] | None:
+    return _solve_component_lexicographic(component)
+
+
+def _solve_component_lexicographic(
+    component: AssignmentComponent,
+) -> tuple[TaskAssignment, ...] | None:
     if not component.tasks:
         return ()
 
     if _component_hard_unusable(component):
         return None
 
+    context = _build_component_context(component)
+    if context is None:
+        return None
+
+    last_assignments = _run_lex_chain(context)
+    if last_assignments is None:
+        return None
+
+    validation_failure = validate_full_assignment(
+        _assignment_input_from_component(component),
+        last_assignments,
+    )
+    if validation_failure is not None:
+        return None
+
+    return last_assignments
+
+
+def _run_lex_chain(context: _ComponentContext) -> tuple[TaskAssignment, ...] | None:
+    if not _run_feasibility_pass(context):
+        return None
+
+    last_assignments = _extract_current_assignments(context)
+    if last_assignments is None:
+        return None
+
+    lex_steps: list[tuple[Callable[[_ComponentContext], cp_model.IntVar], bool]] = [
+        (_objective_maximize_exact_hint_matches, True),
+        (_objective_minimize_moved_minutes, False),
+        (_objective_minimize_changed_assignments, False),
+    ]
+
+    for objective_builder, maximize in lex_steps:
+        assignments = _run_lex_pass(context, objective_builder, maximize=maximize)
+        if assignments is None:
+            return last_assignments
+        last_assignments = assignments
+
+    for task_variables in _tasks_in_priority_order(context.task_variables):
+        assignments = _run_lex_pass(
+            context,
+            lambda ctx, task_vars=task_variables: _objective_earliest_start_for_task(
+                ctx, task_vars
+            ),
+            maximize=False,
+        )
+        if assignments is None:
+            return last_assignments
+        last_assignments = assignments
+
+    for objective_builder, maximize in (
+        (_objective_consolidate_global_gaps, False),
+        (_objective_minimize_sum_of_starts, False),
+        (_objective_minimize_active_segment_count, False),
+        (_objective_minimize_intra_task_gaps, False),
+    ):
+        assignments = _run_lex_pass(context, objective_builder, maximize=maximize)
+        if assignments is None:
+            return last_assignments
+        last_assignments = assignments
+
+    return last_assignments
+
+
+def _run_feasibility_pass(context: _ComponentContext) -> bool:
+    context.model.Minimize(0)
+    status, _solver = _solve_context(context)
+    return status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+
+
+def _run_lex_pass(
+    context: _ComponentContext,
+    objective_builder: Callable[[_ComponentContext], cp_model.IntVar],
+    *,
+    maximize: bool,
+) -> tuple[TaskAssignment, ...] | None:
+    objective = objective_builder(context)
+    if maximize:
+        context.model.Maximize(objective)
+    else:
+        context.model.Minimize(objective)
+
+    status, solver = _solve_context(context)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+
+    optimal_value = round(solver.ObjectiveValue())
+    context.model.Add(objective == optimal_value)
+
+    return _extract_assignments(
+        context.timeline_anchor,
+        task_variables=context.task_variables,
+        solver=solver,
+    )
+
+
+def _solve_context(context: _ComponentContext) -> tuple[int, cp_model.CpSolver]:
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = _time_limit_seconds(context.component.solver_limits)
+    status = solver.Solve(context.model)
+    return status, solver
+
+
+def _extract_current_assignments(
+    context: _ComponentContext,
+) -> tuple[TaskAssignment, ...] | None:
+    status, solver = _solve_context(context)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+    return _extract_assignments(
+        context.timeline_anchor,
+        task_variables=context.task_variables,
+        solver=solver,
+    )
+
+
+def _build_component_context(
+    component: AssignmentComponent,
+) -> _ComponentContext | None:
     timeline_anchor = _timeline_anchor(component)
     horizon_minutes = _component_horizon_minutes(component)
     model, task_variables, _fixed_intervals = _build_hard_constraint_model(
@@ -79,28 +216,18 @@ def _solve_single_component(  # pyright: ignore[reportUnusedFunction]
         timeline_anchor=timeline_anchor,
         horizon_minutes=horizon_minutes,
     )
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = _time_limit_seconds(component.solver_limits)
-    status = solver.Solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None
-
-    assignments = _extract_assignments(
-        timeline_anchor,
+    hints_by_plan_id = {
+        plan_id: tuple(sorted(segments, key=lambda segment: segment.start_time))
+        for plan_id, segments in component.previous_placements_by_task_id
+    }
+    return _ComponentContext(
+        component=component,
+        timeline_anchor=timeline_anchor,
+        horizon_minutes=horizon_minutes,
+        model=model,
         task_variables=task_variables,
-        solver=solver,
+        hints_by_plan_id=hints_by_plan_id,
     )
-    if assignments is None:
-        return None
-
-    validation_failure = validate_full_assignment(
-        _assignment_input_from_component(component),
-        assignments,
-    )
-    if validation_failure is not None:
-        return None
-
-    return assignments
 
 
 def _component_hard_unusable(component: AssignmentComponent) -> bool:
@@ -145,6 +272,7 @@ def _build_hard_constraint_model(
             _TaskVariables(plan_id=task.plan_id, task=task, segments=segment_vars)
         )
         all_task_intervals.extend(segment.interval for segment in segment_vars)
+        _add_divisible_segment_ordering_constraints(model, segment_vars)
 
     if all_task_intervals or fixed_intervals:
         model.AddNoOverlap([*all_task_intervals, *fixed_intervals])
@@ -185,8 +313,19 @@ def _build_hard_constraint_model(
         model.AddMinEquality(earliest_successor_start, successor_starts)
         model.Add(latest_predecessor_end <= earliest_successor_start)
 
-    model.Minimize(0)
     return model, task_variables_tuple, fixed_intervals
+
+
+def _add_divisible_segment_ordering_constraints(
+    model: cp_model.CpModel,
+    segments: tuple[_SegmentVariables, ...],
+) -> None:
+    for left_index in range(len(segments) - 1):
+        left = segments[left_index]
+        right = segments[left_index + 1]
+        both_active = model.NewBoolVar(f"ordered_segments_{left_index}")
+        model.AddMultiplicationEquality(both_active, [left.presence, right.presence])
+        model.Add(left.end <= right.start).OnlyEnforceIf(both_active)
 
 
 def _task_segment_variables(
@@ -292,6 +431,355 @@ def _fixed_interval(
     return model.NewIntervalVar(start_minutes, size, end_minutes, name)
 
 
+def _objective_maximize_exact_hint_matches(context: _ComponentContext) -> cp_model.IntVar:
+    match_vars: list[cp_model.IntVar] = []
+    for task_variables in context.task_variables:
+        hint_segments = context.hints_by_plan_id.get(task_variables.plan_id)
+        if hint_segments is None:
+            continue
+        match_var = _hint_exact_match_var(
+            context.model,
+            task_variables=task_variables,
+            hint_segments=hint_segments,
+            timeline_anchor=context.timeline_anchor,
+        )
+        if match_var is not None:
+            match_vars.append(match_var)
+
+    if not match_vars:
+        return _zero_objective_var(context.model, "hint_matches")
+
+    total_matches = context.model.NewIntVar(0, len(match_vars), "total_hint_matches")
+    context.model.Add(total_matches == sum(match_vars))
+    return total_matches
+
+
+def _objective_minimize_moved_minutes(context: _ComponentContext) -> cp_model.IntVar:
+    moved_terms: list[cp_model.IntVar] = []
+    penalty = context.horizon_minutes * _SEGMENT_COUNT_MISMATCH_PENALTY_MULTIPLIER
+
+    for task_variables in context.task_variables:
+        hint_segments = context.hints_by_plan_id.get(task_variables.plan_id)
+        if hint_segments is None:
+            continue
+        if len(hint_segments) > len(task_variables.segments):
+            mismatch = context.model.NewIntVar(penalty, penalty, "moved_mismatch")
+            moved_terms.append(mismatch)
+            continue
+
+        for index, hint_segment in enumerate(hint_segments):
+            segment = task_variables.segments[index]
+            moved_terms.append(
+                _segment_moved_minutes_var(
+                    context.model,
+                    segment=segment,
+                    hint_segment=hint_segment,
+                    timeline_anchor=context.timeline_anchor,
+                    horizon_minutes=context.horizon_minutes,
+                    name_prefix=f"moved_{task_variables.plan_id}_{index}",
+                )
+            )
+
+        if len(hint_segments) < len(task_variables.segments):
+            extra_slots = len(task_variables.segments) - len(hint_segments)
+            mismatch = context.model.NewIntVar(
+                penalty * extra_slots,
+                penalty * extra_slots,
+                f"moved_extra_{task_variables.plan_id}",
+            )
+            moved_terms.append(mismatch)
+
+    if not moved_terms:
+        return _zero_objective_var(context.model, "moved_minutes")
+
+    total_moved = context.model.NewIntVar(0, penalty * len(moved_terms), "total_moved_minutes")
+    context.model.Add(total_moved == sum(moved_terms))
+    return total_moved
+
+
+def _objective_minimize_changed_assignments(context: _ComponentContext) -> cp_model.IntVar:
+    changed_vars: list[cp_model.IntVar] = []
+    for task_variables in context.task_variables:
+        hint_segments = context.hints_by_plan_id.get(task_variables.plan_id)
+        if hint_segments is None:
+            continue
+        match_var = _hint_exact_match_var(
+            context.model,
+            task_variables=task_variables,
+            hint_segments=hint_segments,
+            timeline_anchor=context.timeline_anchor,
+        )
+        if match_var is None:
+            changed = context.model.NewBoolVar(f"changed_{task_variables.plan_id}")
+            context.model.Add(changed == 1)
+            changed_vars.append(changed)
+            continue
+        changed = context.model.NewBoolVar(f"changed_{task_variables.plan_id}")
+        context.model.Add(match_var + changed == 1)
+        changed_vars.append(changed)
+
+    if not changed_vars:
+        return _zero_objective_var(context.model, "changed_assignments")
+
+    total_changed = context.model.NewIntVar(0, len(changed_vars), "total_changed_assignments")
+    context.model.Add(total_changed == sum(changed_vars))
+    return total_changed
+
+
+def _objective_earliest_start_for_task(
+    context: _ComponentContext,
+    task_variables: _TaskVariables,
+) -> cp_model.IntVar:
+    return _earliest_active_start(
+        context.model,
+        segments=task_variables.segments,
+        horizon_minutes=context.horizon_minutes,
+        name_prefix=f"priority_start_{task_variables.plan_id}",
+    )
+
+
+def _objective_consolidate_global_gaps(context: _ComponentContext) -> cp_model.IntVar:
+    model = context.model
+    horizon_minutes = context.horizon_minutes
+    active_ends: list[cp_model.IntVar] = []
+    active_starts: list[cp_model.IntVar] = []
+    duration_terms: list[cp_model.IntVar] = []
+
+    for task_variables in context.task_variables:
+        for segment_index, segment in enumerate(task_variables.segments):
+            prefix = f"global_idle_{task_variables.plan_id}_{segment_index}"
+            active_ends.append(
+                _active_segment_scalar(
+                    model,
+                    segment=segment,
+                    horizon_minutes=horizon_minutes,
+                    active_field="end",
+                    inactive_value=0,
+                    name_prefix=f"{prefix}_end",
+                )
+            )
+            active_starts.append(
+                _active_segment_scalar(
+                    model,
+                    segment=segment,
+                    horizon_minutes=horizon_minutes,
+                    active_field="start",
+                    inactive_value=horizon_minutes,
+                    name_prefix=f"{prefix}_start",
+                )
+            )
+            duration = model.NewIntVar(0, horizon_minutes, f"{prefix}_duration")
+            model.Add(duration == segment.duration).OnlyEnforceIf(segment.presence)
+            model.Add(duration == 0).OnlyEnforceIf(segment.presence.Not())
+            duration_terms.append(duration)
+
+    if not duration_terms:
+        return _zero_objective_var(model, "global_gaps")
+
+    latest_end = model.NewIntVar(0, horizon_minutes, "global_idle_latest_end")
+    earliest_start = model.NewIntVar(0, horizon_minutes, "global_idle_earliest_start")
+    model.AddMaxEquality(latest_end, active_ends)
+    model.AddMinEquality(earliest_start, active_starts)
+
+    total_duration = model.NewIntVar(0, horizon_minutes, "global_idle_total_duration")
+    model.Add(total_duration == sum(duration_terms))
+
+    idle_span = model.NewIntVar(0, horizon_minutes, "global_idle_span")
+    model.Add(idle_span == latest_end - earliest_start - total_duration)
+    return idle_span
+
+
+def _objective_minimize_sum_of_starts(context: _ComponentContext) -> cp_model.IntVar:
+    start_terms: list[cp_model.IntVar] = []
+    for task_variables in context.task_variables:
+        for segment_index, segment in enumerate(task_variables.segments):
+            start_terms.append(
+                _active_segment_start_for_sum(
+                    context.model,
+                    segment=segment,
+                    horizon_minutes=context.horizon_minutes,
+                    name_prefix=f"sum_start_{task_variables.plan_id}_{segment_index}",
+                )
+            )
+
+    total_start = context.model.NewIntVar(
+        0,
+        context.horizon_minutes * max(1, len(start_terms)),
+        "total_start_minutes",
+    )
+    context.model.Add(total_start == sum(start_terms))
+    return total_start
+
+
+def _objective_minimize_active_segment_count(context: _ComponentContext) -> cp_model.IntVar:
+    presence_vars = [
+        segment.presence
+        for task_variables in context.task_variables
+        for segment in task_variables.segments
+    ]
+    total_segments = context.model.NewIntVar(0, len(presence_vars), "total_active_segments")
+    context.model.Add(total_segments == sum(presence_vars))
+    return total_segments
+
+
+def _objective_minimize_intra_task_gaps(context: _ComponentContext) -> cp_model.IntVar:
+    gap_terms: list[cp_model.IntVar] = []
+    for task_variables in context.task_variables:
+        if len(task_variables.segments) <= 1:
+            continue
+        for left_index in range(len(task_variables.segments) - 1):
+            left = task_variables.segments[left_index]
+            right = task_variables.segments[left_index + 1]
+            both_active = context.model.NewBoolVar(
+                f"intra_gap_active_{task_variables.plan_id}_{left_index}"
+            )
+            model = context.model
+            model.AddMultiplicationEquality(both_active, [left.presence, right.presence])
+            gap = model.NewIntVar(
+                0,
+                context.horizon_minutes,
+                f"intra_gap_{task_variables.plan_id}_{left_index}",
+            )
+            model.Add(gap == right.start - left.end).OnlyEnforceIf(both_active)
+            model.Add(gap == 0).OnlyEnforceIf(both_active.Not())
+            gap_terms.append(gap)
+
+    if not gap_terms:
+        return _zero_objective_var(context.model, "intra_task_gaps")
+
+    total_gap = context.model.NewIntVar(
+        0,
+        context.horizon_minutes * len(gap_terms),
+        "total_intra_task_gaps",
+    )
+    context.model.Add(total_gap == sum(gap_terms))
+    return total_gap
+
+
+def _hint_exact_match_var(
+    model: cp_model.CpModel,
+    *,
+    task_variables: _TaskVariables,
+    hint_segments: tuple[TimeWindow, ...],
+    timeline_anchor: datetime,
+) -> cp_model.IntVar | None:
+    if not hint_segments:
+        return None
+    if len(hint_segments) > len(task_variables.segments):
+        return None
+
+    match = model.NewBoolVar(f"hint_match_{task_variables.plan_id}")
+    for index, hint_segment in enumerate(hint_segments):
+        segment = task_variables.segments[index]
+        hint_start = _minute_offset(hint_segment.start_time, timeline_anchor)
+        hint_duration = _window_duration_minutes(hint_segment)
+        model.Add(segment.presence == 1).OnlyEnforceIf(match)
+        model.Add(segment.start == hint_start).OnlyEnforceIf(match)
+        model.Add(segment.duration == hint_duration).OnlyEnforceIf(match)
+
+    for index in range(len(hint_segments), len(task_variables.segments)):
+        model.Add(task_variables.segments[index].presence == 0).OnlyEnforceIf(match)
+
+    return match
+
+
+def _segment_moved_minutes_var(
+    model: cp_model.CpModel,
+    *,
+    segment: _SegmentVariables,
+    hint_segment: TimeWindow,
+    timeline_anchor: datetime,
+    horizon_minutes: int,
+    name_prefix: str,
+) -> cp_model.IntVar:
+    hint_start = _minute_offset(hint_segment.start_time, timeline_anchor)
+    hint_end = _minute_offset(hint_segment.end_time, timeline_anchor)
+    max_moved = horizon_minutes * 2
+    moved = model.NewIntVar(0, max_moved, name_prefix)
+
+    active_moved = model.NewIntVar(0, max_moved, f"{name_prefix}_active")
+    start_delta = model.NewIntVar(-horizon_minutes, horizon_minutes, f"{name_prefix}_start_delta")
+    end_delta = model.NewIntVar(-horizon_minutes, horizon_minutes, f"{name_prefix}_end_delta")
+    abs_start = model.NewIntVar(0, horizon_minutes, f"{name_prefix}_abs_start")
+    abs_end = model.NewIntVar(0, horizon_minutes, f"{name_prefix}_abs_end")
+    model.Add(start_delta == segment.start - hint_start).OnlyEnforceIf(segment.presence)
+    model.Add(start_delta == 0).OnlyEnforceIf(segment.presence.Not())
+    model.Add(end_delta == segment.end - hint_end).OnlyEnforceIf(segment.presence)
+    model.Add(end_delta == 0).OnlyEnforceIf(segment.presence.Not())
+    model.AddAbsEquality(abs_start, start_delta)
+    model.AddAbsEquality(abs_end, end_delta)
+    model.Add(active_moved == abs_start + abs_end).OnlyEnforceIf(segment.presence)
+    model.Add(active_moved == max_moved).OnlyEnforceIf(segment.presence.Not())
+    model.Add(moved == active_moved)
+    return moved
+
+
+def _active_segment_scalar(
+    model: cp_model.CpModel,
+    *,
+    segment: _SegmentVariables,
+    horizon_minutes: int,
+    active_field: str,
+    inactive_value: int,
+    name_prefix: str,
+) -> cp_model.IntVar:
+    active_source = segment.end if active_field == "end" else segment.start
+    value = model.NewIntVar(0, horizon_minutes, name_prefix)
+    model.Add(value == active_source).OnlyEnforceIf(segment.presence)
+    model.Add(value == inactive_value).OnlyEnforceIf(segment.presence.Not())
+    return value
+
+
+def _active_segment_start_for_sum(
+    model: cp_model.CpModel,
+    *,
+    segment: _SegmentVariables,
+    horizon_minutes: int,
+    name_prefix: str,
+) -> cp_model.IntVar:
+    value = model.NewIntVar(0, horizon_minutes, name_prefix)
+    model.Add(value == segment.start).OnlyEnforceIf(segment.presence)
+    model.Add(value == 0).OnlyEnforceIf(segment.presence.Not())
+    return value
+
+
+def _earliest_active_start(
+    model: cp_model.CpModel,
+    *,
+    segments: tuple[_SegmentVariables, ...],
+    horizon_minutes: int,
+    name_prefix: str,
+) -> cp_model.IntVar:
+    starts = _active_segment_values(
+        model,
+        segments=segments,
+        horizon_minutes=horizon_minutes,
+        inactive_value=horizon_minutes,
+        active_field="start",
+        name_prefix=name_prefix,
+    )
+    earliest = model.NewIntVar(0, horizon_minutes, f"{name_prefix}_earliest")
+    model.AddMinEquality(earliest, starts)
+    return earliest
+
+
+def _zero_objective_var(model: cp_model.CpModel, name: str) -> cp_model.IntVar:
+    value = model.NewIntVar(0, 0, name)
+    model.Add(value == 0)
+    return value
+
+
+def _tasks_in_priority_order(
+    task_variables: tuple[_TaskVariables, ...],
+) -> tuple[_TaskVariables, ...]:
+    return tuple(
+        sorted(
+            task_variables,
+            key=lambda task_vars: (task_vars.task.priority_path, str(task_vars.plan_id)),
+        )
+    )
+
+
 def _extract_assignments(
     timeline_anchor: datetime,
     *,
@@ -376,6 +864,10 @@ def _max_segments_for_task(task: SchedulableTask) -> int:
         return 1
 
     return max(1, (task.duration_minutes + minimum_chunk - 1) // minimum_chunk)
+
+
+def _window_duration_minutes(window_value: TimeWindow) -> int:
+    return int((window_value.end_time - window_value.start_time).total_seconds() // 60)
 
 
 def _minute_offset(timestamp: datetime, timeline_anchor: datetime) -> int:
