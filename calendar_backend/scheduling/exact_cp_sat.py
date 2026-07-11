@@ -7,8 +7,12 @@ from __future__ import annotations
 
 from ortools.sat.python import cp_model  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
+from calendar_backend.scheduling import decomposition
 from calendar_backend.scheduling.input import AssignmentInput
 from calendar_backend.scheduling.types import AssignmentSolverResult, feasible_result
+
+estimate_model_variable_count = decomposition.estimate_model_variable_count
+model_size_guard_exceeded = decomposition.model_size_guard_exceeded
 
 
 class ExactAssignmentSolver:

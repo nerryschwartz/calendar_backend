@@ -41,12 +41,19 @@ class PrecedenceEdge:
 
 
 @dataclass(frozen=True)
+class SolverLimits:
+    time_limit_seconds: int
+    model_size_limit: int
+
+
+@dataclass(frozen=True)
 class AssignmentInput:
     run_started_at: datetime
     tasks: tuple[SchedulableTask, ...]
     precedence_edges: tuple[PrecedenceEdge, ...]
     occupied_intervals: tuple[OccupiedInterval, ...]
     previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...] = ()
+    solver_limits: SolverLimits | None = None
 
 
 def assignment_input_from_resolved(
