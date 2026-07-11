@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from calendar_backend.domain.enums import (
     CalendarEntryType,
     CalendarRunStatus,
@@ -51,6 +55,20 @@ from calendar_backend.domain.time import (
     validate_time_window,
 )
 
+if TYPE_CHECKING:
+    from calendar_backend.domain.orchestration import RefreshScheduleResult
+
+
+def __getattr__(name: str) -> object:
+    if name == "RefreshScheduleResult":
+        from calendar_backend.domain.orchestration import (  # noqa: PLC0415
+            RefreshScheduleResult,
+        )
+
+        return RefreshScheduleResult
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "CalendarEntryID",
     "CalendarEntryType",
@@ -70,6 +88,7 @@ __all__ = [
     "MessageCode",
     "PlanID",
     "PlanKind",
+    "RefreshScheduleResult",
     "RepeatMode",
     "RepetitionInstanceID",
     "RepetitionTimestampField",
