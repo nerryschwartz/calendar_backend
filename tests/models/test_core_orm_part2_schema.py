@@ -92,6 +92,7 @@ PART2_ENUM_COLUMNS: dict[tuple[str, str], set[str]] = {
     ("active_calendar_state", "last_failure_reason"): {
         "ASSIGNMENT_FAILED",
         "ASSIGNMENT_PRECONDITION_FAILED",
+        "FREE_TIME_ASSIGNMENT_FAILED",
     },
     ("app_settings", "free_time_week_start_day"): {
         "MONDAY",
