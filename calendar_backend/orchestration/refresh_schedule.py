@@ -6,9 +6,12 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from calendar_backend.db.session import transaction
+from calendar_backend.domain.enums import LastFailureReason
 from calendar_backend.domain.orchestration import RefreshScheduleResult
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.models.runs import ActiveCalendarState
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
 from calendar_backend.services.task_assignment import TaskAssignmentService
 from calendar_backend.services.task_resolution import TaskResolutionService
@@ -42,6 +45,17 @@ class OrchestrationService:
             run_started_at,
         )
         if not assign_result.success:
+            if assign_result.value is None:
+                _persist_assignment_precondition_failure(self._session, self._clock)
+                return fail(
+                    *assign_result.errors,
+                    _value=RefreshScheduleResult(
+                        run_started_at=run_started_at,
+                        resolved=resolved,
+                        assignment=None,
+                        free_time=None,
+                    ),
+                )
             return fail(
                 *assign_result.errors,
                 _value=RefreshScheduleResult(
@@ -77,3 +91,33 @@ class OrchestrationService:
                 free_time=free_time_result.value,
             )
         )
+
+
+def _persist_assignment_precondition_failure(session: Session, clock: Clock) -> None:
+    """Record assignment precondition failure without mutating calendar rows or active run."""
+    with transaction(session):
+        now = clock.now_utc()
+        active_state = _load_or_create_active_calendar_state(session, clock)
+        active_state.last_refresh_failed = True
+        active_state.last_failure_at = now
+        active_state.last_failure_reason = LastFailureReason.ASSIGNMENT_PRECONDITION_FAILED
+        active_state.updated_at = now
+
+
+def _load_or_create_active_calendar_state(session: Session, clock: Clock) -> ActiveCalendarState:
+    row = session.get(ActiveCalendarState, 1)
+    if row is not None:
+        return row
+
+    now = clock.now_utc()
+    row = ActiveCalendarState(
+        singleton_id=1,
+        active_calendar_run_id=None,
+        last_refresh_failed=False,
+        last_failure_at=None,
+        last_failure_reason=None,
+        updated_at=now,
+    )
+    session.add(row)
+    session.flush()
+    return row
