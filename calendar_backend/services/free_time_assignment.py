@@ -57,7 +57,10 @@ class FreeTimeAssignmentService:
         self._clock = clock or SystemClock()
 
     def assign_free_time(self, run_started_at: datetime) -> ServiceResult[FreeTimeAssignmentResult]:
-        # TODO(Prompt 16): partial orchestration failure metadata after task assignment
+        """Standalone callers get zero mutations on failure.
+
+        OrchestrationService handles partial failure after successful task assignment.
+        """
         validation_error = validate_run_started_at(run_started_at)
         if validation_error is not None:
             return fail(validation_error)

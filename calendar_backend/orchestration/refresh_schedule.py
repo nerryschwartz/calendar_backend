@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
-from calendar_backend.domain.enums import LastFailureReason
+from calendar_backend.domain.enums import CalendarEntryType, LastFailureReason
 from calendar_backend.domain.orchestration import RefreshScheduleResult
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.runs import ActiveCalendarState
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
 from calendar_backend.services.task_assignment import TaskAssignmentService
@@ -73,6 +75,11 @@ class OrchestrationService:
             run_started_at
         )
         if not free_time_result.success or free_time_result.value is None:
+            _persist_partial_free_time_failure(
+                self._session,
+                self._clock,
+                run_started_at=run_started_at,
+            )
             return fail(
                 *free_time_result.errors,
                 _value=RefreshScheduleResult(
@@ -91,6 +98,28 @@ class OrchestrationService:
                 free_time=free_time_result.value,
             )
         )
+
+
+def _persist_partial_free_time_failure(
+    session: Session,
+    clock: Clock,
+    *,
+    run_started_at: datetime,
+) -> None:
+    """Clear future FREE_TIME and record partial failure after successful task assignment."""
+    with transaction(session):
+        session.execute(
+            delete(CalendarEntry).where(
+                CalendarEntry.entry_type == CalendarEntryType.FREE_TIME,
+                CalendarEntry.start_time >= run_started_at,
+            )
+        )
+        now = clock.now_utc()
+        active_state = _load_or_create_active_calendar_state(session, clock)
+        active_state.last_refresh_failed = True
+        active_state.last_failure_at = now
+        active_state.last_failure_reason = LastFailureReason.FREE_TIME_ASSIGNMENT_FAILED
+        active_state.updated_at = now
 
 
 def _persist_assignment_precondition_failure(session: Session, clock: Clock) -> None:
