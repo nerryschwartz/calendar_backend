@@ -81,6 +81,7 @@ def assignment_component(
     tasks: tuple[SchedulableTask, ...],
     precedence_edges: tuple[PrecedenceEdge, ...] = (),
     occupied_intervals: tuple[OccupiedInterval, ...] = (),
+    previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...] = (),
     run_started_at: datetime = RUN_AT,
     solver_limits_value: SolverLimits | None = None,
 ) -> AssignmentComponent:
@@ -89,7 +90,7 @@ def assignment_component(
         tasks=tasks,
         precedence_edges=precedence_edges,
         occupied_intervals=occupied_intervals,
-        previous_placements_by_task_id=(),
+        previous_placements_by_task_id=previous_placements_by_task_id,
         solver_limits=solver_limits_value or solver_limits(),
     )
 
