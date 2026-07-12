@@ -124,6 +124,18 @@ def iter_component_sub_inputs(
     return tuple(result)
 
 
+def assignment_input_from_component(component: AssignmentComponent) -> AssignmentInput:
+    """Build a solver sub-input from a precedence-connected component."""
+    return AssignmentInput(
+        run_started_at=component.run_started_at,
+        tasks=component.tasks,
+        precedence_edges=component.precedence_edges,
+        occupied_intervals=component.occupied_intervals,
+        previous_placements_by_task_id=component.previous_placements_by_task_id,
+        solver_limits=component.solver_limits,
+    )
+
+
 def estimate_model_variable_count(component: AssignmentComponent) -> int:
     horizon_minutes = _component_horizon_minutes(component)
     segment_vars = sum(_max_segments_for_task(task) * VARS_PER_SEGMENT for task in component.tasks)
