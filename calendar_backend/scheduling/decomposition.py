@@ -1,8 +1,8 @@
 """Precedence-connected assignment decomposition and CP-SAT model-size guards.
 
 Variable-count estimate (conservative over-approximation for slice 2):
-- ``horizon_minutes``: minute span from ``run_started_at`` through the latest
-  ``end_time`` among task windows, occupied intervals, and stability hints.
+- ``horizon_minutes``: minute span from the component timeline anchor through the
+  latest ``end_time`` among task windows, occupied intervals, and stability hints.
 - Per task ``max_segments``: ``1`` when indivisible; otherwise
   ``max(1, (duration_minutes + minimum_chunk - 1) // minimum_chunk)`` when
   ``minimum_chunk > 0``, else ``1``.
@@ -217,7 +217,21 @@ def _max_segments_for_task(task: SchedulableTask) -> int:
     return max(1, (task.duration_minutes + minimum_chunk - 1) // minimum_chunk)
 
 
+def _timeline_anchor(component: AssignmentComponent) -> datetime:
+    anchor = component.run_started_at
+    for task in component.tasks:
+        for effective_window in task.effective_time_windows:
+            anchor = min(anchor, effective_window.start_time)
+    for occupied in component.occupied_intervals:
+        anchor = min(anchor, occupied.start_time)
+    for _, segments in component.previous_placements_by_task_id:
+        for segment in segments:
+            anchor = min(anchor, segment.start_time)
+    return anchor
+
+
 def _component_horizon_minutes(component: AssignmentComponent) -> int:
+    timeline_anchor = _timeline_anchor(component)
     latest_end = component.run_started_at
     for task in component.tasks:
         for window in task.effective_time_windows:
@@ -228,7 +242,7 @@ def _component_horizon_minutes(component: AssignmentComponent) -> int:
         for segment in segments:
             latest_end = max(latest_end, segment.end_time)
 
-    delta = latest_end - component.run_started_at
+    delta = latest_end - timeline_anchor
     return max(0, int(delta.total_seconds() // 60))
 
 

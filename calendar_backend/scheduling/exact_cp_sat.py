@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 
 from ortools.sat.python import cp_model
 
+from calendar_backend.domain.enums import SolverStatus
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.scheduling import decomposition
@@ -27,7 +29,10 @@ from calendar_backend.scheduling.input import (
 from calendar_backend.scheduling.types import (
     AssignmentSolverResult,
     TaskAssignment,
-    feasible_result,
+    exact_feasible_result,
+    exact_optimal_result,
+    infeasible_result,
+    weakest_solver_status,
 )
 
 _DEFAULT_TIME_LIMIT_SECONDS = 30
@@ -63,29 +68,68 @@ class _ComponentContext:
     hints_by_plan_id: dict[PlanID, tuple[TimeWindow, ...]]
 
 
+@dataclass(frozen=True)
+class _ComponentSolveResult:
+    assignments: tuple[TaskAssignment, ...]
+    status: SolverStatus
+    limit_reached: bool
+
+
 class ExactAssignmentSolver:
-    """CP-SAT exact assignment solver; full pipeline deferred to later slices."""
+    """CP-SAT exact assignment solver with per-component lexicographic objectives."""
 
     def solve(self, assignment_input: AssignmentInput) -> AssignmentSolverResult:
         if not assignment_input.tasks:
-            return feasible_result(())
+            return exact_optimal_result(())
 
-        raise NotImplementedError(
-            "ExactAssignmentSolver.solve full pipeline is not implemented until slice 5"
-        )
+        base_components = decomposition.decompose_assignment_input(assignment_input)
+        prior_solved_assignments: tuple[TaskAssignment, ...] = ()
+        component_statuses: list[SolverStatus] = []
+        any_limit_reached = False
+
+        for component_index in range(len(base_components)):
+            component = decomposition.iter_component_sub_inputs(
+                assignment_input,
+                prior_solved_assignments=prior_solved_assignments,
+            )[component_index]
+            component_result = _solve_component_with_status(component)
+            if component_result is None:
+                if model_size_guard_exceeded(component, component.solver_limits):
+                    return _exact_guard_not_usable_result()
+                return _exact_not_usable_result()
+
+            prior_solved_assignments = (
+                *prior_solved_assignments,
+                *component_result.assignments,
+            )
+            component_statuses.append(component_result.status)
+            any_limit_reached = any_limit_reached or component_result.limit_reached
+
+        merged_assignments = prior_solved_assignments
+        validation_failure = validate_full_assignment(assignment_input, merged_assignments)
+        if validation_failure is not None:
+            return infeasible_result(validation_failure)
+
+        aggregate_status = weakest_solver_status(*component_statuses)
+        if aggregate_status == SolverStatus.OPTIMAL:
+            return exact_optimal_result(merged_assignments)
+        return exact_feasible_result(merged_assignments, limit_reached=any_limit_reached)
 
 
 def _solve_single_component(  # pyright: ignore[reportUnusedFunction]
     component: AssignmentComponent,
 ) -> tuple[TaskAssignment, ...] | None:
-    return _solve_component_lexicographic(component)
+    component_result = _solve_component_with_status(component)
+    if component_result is None:
+        return None
+    return component_result.assignments
 
 
-def _solve_component_lexicographic(
+def _solve_component_with_status(
     component: AssignmentComponent,
-) -> tuple[TaskAssignment, ...] | None:
+) -> _ComponentSolveResult | None:
     if not component.tasks:
-        return ()
+        return _ComponentSolveResult((), SolverStatus.OPTIMAL, False)
 
     if _component_hard_unusable(component):
         return None
@@ -94,25 +138,48 @@ def _solve_component_lexicographic(
     if context is None:
         return None
 
-    last_assignments = _run_lex_chain(context)
-    if last_assignments is None:
+    lex_result = _run_lex_chain(context)
+    if lex_result is None:
         return None
 
+    assignments, status, limit_reached = lex_result
     validation_failure = validate_full_assignment(
         _assignment_input_from_component(component),
-        last_assignments,
+        assignments,
     )
     if validation_failure is not None:
         return None
 
-    return last_assignments
+    return _ComponentSolveResult(assignments, status, limit_reached)
 
 
-def _run_lex_chain(context: _ComponentContext) -> tuple[TaskAssignment, ...] | None:
-    if not _run_feasibility_pass(context):
+def _run_lex_chain(
+    context: _ComponentContext,
+) -> tuple[tuple[TaskAssignment, ...], SolverStatus, bool] | None:
+    time_limit_seconds = _time_limit_seconds(context.component.solver_limits)
+    solve_status = SolverStatus.OPTIMAL
+    limit_reached = False
+
+    def absorb_solve(ortools_status: int, solver: cp_model.CpSolver) -> None:
+        nonlocal solve_status, limit_reached
+        solve_status = weakest_solver_status(
+            solve_status,
+            _solver_status_from_ortools(ortools_status),
+        )
+        if _solve_hit_time_limit(solver, time_limit_seconds):
+            limit_reached = True
+
+    context.model.Minimize(0)
+    ortools_status, solver = _solve_context(context)
+    if ortools_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return None
+    absorb_solve(ortools_status, solver)
 
-    last_assignments = _extract_current_assignments(context)
+    last_assignments = _extract_assignments(
+        context.timeline_anchor,
+        task_variables=context.task_variables,
+        solver=solver,
+    )
     if last_assignments is None:
         return None
 
@@ -123,13 +190,18 @@ def _run_lex_chain(context: _ComponentContext) -> tuple[TaskAssignment, ...] | N
     ]
 
     for objective_builder, maximize in lex_steps:
-        assignments = _run_lex_pass(context, objective_builder, maximize=maximize)
+        assignments, ortools_status, solver = _run_lex_pass(
+            context,
+            objective_builder,
+            maximize=maximize,
+        )
         if assignments is None:
-            return last_assignments
+            return last_assignments, solve_status, limit_reached
+        absorb_solve(ortools_status, solver)
         last_assignments = assignments
 
     for task_variables in _tasks_in_priority_order(context.task_variables):
-        assignments = _run_lex_pass(
+        assignments, ortools_status, solver = _run_lex_pass(
             context,
             lambda ctx, task_vars=task_variables: _objective_earliest_start_for_task(
                 ctx, task_vars
@@ -137,7 +209,8 @@ def _run_lex_chain(context: _ComponentContext) -> tuple[TaskAssignment, ...] | N
             maximize=False,
         )
         if assignments is None:
-            return last_assignments
+            return last_assignments, solve_status, limit_reached
+        absorb_solve(ortools_status, solver)
         last_assignments = assignments
 
     for objective_builder, maximize in (
@@ -146,44 +219,17 @@ def _run_lex_chain(context: _ComponentContext) -> tuple[TaskAssignment, ...] | N
         (_objective_minimize_active_segment_count, False),
         (_objective_minimize_intra_task_gaps, False),
     ):
-        assignments = _run_lex_pass(context, objective_builder, maximize=maximize)
+        assignments, ortools_status, solver = _run_lex_pass(
+            context,
+            objective_builder,
+            maximize=maximize,
+        )
         if assignments is None:
-            return last_assignments
+            return last_assignments, solve_status, limit_reached
+        absorb_solve(ortools_status, solver)
         last_assignments = assignments
 
-    return last_assignments
-
-
-def _run_feasibility_pass(context: _ComponentContext) -> bool:
-    context.model.Minimize(0)
-    status, _solver = _solve_context(context)
-    return status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
-
-
-def _run_lex_pass(
-    context: _ComponentContext,
-    objective_builder: Callable[[_ComponentContext], cp_model.IntVar],
-    *,
-    maximize: bool,
-) -> tuple[TaskAssignment, ...] | None:
-    objective = objective_builder(context)
-    if maximize:
-        context.model.Maximize(objective)
-    else:
-        context.model.Minimize(objective)
-
-    status, solver = _solve_context(context)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None
-
-    optimal_value = round(solver.ObjectiveValue())
-    context.model.Add(objective == optimal_value)
-
-    return _extract_assignments(
-        context.timeline_anchor,
-        task_variables=context.task_variables,
-        solver=solver,
-    )
+    return last_assignments, solve_status, limit_reached
 
 
 def _solve_context(context: _ComponentContext) -> tuple[int, cp_model.CpSolver]:
@@ -193,17 +239,31 @@ def _solve_context(context: _ComponentContext) -> tuple[int, cp_model.CpSolver]:
     return status, solver
 
 
-def _extract_current_assignments(
+def _run_lex_pass(
     context: _ComponentContext,
-) -> tuple[TaskAssignment, ...] | None:
-    status, solver = _solve_context(context)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None
-    return _extract_assignments(
+    objective_builder: Callable[[_ComponentContext], cp_model.IntVar],
+    *,
+    maximize: bool,
+) -> tuple[tuple[TaskAssignment, ...] | None, int, cp_model.CpSolver]:
+    objective = objective_builder(context)
+    if maximize:
+        context.model.Maximize(objective)
+    else:
+        context.model.Minimize(objective)
+
+    ortools_status, solver = _solve_context(context)
+    if ortools_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None, ortools_status, solver
+
+    optimal_value = round(solver.ObjectiveValue())
+    context.model.Add(objective == optimal_value)
+
+    assignments = _extract_assignments(
         context.timeline_anchor,
         task_variables=context.task_variables,
         solver=solver,
     )
+    return assignments, ortools_status, solver
 
 
 def _build_component_context(
@@ -898,3 +958,37 @@ def _time_limit_seconds(limits: SolverLimits | None) -> float:
     if limits is None:
         return float(_DEFAULT_TIME_LIMIT_SECONDS)
     return float(limits.time_limit_seconds)
+
+
+def _solver_status_from_ortools(ortools_status: int) -> SolverStatus:
+    if ortools_status == cp_model.OPTIMAL:
+        return SolverStatus.OPTIMAL
+    return SolverStatus.FEASIBLE
+
+
+def _solve_hit_time_limit(solver: cp_model.CpSolver, time_limit_seconds: float) -> bool:
+    if time_limit_seconds <= 0:
+        return False
+    return solver.WallTime() >= time_limit_seconds - 0.001
+
+
+def _exact_guard_not_usable_result() -> AssignmentSolverResult:
+    return AssignmentSolverResult(
+        status=SolverStatus.INFEASIBLE,
+        assignments=(),
+        warnings=(),
+        failure=None,
+    )
+
+
+def _exact_not_usable_result() -> AssignmentSolverResult:
+    return AssignmentSolverResult(
+        status=SolverStatus.INFEASIBLE,
+        assignments=(),
+        warnings=(),
+        failure=ServiceMessage(
+            code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+            message="Exact solver could not produce a usable assignment",
+            details={},
+        ),
+    )
