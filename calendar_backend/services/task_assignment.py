@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import time
 from datetime import datetime
 
@@ -15,8 +16,10 @@ from calendar_backend.domain.assignment import (
     calendar_entry_dto_from_row,
     calendar_entry_insert_specs_from_assignments,
     occupied_intervals_from_calendar_entries,
+    previous_placements_from_future_task_entries,
 )
 from calendar_backend.domain.deletion import AssignmentConflict
+from calendar_backend.domain.dtos import AppSettingsDTO
 from calendar_backend.domain.enums import (
     CalendarEntryType,
     CalendarRunStatus,
@@ -30,13 +33,22 @@ from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
+from calendar_backend.scheduling import decomposition
+from calendar_backend.scheduling.exact_cp_sat import ExactAssignmentSolver
+from calendar_backend.scheduling.feasibility import validate_full_assignment
 from calendar_backend.scheduling.heuristic import HeuristicAssignmentSolver
 from calendar_backend.scheduling.input import (
     AssignmentInput,
-    OccupiedInterval,
+    SolverLimits,
     assignment_input_from_resolved,
 )
-from calendar_backend.scheduling.types import AssignmentSolverResult
+from calendar_backend.scheduling.types import (
+    AssignmentSolverResult,
+    TaskAssignment,
+    feasible_result,
+    infeasible_result,
+    is_usable_solver_result,
+)
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.master_horizon import validate_run_started_at
 
@@ -63,18 +75,47 @@ class TaskAssignmentService:
         if precondition_error is not None:
             return fail(precondition_error)
 
-        settings_error = _heuristic_solver_unavailable_error(self._session, self._clock)
-        if settings_error is not None:
-            return fail(settings_error)
+        settings_result = AppSettingsService(self._session, self._clock).get_settings()
+        if not settings_result.success or settings_result.value is None:
+            if settings_result.errors:
+                return fail(settings_result.errors[0])
+            return fail(
+                ServiceMessage(
+                    code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
+                    message="App settings could not be loaded",
+                    details={},
+                )
+            )
+        settings = settings_result.value
+
+        exact_unavailable_error = _exact_solver_unavailable_error(settings)
+        if exact_unavailable_error is not None:
+            return fail(exact_unavailable_error)
 
         with transaction(self._session) as txn:
-            occupied_intervals = _load_occupied_intervals(txn, run_started_at)
+            task_entries = _load_task_calendar_entries(txn)
+            occupied_intervals = occupied_intervals_from_calendar_entries(
+                task_entries,
+                run_started_at,
+            )
+            schedulable_plan_ids = frozenset(task.plan_id for task in resolved.valid_incomplete)
+            previous_placements = previous_placements_from_future_task_entries(
+                task_entries,
+                run_started_at,
+                schedulable_plan_ids,
+            )
 
         assignment_input = assignment_input_from_resolved(
             resolved,
             occupied_intervals=occupied_intervals,
+            previous_placements_by_task_id=previous_placements,
+            solver_limits=_solver_limits_from_settings(settings),
         )
-        solver_result, runtime_ms = _solve_assignment(assignment_input)
+        solver_result, runtime_ms = _solve_assignment(
+            assignment_input,
+            heuristic_enabled=settings.heuristic_enabled,
+        )
+        solver_result = _normalize_infeasible_solver_result(solver_result)
         if solver_result.status == SolverStatus.INFEASIBLE:
             assert solver_result.failure is not None
             analysis_result = ConflictAnalysisService().analyze(
@@ -136,43 +177,105 @@ def _assign_tasks_precondition_error(
     return None
 
 
-def _heuristic_solver_unavailable_error(session: Session, clock: Clock) -> ServiceMessage | None:
-    settings_result = AppSettingsService(session, clock).get_settings()
-    if not settings_result.success:
-        return settings_result.errors[0] if settings_result.errors else None
-    assert settings_result.value is not None
-    if not settings_result.value.heuristic_enabled:
-        return ServiceMessage(
-            code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
-            message="heuristic solver is disabled and no exact solver is available",
-            details={},
-        )
-    return None
+def _exact_solver_unavailable_error(settings: AppSettingsDTO) -> ServiceMessage | None:
+    if settings.heuristic_enabled:
+        return None
+    if _exact_solver_available():
+        return None
+    return ServiceMessage(
+        code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+        message="exact assignment solver is unavailable and heuristic fallback is disabled",
+        details={},
+    )
 
 
-def _load_occupied_intervals(
-    session: Session,
-    run_started_at: datetime,
-) -> tuple[OccupiedInterval, ...]:
+def _exact_solver_available() -> bool:
+    return importlib.util.find_spec("ortools.sat.python.cp_model") is not None
+
+
+def _solver_limits_from_settings(settings: AppSettingsDTO) -> SolverLimits:
+    return SolverLimits(
+        time_limit_seconds=settings.exact_solver_time_limit_seconds,
+        model_size_limit=settings.exact_solver_model_size_limit,
+    )
+
+
+def _load_task_calendar_entries(session: Session) -> tuple[CalendarEntry, ...]:
     state = session.get(ActiveCalendarState, 1)
     if state is None or state.active_calendar_run_id is None:
         return ()
 
-    entries = tuple(
+    return tuple(
         session.scalars(
             select(CalendarEntry).where(CalendarEntry.entry_type == CalendarEntryType.TASK)
         ).all()
     )
-    return occupied_intervals_from_calendar_entries(entries, run_started_at)
 
 
 def _solve_assignment(
     assignment_input: AssignmentInput,
+    *,
+    heuristic_enabled: bool,
 ) -> tuple[AssignmentSolverResult, int]:
     started = time.perf_counter()
-    solver_result = HeuristicAssignmentSolver().solve(assignment_input)
+    exact_result = ExactAssignmentSolver().solve(assignment_input)
+    if is_usable_solver_result(exact_result):
+        runtime_ms = int((time.perf_counter() - started) * 1000)
+        return exact_result, runtime_ms
+
+    if not heuristic_enabled:
+        runtime_ms = int((time.perf_counter() - started) * 1000)
+        return exact_result, runtime_ms
+
+    heuristic_result = _solve_heuristic_per_component(assignment_input)
     runtime_ms = int((time.perf_counter() - started) * 1000)
-    return solver_result, runtime_ms
+    return heuristic_result, runtime_ms
+
+
+def _solve_heuristic_per_component(
+    assignment_input: AssignmentInput,
+) -> AssignmentSolverResult:
+    base_components = decomposition.decompose_assignment_input(assignment_input)
+    prior_solved_assignments: tuple[TaskAssignment, ...] = ()
+
+    for component_index in range(len(base_components)):
+        component = decomposition.iter_component_sub_inputs(
+            assignment_input,
+            prior_solved_assignments=prior_solved_assignments,
+        )[component_index]
+        component_input = decomposition.assignment_input_from_component(component)
+        component_result = HeuristicAssignmentSolver().solve(component_input)
+        if component_result.status == SolverStatus.INFEASIBLE:
+            return component_result
+
+        prior_solved_assignments = (
+            *prior_solved_assignments,
+            *component_result.assignments,
+        )
+
+    validation_failure = validate_full_assignment(assignment_input, prior_solved_assignments)
+    if validation_failure is not None:
+        return infeasible_result(validation_failure)
+
+    return feasible_result(prior_solved_assignments)
+
+
+def _normalize_infeasible_solver_result(
+    solver_result: AssignmentSolverResult,
+) -> AssignmentSolverResult:
+    if solver_result.status != SolverStatus.INFEASIBLE or solver_result.failure is not None:
+        return solver_result
+
+    return AssignmentSolverResult(
+        status=SolverStatus.INFEASIBLE,
+        assignments=(),
+        warnings=(),
+        failure=ServiceMessage(
+            code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+            message="Exact solver could not produce a usable assignment",
+            details={},
+        ),
+    )
 
 
 def _persist_failed_assignment(
@@ -237,14 +340,15 @@ def _persist_successful_assignment(
         delete(CalendarEntry).where(
             CalendarEntry.entry_type == CalendarEntryType.TASK,
             CalendarEntry.start_time >= run_started_at,
-        )
+        ),
+        execution_options={"synchronize_session": False},
     )
 
     calendar_run = _new_calendar_run(
         run_started_at=run_started_at,
         clock=clock,
         status=CalendarRunStatus.SUCCESS,
-        solver_status=SolverStatus.FEASIBLE,
+        solver_status=solver_result.status,
         conflict_count=0,
         warning_count=len(solver_result.warnings),
         runtime_ms=runtime_ms,
@@ -280,7 +384,7 @@ def _persist_successful_assignment(
 
     return AssignmentResult(
         run_started_at=run_started_at,
-        optimization_status=SolverStatus.FEASIBLE,
+        optimization_status=solver_result.status,
         calendar_entries=tuple(calendar_entry_dto_from_row(entry) for entry in inserted_entries),
         conflicts=(),
         warnings=solver_result.warnings,

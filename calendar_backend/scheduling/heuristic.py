@@ -25,7 +25,8 @@ class HeuristicAssignmentSolver:
     """Greedy earliest-feasible assignment by priority_path."""
 
     def solve(self, assignment_input: AssignmentInput) -> AssignmentSolverResult:
-        # TODO(Prompt 17 / heuristic stability): previous_placements_by_task_id is ignored in v1.
+        # previous_placements_by_task_id is ignored by the heuristic in V1; exact solver
+        # consumes stability hints via lex objectives.
         if not assignment_input.tasks:
             return feasible_result(())
 

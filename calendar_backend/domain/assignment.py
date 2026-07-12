@@ -236,6 +236,47 @@ def future_task_blocker_intervals_from_calendar_entries(
     return tuple(sorted(intervals, key=lambda window: (window.start_time, window.end_time)))
 
 
+def previous_placements_from_future_task_entries(
+    entries: tuple[CalendarEntry, ...],
+    run_started_at: datetime,
+    schedulable_plan_ids: frozenset[PlanID],
+) -> tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...]:
+    """Map future TASK calendar rows to exact-solver stability hints.
+
+    Includes only entries with ``start_time >= run_started_at`` whose
+    ``source_plan_id`` is in ``schedulable_plan_ids``.
+    """
+    segments_by_plan_id: dict[PlanID, list[TimeWindow]] = {}
+    for entry in entries:
+        if entry.entry_type != CalendarEntryType.TASK:
+            continue
+        if entry.source_plan_id is None:
+            continue
+
+        plan_id = PlanID(entry.source_plan_id)
+        if plan_id not in schedulable_plan_ids:
+            continue
+
+        start_time = sqlite_utc(entry.start_time)
+        if start_time < run_started_at:
+            continue
+
+        segments_by_plan_id.setdefault(plan_id, []).append(
+            TimeWindow(
+                start_time=start_time,
+                end_time=sqlite_utc(entry.end_time),
+            )
+        )
+
+    return tuple(
+        (
+            plan_id,
+            tuple(sorted(segments, key=lambda segment: segment.start_time)),
+        )
+        for plan_id, segments in sorted(segments_by_plan_id.items(), key=lambda item: str(item[0]))
+    )
+
+
 def sqlite_utc(dt: datetime) -> datetime:
     """Normalize SQLite-read naive datetimes to UTC for comparisons."""
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)

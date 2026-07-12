@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 from calendar_backend.db.session import transaction
+from calendar_backend.domain.assignment import previous_placements_from_future_task_entries
 from calendar_backend.domain.enums import (
     CalendarEntryType,
     CalendarRunStatus,
@@ -24,6 +25,9 @@ from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
+from calendar_backend.scheduling.exact_cp_sat import ExactAssignmentSolver
+from calendar_backend.scheduling.input import AssignmentInput
+from calendar_backend.scheduling.types import AssignmentSolverResult
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
@@ -82,6 +86,16 @@ def _create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> 
     )
     assert result.success and result.value is not None
     return result.value.plan_id
+
+
+def _bootstrap_narrow_assignable_task(session: Session) -> tuple[PlanID, PlanID]:
+    master_id = _bootstrap_master_with_horizon(session)
+    TimeConstraintService(session, _clock()).add_user_group(
+        master_id,
+        (_window(RUN_AT, RUN_AT + timedelta(hours=2)),),
+    )
+    task_id = _create_task(session, master_id)
+    return master_id, task_id
 
 
 def _normalize_plan_window_timezones(plans: tuple[Plan, ...]) -> tuple[Plan, ...]:
@@ -272,12 +286,87 @@ def test_assign_tasks_run_started_at_mismatch_blocks_without_db_mutation(
 
 
 @pytest.mark.integration
-def test_assign_tasks_heuristic_disabled_blocks_without_db_mutation(
+def test_assign_tasks_heuristic_disabled_uses_exact_solver_only(
     service_db_session: Session,
 ) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    _create_task(service_db_session, master_id)
+    AppSettingsService(service_db_session, _clock()).update_settings(
+        heuristic_enabled=False,
+        exact_solver_model_size_limit=2_000_000,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.optimization_status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+    assert len(result.value.calendar_entries) == 1
+
+
+@pytest.mark.integration
+def test_assign_tasks_falls_back_to_heuristic_when_exact_not_usable(
+    service_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _bootstrap_master_with_horizon(service_db_session)
-    AppSettingsService(service_db_session, _clock()).update_settings(heuristic_enabled=False)
+
+    def exact_not_usable(
+        self: ExactAssignmentSolver,
+        assignment_input: AssignmentInput,
+    ) -> AssignmentSolverResult:
+        del self, assignment_input
+        return AssignmentSolverResult(
+            status=SolverStatus.INFEASIBLE,
+            assignments=(),
+            warnings=(),
+            failure=None,
+        )
+
+    monkeypatch.setattr(ExactAssignmentSolver, "solve", exact_not_usable)
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.optimization_status == SolverStatus.FEASIBLE
+    assert any(warning.code == MessageCode.HEURISTIC_FEASIBLE for warning in result.value.warnings)
+
+
+@pytest.mark.integration
+def test_assign_tasks_model_size_guard_falls_back_to_heuristic_without_mock(
+    service_db_session: Session,
+) -> None:
+    _bootstrap_narrow_assignable_task(service_db_session)
+    AppSettingsService(service_db_session, _clock()).update_settings(
+        exact_solver_model_size_limit=1,
+        heuristic_enabled=True,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.optimization_status == SolverStatus.FEASIBLE
+    assert any(warning.code == MessageCode.HEURISTIC_FEASIBLE for warning in result.value.warnings)
+
+
+@pytest.mark.integration
+def test_assign_tasks_exact_only_fails_when_model_size_guard_trips(
+    service_db_session: Session,
+) -> None:
     entries_before = _calendar_entry_count(service_db_session)
+    _bootstrap_narrow_assignable_task(service_db_session)
+    AppSettingsService(service_db_session, _clock()).update_settings(
+        exact_solver_model_size_limit=1,
+        heuristic_enabled=False,
+    )
 
     result = _assignment_service(service_db_session).assign_tasks(
         _resolve_seam(service_db_session),
@@ -287,6 +376,122 @@ def test_assign_tasks_heuristic_disabled_blocks_without_db_mutation(
     assert not result.success
     assert result.errors[0].code == MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT
     assert _calendar_entry_count(service_db_session) == entries_before
+
+
+@pytest.mark.integration
+def test_assign_tasks_persists_optimal_when_exact_proves_optimality(
+    service_db_session: Session,
+) -> None:
+    _bootstrap_narrow_assignable_task(service_db_session)
+    AppSettingsService(service_db_session, _clock()).update_settings(
+        heuristic_enabled=False,
+        exact_solver_model_size_limit=10_000,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.optimization_status == SolverStatus.OPTIMAL
+    assert len(result.value.calendar_entries) == 1
+
+
+@pytest.mark.integration
+def test_assign_tasks_loads_stability_hints_from_future_task_entries(
+    service_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    _seed_active_calendar_state_with_past_task(
+        service_db_session,
+        past_start=_utc(2026, 6, 7, 8, 0),
+        past_end=_utc(2026, 6, 7, 8, 30),
+        source_plan_id=task_id,
+    )
+    hint_window = _window(_utc(2026, 6, 7, 11, 0), _utc(2026, 6, 7, 11, 30))
+    _add_calendar_entry(
+        service_db_session,
+        entry_type=CalendarEntryType.TASK,
+        start_time=hint_window.start_time,
+        end_time=hint_window.end_time,
+        source_plan_id=task_id,
+    )
+    captured_inputs: list[AssignmentInput] = []
+    original_solve = ExactAssignmentSolver.solve
+
+    def capture_exact_solve(
+        self: ExactAssignmentSolver,
+        assignment_input: AssignmentInput,
+    ) -> AssignmentSolverResult:
+        captured_inputs.append(assignment_input)
+        return original_solve(self, assignment_input)
+
+    monkeypatch.setattr(ExactAssignmentSolver, "solve", capture_exact_solve)
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success
+    assert len(captured_inputs) == 1
+    assert captured_inputs[0].previous_placements_by_task_id == ((task_id, (hint_window,)),)
+
+
+def test_previous_placements_from_future_task_entries_filters_schedulable_tasks_only() -> None:
+    schedulable_id = PlanID(uuid.uuid4())
+    other_id = PlanID(uuid.uuid4())
+    hint_window = _window(_utc(2026, 6, 7, 11, 0), _utc(2026, 6, 7, 11, 30))
+    past_window = _window(_utc(2026, 6, 7, 8, 0), _utc(2026, 6, 7, 8, 30))
+    entries = (
+        CalendarEntry(
+            calendar_entry_id=uuid.uuid4(),
+            entry_type=CalendarEntryType.TASK,
+            start_time=hint_window.start_time,
+            end_time=hint_window.end_time,
+            source_plan_id=schedulable_id,
+            source_free_time_activity_id=None,
+            calendar_run_id=None,
+            display_label="future",
+            created_at=RUN_AT,
+            updated_at=RUN_AT,
+        ),
+        CalendarEntry(
+            calendar_entry_id=uuid.uuid4(),
+            entry_type=CalendarEntryType.TASK,
+            start_time=past_window.start_time,
+            end_time=past_window.end_time,
+            source_plan_id=schedulable_id,
+            source_free_time_activity_id=None,
+            calendar_run_id=None,
+            display_label="past",
+            created_at=RUN_AT,
+            updated_at=RUN_AT,
+        ),
+        CalendarEntry(
+            calendar_entry_id=uuid.uuid4(),
+            entry_type=CalendarEntryType.TASK,
+            start_time=hint_window.start_time,
+            end_time=hint_window.end_time,
+            source_plan_id=other_id,
+            source_free_time_activity_id=None,
+            calendar_run_id=None,
+            display_label="other",
+            created_at=RUN_AT,
+            updated_at=RUN_AT,
+        ),
+    )
+
+    placements = previous_placements_from_future_task_entries(
+        entries,
+        RUN_AT,
+        frozenset({schedulable_id}),
+    )
+
+    assert placements == ((schedulable_id, (hint_window,)),)
 
 
 @pytest.mark.integration

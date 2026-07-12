@@ -13,8 +13,8 @@ from calendar_backend.domain.resolution import (
 )
 from calendar_backend.domain.time import TimeWindow, is_minute_aligned
 
-# TODO(Prompt 17 / heuristic stability): use previous_placements_by_task_id
-# for soft placement preference.
+# ``previous_placements_by_task_id`` is populated by TaskAssignmentService from future
+# TASK calendar entries and consumed by ExactAssignmentSolver lex objectives.
 
 
 @dataclass(frozen=True)
@@ -41,18 +41,27 @@ class PrecedenceEdge:
 
 
 @dataclass(frozen=True)
+class SolverLimits:
+    time_limit_seconds: int
+    model_size_limit: int
+
+
+@dataclass(frozen=True)
 class AssignmentInput:
     run_started_at: datetime
     tasks: tuple[SchedulableTask, ...]
     precedence_edges: tuple[PrecedenceEdge, ...]
     occupied_intervals: tuple[OccupiedInterval, ...]
     previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...] = ()
+    solver_limits: SolverLimits | None = None
 
 
 def assignment_input_from_resolved(
     resolved: ResolveTasksResult,
     *,
     occupied_intervals: tuple[OccupiedInterval, ...] = (),
+    previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...] = (),
+    solver_limits: SolverLimits | None = None,
 ) -> AssignmentInput:
     """Build solver input from resolution output and caller-supplied occupied intervals."""
     assignment_input = AssignmentInput(
@@ -62,6 +71,8 @@ def assignment_input_from_resolved(
             _precedence_edge_from_resolved(edge) for edge in resolved.precedence_constraints
         ),
         occupied_intervals=occupied_intervals,
+        previous_placements_by_task_id=previous_placements_by_task_id,
+        solver_limits=solver_limits,
     )
     validate_assignment_input(assignment_input)
     return assignment_input
