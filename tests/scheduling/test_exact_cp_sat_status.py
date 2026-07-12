@@ -8,6 +8,7 @@ from calendar_backend.scheduling.exact_cp_sat import (
     ExactAssignmentSolver,
     _ComponentSolveResult,  # pyright: ignore[reportPrivateUsage]
 )
+from calendar_backend.scheduling.feasibility import validate_full_assignment
 from calendar_backend.scheduling.input import SolverLimits
 from calendar_backend.scheduling.types import (
     AssignmentSolverResult,
@@ -18,7 +19,14 @@ from calendar_backend.scheduling.types import (
     weakest_solver_status,
 )
 
-from .conftest import assignment_input, plan_id, schedulable_task, utc, window
+from .conftest import (
+    assignment_input,
+    plan_id,
+    schedulable_task,
+    two_disconnected_chain_input,
+    utc,
+    window,
+)
 
 
 def test_is_usable_solver_result_accepts_optimal_and_feasible_without_failure() -> None:
@@ -176,6 +184,43 @@ def test_solve_aggregates_mixed_component_statuses_to_feasible() -> None:
     assert MessageCode.FEASIBLE_NOT_PROVEN_OPTIMAL in {warning.code for warning in result.warnings}
     assert MessageCode.SOLVER_LIMIT_REACHED in {warning.code for warning in result.warnings}
     assert is_usable_solver_result(result) is True
+
+
+def test_solve_two_disconnected_components_end_to_end() -> None:
+    input_value = two_disconnected_chain_input()
+
+    result = ExactAssignmentSolver().solve(input_value)
+
+    assert result.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+    assert len(result.assignments) == 4
+    assert is_usable_solver_result(result) is True
+    assert validate_full_assignment(input_value, result.assignments) is None
+
+
+def test_solve_two_components_second_respects_first_component_placements() -> None:
+    first_id = plan_id()
+    second_id = plan_id()
+    if str(first_id) > str(second_id):
+        first_id, second_id = second_id, first_id
+    morning = window(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 12, 0))
+    first = schedulable_task(
+        task_id=first_id,
+        duration_minutes=30,
+        effective_time_windows=(morning,),
+    )
+    second = schedulable_task(
+        task_id=second_id,
+        duration_minutes=30,
+        effective_time_windows=(morning,),
+    )
+
+    result = ExactAssignmentSolver().solve(assignment_input(tasks=(first, second)))
+
+    assert is_usable_solver_result(result) is True
+    by_plan_id = {assignment.plan_id: assignment for assignment in result.assignments}
+    first_segment = by_plan_id[first_id].segments[0]
+    second_segment = by_plan_id[second_id].segments[0]
+    assert first_segment.end_time <= second_segment.start_time
 
 
 def test_solve_single_component_limit_reached_yields_feasible_usable_result() -> None:

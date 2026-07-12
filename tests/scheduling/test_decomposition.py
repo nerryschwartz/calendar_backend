@@ -4,6 +4,7 @@ import uuid
 
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.scheduling.decomposition import (
+    assignment_input_from_component,
     decompose_assignment_input,
     estimate_model_variable_count,
     iter_component_sub_inputs,
@@ -186,6 +187,46 @@ def test_model_size_guard_exceeded_trips_on_artificially_low_limit() -> None:
 
     assert estimate_model_variable_count(component) > limits.model_size_limit
     assert model_size_guard_exceeded(component, limits) is True
+
+
+def test_assignment_input_from_component_maps_all_component_fields() -> None:
+    first_id = _stable_plan_id("map-first")
+    second_id = _stable_plan_id("map-second")
+    morning = window(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 12, 0))
+    hint = window(utc(2026, 6, 7, 10, 0), utc(2026, 6, 7, 10, 30))
+    base_occupied = occupied(utc(2026, 6, 7, 8, 0), utc(2026, 6, 7, 8, 30))
+    limits = SolverLimits(time_limit_seconds=15, model_size_limit=500)
+    component = decompose_assignment_input(
+        assignment_input(
+            tasks=(
+                schedulable_task(
+                    task_id=first_id,
+                    duration_minutes=30,
+                    effective_time_windows=(morning,),
+                ),
+                schedulable_task(
+                    task_id=second_id,
+                    duration_minutes=30,
+                    effective_time_windows=(morning,),
+                ),
+            ),
+            precedence_edges=(
+                PrecedenceEdge(predecessor_plan_id=first_id, successor_plan_id=second_id),
+            ),
+            occupied_intervals=(base_occupied,),
+            previous_placements_by_task_id=((first_id, (hint,)),),
+            solver_limits=limits,
+        )
+    )[0]
+
+    mapped = assignment_input_from_component(component)
+
+    assert mapped.run_started_at == component.run_started_at
+    assert mapped.tasks == component.tasks
+    assert mapped.precedence_edges == component.precedence_edges
+    assert mapped.occupied_intervals == component.occupied_intervals
+    assert mapped.previous_placements_by_task_id == component.previous_placements_by_task_id
+    assert mapped.solver_limits == component.solver_limits
 
 
 def test_model_size_guard_exceeded_disabled_when_limits_none() -> None:

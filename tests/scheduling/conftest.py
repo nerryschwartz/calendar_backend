@@ -53,6 +53,7 @@ def assignment_input(
     tasks: tuple[SchedulableTask, ...],
     precedence_edges: tuple[PrecedenceEdge, ...] = (),
     occupied_intervals: tuple[OccupiedInterval, ...] = (),
+    previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...] = (),
     run_started_at: datetime = RUN_AT,
     solver_limits: SolverLimits | None = None,
 ) -> AssignmentInput:
@@ -61,7 +62,56 @@ def assignment_input(
         tasks=tasks,
         precedence_edges=precedence_edges,
         occupied_intervals=occupied_intervals,
+        previous_placements_by_task_id=previous_placements_by_task_id,
         solver_limits=solver_limits,
+    )
+
+
+def _stable_plan_id(label: str) -> PlanID:
+    return PlanID(uuid.uuid5(uuid.NAMESPACE_DNS, label))
+
+
+def two_disconnected_chain_input() -> AssignmentInput:
+    """Two precedence chains (two components) with narrow morning windows."""
+    chain_a_first = _stable_plan_id("slice7-chain-a-first")
+    chain_a_second = _stable_plan_id("slice7-chain-a-second")
+    chain_b_first = _stable_plan_id("slice7-chain-b-first")
+    chain_b_second = _stable_plan_id("slice7-chain-b-second")
+    morning = window(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 12, 0))
+
+    return assignment_input(
+        tasks=(
+            schedulable_task(
+                task_id=chain_a_first,
+                duration_minutes=30,
+                effective_time_windows=(morning,),
+            ),
+            schedulable_task(
+                task_id=chain_a_second,
+                duration_minutes=30,
+                effective_time_windows=(morning,),
+            ),
+            schedulable_task(
+                task_id=chain_b_first,
+                duration_minutes=30,
+                effective_time_windows=(morning,),
+            ),
+            schedulable_task(
+                task_id=chain_b_second,
+                duration_minutes=30,
+                effective_time_windows=(morning,),
+            ),
+        ),
+        precedence_edges=(
+            PrecedenceEdge(
+                predecessor_plan_id=chain_a_first,
+                successor_plan_id=chain_a_second,
+            ),
+            PrecedenceEdge(
+                predecessor_plan_id=chain_b_first,
+                successor_plan_id=chain_b_second,
+            ),
+        ),
     )
 
 

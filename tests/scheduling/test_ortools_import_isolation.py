@@ -29,9 +29,9 @@ def test_exact_assignment_solver_is_importable() -> None:
     assert solver is not None
 
 
-def test_exact_solver_solve_empty_tasks_returns_feasible() -> None:
+def test_exact_solver_solve_empty_tasks_returns_optimal() -> None:
     result = ExactAssignmentSolver().solve(assignment_input(tasks=()))
 
-    assert result.status == SolverStatus.FEASIBLE
+    assert result.status == SolverStatus.OPTIMAL
     assert result.assignments == ()
     assert result.failure is None

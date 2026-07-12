@@ -88,6 +88,16 @@ def _create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> 
     return result.value.plan_id
 
 
+def _bootstrap_narrow_assignable_task(session: Session) -> tuple[PlanID, PlanID]:
+    master_id = _bootstrap_master_with_horizon(session)
+    TimeConstraintService(session, _clock()).add_user_group(
+        master_id,
+        (_window(RUN_AT, RUN_AT + timedelta(hours=2)),),
+    )
+    task_id = _create_task(session, master_id)
+    return master_id, task_id
+
+
 def _normalize_plan_window_timezones(plans: tuple[Plan, ...]) -> tuple[Plan, ...]:
     for plan in plans:
         for group in plan.constraint_groups:
@@ -325,6 +335,67 @@ def test_assign_tasks_falls_back_to_heuristic_when_exact_not_usable(
     assert result.success and result.value is not None
     assert result.value.optimization_status == SolverStatus.FEASIBLE
     assert any(warning.code == MessageCode.HEURISTIC_FEASIBLE for warning in result.value.warnings)
+
+
+@pytest.mark.integration
+def test_assign_tasks_model_size_guard_falls_back_to_heuristic_without_mock(
+    service_db_session: Session,
+) -> None:
+    _bootstrap_narrow_assignable_task(service_db_session)
+    AppSettingsService(service_db_session, _clock()).update_settings(
+        exact_solver_model_size_limit=1,
+        heuristic_enabled=True,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.optimization_status == SolverStatus.FEASIBLE
+    assert any(warning.code == MessageCode.HEURISTIC_FEASIBLE for warning in result.value.warnings)
+
+
+@pytest.mark.integration
+def test_assign_tasks_exact_only_fails_when_model_size_guard_trips(
+    service_db_session: Session,
+) -> None:
+    entries_before = _calendar_entry_count(service_db_session)
+    _bootstrap_narrow_assignable_task(service_db_session)
+    AppSettingsService(service_db_session, _clock()).update_settings(
+        exact_solver_model_size_limit=1,
+        heuristic_enabled=False,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert not result.success
+    assert result.errors[0].code == MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT
+    assert _calendar_entry_count(service_db_session) == entries_before
+
+
+@pytest.mark.integration
+def test_assign_tasks_persists_optimal_when_exact_proves_optimality(
+    service_db_session: Session,
+) -> None:
+    _bootstrap_narrow_assignable_task(service_db_session)
+    AppSettingsService(service_db_session, _clock()).update_settings(
+        heuristic_enabled=False,
+        exact_solver_model_size_limit=10_000,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.optimization_status == SolverStatus.OPTIMAL
+    assert len(result.value.calendar_entries) == 1
 
 
 @pytest.mark.integration

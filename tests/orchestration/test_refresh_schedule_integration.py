@@ -20,6 +20,7 @@ from calendar_backend.domain.resolution import ResolveTasksResult
 from calendar_backend.domain.results import fail, ok
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.plans import TaskPlan
+from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
 from calendar_backend.services.task_resolution import TaskResolutionService
 from calendar_backend.services.time_constraint import TimeConstraintService
@@ -46,6 +47,30 @@ def test_refresh_schedule_happy_path_produces_task_and_free_time_entries(
     state = oh.active_state(service_db_session)
     assert state is not None
     assert state.last_refresh_failed is False
+
+
+@pytest.mark.integration
+def test_refresh_schedule_happy_path_uses_exact_solver_not_heuristic_fallback(
+    service_db_session: Session,
+) -> None:
+    oh.bootstrap_assignable_task(service_db_session)
+    AppSettingsService(service_db_session, oh.clock()).update_settings(
+        exact_solver_model_size_limit=10_000,
+        heuristic_enabled=True,
+    )
+
+    result = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
+
+    assert result.success and result.value is not None
+    assert result.value.assignment is not None
+    assert result.value.assignment.optimization_status in (
+        SolverStatus.OPTIMAL,
+        SolverStatus.FEASIBLE,
+    )
+    assert not any(
+        warning.code == MessageCode.HEURISTIC_FEASIBLE
+        for warning in result.value.assignment.warnings
+    )
 
 
 @pytest.mark.integration
