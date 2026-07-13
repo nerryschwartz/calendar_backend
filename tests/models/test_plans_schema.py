@@ -405,7 +405,6 @@ def test_foreign_key_invalid_goal_plan_id_rejected(plan_schema_engine: Engine) -
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_foreign_key_invalid_task_plan_id_rejected(plan_schema_engine: Engine) -> None:
     task_plan = Base.metadata.tables["task_plan"]
     session = create_session_factory(plan_schema_engine)()
@@ -723,7 +722,6 @@ def test_check_repetition_plan_date_range_mode_fields(plan_schema_engine: Engine
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_relationships_navigate_goal_to_chain_item(plan_schema_engine: Engine) -> None:
     session = create_session_factory(plan_schema_engine)()
     master_id = uuid.uuid4()

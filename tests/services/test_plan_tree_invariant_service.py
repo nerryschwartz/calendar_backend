@@ -10,14 +10,17 @@ from calendar_backend.db.session import transaction
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.plan_create import GoalCreatePayload, RepetitionCreatePayload
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
+from calendar_backend.services.repetition import RepetitionService
 from sqlalchemy.orm import Session
 
 from .conftest import FakeClock
@@ -182,7 +185,6 @@ def test_validate_master_tree_passes_after_bootstrap(service_db_session: Session
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_validate_master_tree_reports_orphan_plan(service_db_session: Session) -> None:
     _bootstrap_master_with_horizon(service_db_session)
     orphan_id = uuid.uuid4()
@@ -268,7 +270,6 @@ def test_validate_master_tree_reports_empty_user_group(service_db_session: Sessi
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_validate_master_tree_reports_misaligned_chain_child(
     service_db_session: Session,
 ) -> None:
@@ -345,7 +346,6 @@ def test_validate_master_tree_reports_misaligned_chain_child(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_validate_master_tree_reports_non_dense_chain_position(
     service_db_session: Session,
 ) -> None:
@@ -445,8 +445,7 @@ def test_validate_master_tree_passes_with_valid_repetition_create_shape(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
-def test_validate_master_tree_reports_pre_generation_with_instances(
+def test_validate_master_tree_passes_with_instances_before_generated_at(
     service_db_session: Session,
 ) -> None:
     master_id = _bootstrap_master_with_horizon(service_db_session)
@@ -455,11 +454,41 @@ def test_validate_master_tree_reports_pre_generation_with_instances(
 
     result = PlanTreeInvariantService(service_db_session).validate_master_tree()
 
-    assert not result.success
-    assert any(
-        error.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "pre-generation" in error.message
-        for error in result.errors
+    assert result.success
+
+
+@pytest.mark.integration
+def test_validate_master_tree_passes_after_repetition_generate_and_refresh(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    clock = FakeClock(RUN_AT)
+    goal_service = GoalService(service_db_session, clock)
+    repetition_service = RepetitionService(service_db_session, clock)
+    payload = RepetitionCreatePayload(
+        name="weekly",
+        repeat_mode=RepeatMode.MANUAL_COUNT,
+        start_time=RUN_AT,
+        repeat_interval_minutes=60,
+        manual_count=1,
+        end_time=None,
+        default_instance_critical=False,
+        template_type=PlanKind.GOAL,
+        template_payload=GoalCreatePayload(name="template"),
     )
+    create = goal_service.create_child(master_id, PlanKind.REPETITION, payload, is_critical=False)
+    assert create.success and create.value is not None
+    repetition_id = create.value.plan_id
+
+    generate = repetition_service.generate_instances(repetition_id, RUN_AT)
+    assert generate.success
+
+    refresh = repetition_service.refresh_all_repetitions(RUN_AT)
+    assert refresh.success
+
+    result = PlanTreeInvariantService(service_db_session).validate_master_tree()
+
+    assert result.success
 
 
 @pytest.mark.integration
