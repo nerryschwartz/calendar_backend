@@ -43,7 +43,6 @@ _EXPECTED_PAYLOAD_TYPE: dict[PlanKind, type[CreatePayload]] = {
     PlanKind.REPETITION: RepetitionCreatePayload,
 }
 
-from calendar_backend.domain.repetitions import validate_repetition_create  # noqa: E402
 from calendar_backend.domain.tasks import validate_task_create  # noqa: E402
 
 
@@ -71,6 +70,8 @@ def validate_create_payload(
         assert isinstance(payload, TaskCreatePayload)  # type checker: isinstance above
         return validate_task_create(payload)
     if kind == PlanKind.REPETITION:
+        from calendar_backend.domain.repetitions import validate_repetition_create  # noqa: PLC0415
+
         assert isinstance(payload, RepetitionCreatePayload)  # type checker: isinstance above
         return validate_repetition_create(payload)
     return None
