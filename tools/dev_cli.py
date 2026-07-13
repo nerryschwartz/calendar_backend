@@ -10,6 +10,9 @@ import argparse
 import sys
 
 from alembic.util.exc import CommandError
+from calendar_backend.domain.time import SystemClock
+from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.master_plan import MasterPlanService
 
 from tools import cli_support
 
@@ -35,14 +38,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     master_parser = subparsers.add_parser("master", help="Master plan inspection")
     master_subparsers = master_parser.add_subparsers(dest="master_command", required=True)
-    master_subparsers.add_parser("show", help="Show the master goal plan")
+    master_subparsers.add_parser(
+        "show",
+        help="Show the master goal plan (bootstraps master row on first run)",
+    )
 
     settings_parser = subparsers.add_parser("settings", help="App settings inspection")
     settings_subparsers = settings_parser.add_subparsers(
         dest="settings_command",
         required=True,
     )
-    settings_subparsers.add_parser("show", help="Show persisted app settings")
+    settings_subparsers.add_parser(
+        "show",
+        help="Show persisted app settings (bootstraps defaults on first run)",
+    )
 
     refresh_parser = subparsers.add_parser("refresh", help="Schedule refresh workflows")
     refresh_subparsers = refresh_parser.add_subparsers(dest="refresh_command", required=True)
@@ -108,11 +117,31 @@ def _cmd_db_reset(_args: argparse.Namespace) -> int:
 
 
 def _cmd_master_show(_args: argparse.Namespace) -> int:
-    return _stub_not_implemented("master show")
+    try:
+        with cli_support.with_session() as session:
+            result = MasterPlanService(session, SystemClock()).ensure_master_exists()
+    except OSError as exc:
+        print(f"master show failed: {exc}", file=sys.stderr)
+        return 1
+    dto = cli_support.print_service_result(result)
+    if dto is None:
+        return 1
+    cli_support.print_goal_plan_dto(dto)
+    return 0
 
 
 def _cmd_settings_show(_args: argparse.Namespace) -> int:
-    return _stub_not_implemented("settings show")
+    try:
+        with cli_support.with_session() as session:
+            result = AppSettingsService(session, SystemClock()).get_settings()
+    except OSError as exc:
+        print(f"settings show failed: {exc}", file=sys.stderr)
+        return 1
+    dto = cli_support.print_service_result(result)
+    if dto is None:
+        return 1
+    cli_support.print_app_settings_dto(dto)
+    return 0
 
 
 def _cmd_refresh_schedule(_args: argparse.Namespace) -> int:
