@@ -46,6 +46,7 @@ def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage,
     violations.extend(_check_goal_chain_membership(plans))
     violations.extend(_check_chains(plans))
     violations.extend(_check_repetition_plans(plans))
+    violations.extend(_check_template_clone_status(plans))
     violations.extend(_check_repetition_instances(plans))
     violations.extend(_check_repetition_instance_windows(plans))
     violations.extend(_check_constraints(plans))
@@ -327,6 +328,30 @@ def _check_repetition_plans(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                 )
             )
 
+    return violations
+
+
+def _check_template_clone_status(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+    template_root_ids: set[uuid.UUID] = set()
+    for plan in plans:
+        if plan.repetition_plan is not None:
+            template_root_ids.add(plan.repetition_plan.template_root_id)
+
+    violations: list[ServiceMessage] = []
+    for plan in plans:
+        if plan.clone_status != CloneStatus.TEMPLATE:
+            continue
+        if plan.plan_id not in template_root_ids:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                    message="TEMPLATE clone_status is only allowed on repetition template roots",
+                    details={
+                        "plan_id": str(plan.plan_id),
+                        "clone_status": plan.clone_status.value,
+                    },
+                )
+            )
     return violations
 
 
