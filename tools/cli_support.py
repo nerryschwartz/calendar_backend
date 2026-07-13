@@ -45,7 +45,9 @@ def _service_message_line(message: ServiceMessage) -> str:
     return line
 
 
-def database_path_from_url(url: str = DATABASE_URL) -> Path:
+def database_path_from_url(url: str | None = None) -> Path:
+    if url is None:
+        url = DATABASE_URL
     return Path(unquote(url.removeprefix("sqlite:///")))
 
 
@@ -63,7 +65,9 @@ def read_current_revision(engine: Engine) -> str | None:
         return context.get_current_revision()
 
 
-def upgrade_head(url: str = DATABASE_URL) -> str:
+def upgrade_head(url: str | None = None) -> str:
+    if url is None:
+        url = DATABASE_URL
     create_engine_for_url(url)
     config = alembic_config()
     command.upgrade(config, "head")
@@ -78,7 +82,9 @@ def upgrade_head(url: str = DATABASE_URL) -> str:
     return revision
 
 
-def current_revision(url: str = DATABASE_URL) -> str | None:
+def current_revision(url: str | None = None) -> str | None:
+    if url is None:
+        url = DATABASE_URL
     engine = create_engine_for_url(url)
     try:
         return read_current_revision(engine)
@@ -86,7 +92,9 @@ def current_revision(url: str = DATABASE_URL) -> str | None:
         engine.dispose()
 
 
-def delete_database_file_if_exists(url: str = DATABASE_URL) -> bool:
+def delete_database_file_if_exists(url: str | None = None) -> bool:
+    if url is None:
+        url = DATABASE_URL
     db_path = database_path_from_url(url)
     if db_path.exists():
         db_path.unlink()
@@ -95,7 +103,9 @@ def delete_database_file_if_exists(url: str = DATABASE_URL) -> bool:
 
 
 @contextmanager
-def with_session(url: str = DATABASE_URL) -> Generator[Session]:
+def with_session(url: str | None = None) -> Generator[Session]:
+    if url is None:
+        url = DATABASE_URL
     engine = create_engine_for_url(url)
     session = create_session_factory(engine)()
     try:
