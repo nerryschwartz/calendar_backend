@@ -11,6 +11,7 @@ import sys
 
 from alembic.util.exc import CommandError
 from calendar_backend.domain.time import SystemClock
+from calendar_backend.orchestration.refresh_schedule import OrchestrationService
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.master_plan import MasterPlanService
 
@@ -143,8 +144,6 @@ def _cmd_settings_show(_args: argparse.Namespace) -> int:
 
 
 def _cmd_refresh_schedule(args: argparse.Namespace) -> int:
-    from calendar_backend.orchestration.refresh_schedule import OrchestrationService
-
     clock = SystemClock()
     try:
         run_started_at = cli_support.parse_run_started_at(args.run_started_at, clock)
