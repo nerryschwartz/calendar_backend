@@ -9,6 +9,10 @@ from __future__ import annotations
 import argparse
 import sys
 
+from alembic.util.exc import CommandError
+
+from tools import cli_support
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -17,7 +21,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    db_parser = subparsers.add_parser("db", help="Database initialization and status")
+    db_parser = subparsers.add_parser(
+        "db",
+        help="Database initialization and status (run from repository root)",
+    )
     db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
     db_subparsers.add_parser("init", help="Apply Alembic migrations to head")
     db_subparsers.add_parser("status", help="Show database path and Alembic revision")
@@ -60,15 +67,44 @@ def _stub_not_implemented(command: str) -> int:
 
 
 def _cmd_db_init(_args: argparse.Namespace) -> int:
-    return _stub_not_implemented("db init")
+    try:
+        revision = cli_support.upgrade_head()
+    except (CommandError, FileNotFoundError, OSError, RuntimeError) as exc:
+        print(f"db init failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Database initialized at head revision: {revision}")
+    return 0
 
 
 def _cmd_db_status(_args: argparse.Namespace) -> int:
-    return _stub_not_implemented("db status")
+    db_path = cli_support.database_path_from_url().resolve()
+    print(f"database_path: {db_path}")
+    exists = db_path.is_file()
+    print(f"database_exists: {exists}")
+    if not exists:
+        print("alembic_revision: (no database file)")
+        return 0
+    try:
+        revision = cli_support.current_revision()
+    except OSError as exc:
+        print(f"db status failed: {exc}", file=sys.stderr)
+        return 1
+    if revision is None:
+        print("alembic_revision: (none)")
+    else:
+        print(f"alembic_revision: {revision}")
+    return 0
 
 
 def _cmd_db_reset(_args: argparse.Namespace) -> int:
-    return _stub_not_implemented("db reset")
+    try:
+        cli_support.delete_database_file_if_exists()
+        revision = cli_support.upgrade_head()
+    except (CommandError, FileNotFoundError, OSError, RuntimeError) as exc:
+        print(f"db reset failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Database reset; empty schema at head revision: {revision}")
+    return 0
 
 
 def _cmd_master_show(_args: argparse.Namespace) -> int:
