@@ -57,7 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     refresh_subparsers = refresh_parser.add_subparsers(dest="refresh_command", required=True)
     schedule_parser = refresh_subparsers.add_parser(
         "schedule",
-        help="Run OrchestrationService.refresh_schedule",
+        help=(
+            "Run OrchestrationService.refresh_schedule "
+            "(bootstraps master/settings; empty tree may fail)"
+        ),
     )
     schedule_parser.add_argument(
         "--run-started-at",
@@ -68,11 +71,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
-
-
-def _stub_not_implemented(command: str) -> int:
-    print(f"Command not implemented yet: {command}", file=sys.stderr)
-    return 1
 
 
 def _cmd_db_init(_args: argparse.Namespace) -> int:
@@ -144,8 +142,23 @@ def _cmd_settings_show(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_refresh_schedule(_args: argparse.Namespace) -> int:
-    return _stub_not_implemented("refresh schedule")
+def _cmd_refresh_schedule(args: argparse.Namespace) -> int:
+    from calendar_backend.orchestration.refresh_schedule import OrchestrationService
+
+    clock = SystemClock()
+    try:
+        run_started_at = cli_support.parse_run_started_at(args.run_started_at, clock)
+    except cli_support.RunStartedAtError as exc:
+        print(f"refresh schedule failed: {exc}", file=sys.stderr)
+        return 1
+    try:
+        with cli_support.with_session() as session:
+            result = OrchestrationService(session, clock).refresh_schedule(run_started_at)
+    except OSError as exc:
+        print(f"refresh schedule failed: {exc}", file=sys.stderr)
+        return 1
+    cli_support.print_refresh_schedule_summary(result)
+    return 0 if result.success else 1
 
 
 def _dispatch(args: argparse.Namespace) -> int:

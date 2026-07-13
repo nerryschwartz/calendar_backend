@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -17,11 +18,31 @@ from calendar_backend.db.session import (
     create_session_factory,
 )
 from calendar_backend.domain.dtos import AppSettingsDTO, GoalPlanDTO
+from calendar_backend.domain.errors import ServiceMessage
+from calendar_backend.domain.orchestration import RefreshScheduleResult
 from calendar_backend.domain.results import ServiceResult
+from calendar_backend.domain.time import (
+    Clock,
+    is_minute_aligned,
+    require_utc,
+    truncate_to_minute,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 DATABASE_URL = DEFAULT_DATABASE_URL
+
+
+class RunStartedAtError(ValueError):
+    """Invalid --run-started-at value for the development CLI."""
+
+
+def _service_message_line(message: ServiceMessage) -> str:
+    line = f"{message.code}: {message.message}"
+    if message.details:
+        details = ", ".join(f"{key}={value}" for key, value in message.details.items())
+        line = f"{line} ({details})"
+    return line
 
 
 def database_path_from_url(url: str = DATABASE_URL) -> Path:
@@ -87,13 +108,68 @@ def with_session(url: str = DATABASE_URL) -> Generator[Session]:
 def print_service_result[T](result: ServiceResult[T]) -> T | None:
     if result.success:
         return result.value
-    for error in result.errors:
-        line = f"{error.code}: {error.message}"
-        if error.details:
-            details = ", ".join(f"{key}={value}" for key, value in error.details.items())
-            line = f"{line} ({details})"
-        print(line, file=sys.stderr)
+    _print_service_errors(result.errors)
     return None
+
+
+def parse_run_started_at(raw: str | None, clock: Clock) -> datetime:
+    if raw is None:
+        return truncate_to_minute(clock.now_utc())
+
+    iso_value = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+    try:
+        parsed = datetime.fromisoformat(iso_value)
+    except ValueError as exc:
+        msg = f"invalid ISO-8601 timestamp: {raw}"
+        raise RunStartedAtError(msg) from exc
+
+    try:
+        require_utc(parsed)
+    except ValueError as exc:
+        msg = "run_started_at must be timezone-aware UTC"
+        raise RunStartedAtError(msg) from exc
+
+    if not is_minute_aligned(parsed):
+        msg = "run_started_at must be minute-aligned"
+        raise RunStartedAtError(msg)
+
+    return parsed
+
+
+def _print_service_errors(errors: tuple[ServiceMessage, ...]) -> None:
+    for error in errors:
+        print(_service_message_line(error), file=sys.stderr)
+
+
+def _print_warnings(label: str, warnings: tuple[ServiceMessage, ...]) -> None:
+    for warning in warnings:
+        print(f"warning[{label}]: {_service_message_line(warning)}")
+
+
+def print_refresh_schedule_summary(result: ServiceResult[RefreshScheduleResult]) -> None:
+    print(f"success: {result.success}")
+    if result.value is None:
+        _print_warnings("refresh", result.warnings)
+        if not result.success:
+            _print_service_errors(result.errors)
+        return
+
+    payload = result.value
+    print(f"run_started_at: {payload.run_started_at.isoformat()}")
+    if payload.resolved is not None:
+        print(f"valid_incomplete_count: {len(payload.resolved.valid_incomplete)}")
+        print(f"invalid_incomplete_count: {len(payload.resolved.invalid_incomplete)}")
+        _print_warnings("resolved", payload.resolved.warnings)
+    if payload.assignment is not None:
+        print(f"optimization_status: {payload.assignment.optimization_status.value}")
+        print(f"task_entry_count: {len(payload.assignment.calendar_entries)}")
+        _print_warnings("assignment", payload.assignment.warnings)
+    if payload.free_time is not None:
+        print(f"free_time_entry_count: {len(payload.free_time.calendar_entries)}")
+        _print_warnings("free_time", payload.free_time.warnings)
+    _print_warnings("refresh", result.warnings)
+    if not result.success:
+        _print_service_errors(result.errors)
 
 
 def print_goal_plan_dto(dto: GoalPlanDTO) -> None:
