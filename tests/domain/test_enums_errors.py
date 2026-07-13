@@ -17,6 +17,10 @@ def test_plan_kind_string_values_are_stable() -> None:
     [
         MessageCode.INVALID_DURATION,
         MessageCode.NON_MINUTE_ALIGNED_WINDOW,
+        MessageCode.INVALID_CREATE_PAYLOAD,
+        MessageCode.INVALID_REPETITION_SETTINGS,
+        MessageCode.EMPTY_CONSTRAINT_GROUP,
+        MessageCode.REPETITION_COUNT_DECREASE_AFTER_GENERATION,
     ],
 )
 def test_message_code_validation_examples_exist(code: MessageCode) -> None:
