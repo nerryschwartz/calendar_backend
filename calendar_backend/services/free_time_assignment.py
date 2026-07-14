@@ -65,17 +65,12 @@ class FreeTimeAssignmentService:
         if validation_error is not None:
             return fail(validation_error)
 
-        precondition_error = _assign_free_time_precondition_error(self._session)
-        if precondition_error is not None:
-            return fail(precondition_error)
-
-        settings_result = AppSettingsService(self._session, self._clock).get_settings()
-        if not settings_result.success or settings_result.value is None:
-            return fail(*settings_result.errors)
-
         started = time.perf_counter()
         try:
             with transaction(self._session) as txn:
+                settings_result = AppSettingsService(txn, self._clock).get_settings()
+                if not settings_result.success or settings_result.value is None:
+                    raise ServiceTransactionAborted(settings_result.errors)
                 loaded = _load_assignment_inputs(
                     txn,
                     run_started_at,
@@ -111,17 +106,6 @@ class _AssignmentInputs:
     activities_by_id: dict[FreeTimeActivityID, FreeTimeActivityDTO]
 
 
-def _assign_free_time_precondition_error(session: Session) -> ServiceMessage | None:
-    state = session.get(ActiveCalendarState, 1)
-    if state is None or state.active_calendar_run_id is None:
-        return ServiceMessage(
-            code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
-            message="active_calendar_run_id must be set before free-time assignment",
-            details={},
-        )
-    return None
-
-
 def _load_assignment_inputs(
     session: Session,
     run_started_at: datetime,
@@ -129,7 +113,16 @@ def _load_assignment_inputs(
     settings: AppSettingsDTO,
 ) -> _AssignmentInputs:
     state = session.get(ActiveCalendarState, 1)
-    assert state is not None and state.active_calendar_run_id is not None
+    if state is None or state.active_calendar_run_id is None:
+        raise ServiceTransactionAborted(
+            (
+                ServiceMessage(
+                    code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
+                    message="active_calendar_run_id must be set before free-time assignment",
+                    details={},
+                ),
+            )
+        )
 
     horizon_end_raw = get_master_horizon_end(session)
     if horizon_end_raw is None:

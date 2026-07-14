@@ -75,24 +75,24 @@ class TaskAssignmentService:
         if precondition_error is not None:
             return fail(precondition_error)
 
-        settings_result = AppSettingsService(self._session, self._clock).get_settings()
-        if not settings_result.success or settings_result.value is None:
-            if settings_result.errors:
-                return fail(settings_result.errors[0])
-            return fail(
-                ServiceMessage(
-                    code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
-                    message="App settings could not be loaded",
-                    details={},
-                )
-            )
-        settings = settings_result.value
-
-        exact_unavailable_error = _exact_solver_unavailable_error(settings)
-        if exact_unavailable_error is not None:
-            return fail(exact_unavailable_error)
-
         with transaction(self._session) as txn:
+            settings_result = AppSettingsService(txn, self._clock).get_settings()
+            if not settings_result.success or settings_result.value is None:
+                if settings_result.errors:
+                    return fail(settings_result.errors[0])
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
+                        message="App settings could not be loaded",
+                        details={},
+                    )
+                )
+            settings = settings_result.value
+
+            exact_unavailable_error = _exact_solver_unavailable_error(settings)
+            if exact_unavailable_error is not None:
+                return fail(exact_unavailable_error)
+
             task_entries = _load_task_calendar_entries(txn)
             occupied_intervals = occupied_intervals_from_calendar_entries(
                 task_entries,

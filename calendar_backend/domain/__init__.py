@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 from calendar_backend.domain.enums import (
     CalendarEntryType,
     CalendarRunStatus,
@@ -33,17 +29,6 @@ from calendar_backend.domain.ids import (
     TimeWindowID,
     new_id,
 )
-from calendar_backend.domain.resolution import (
-    ChainPathStep,
-    ConstraintSource,
-    ResolutionIndexes,
-    ResolvedPrecedenceConstraint,
-    ResolvedTask,
-    ResolveTasksResult,
-    build_resolution_indexes,
-    constraint_errors_for_plan,
-    resolve_tasks_from_graph,
-)
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import (
     Clock,
@@ -55,30 +40,14 @@ from calendar_backend.domain.time import (
     validate_time_window,
 )
 
-if TYPE_CHECKING:
-    from calendar_backend.domain.orchestration import RefreshScheduleResult
-
-
-def __getattr__(name: str) -> object:
-    if name == "RefreshScheduleResult":
-        from calendar_backend.domain.orchestration import (  # noqa: PLC0415
-            RefreshScheduleResult,
-        )
-
-        return RefreshScheduleResult
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 __all__ = [
     "CalendarEntryID",
     "CalendarEntryType",
     "CalendarRunID",
     "CalendarRunStatus",
-    "ChainPathStep",
     "Clock",
     "CloneStatus",
     "ConstraintKind",
-    "ConstraintSource",
     "FreeTimeActivityID",
     "FreeTimeActivityPrerequisiteID",
     "FreeTimeWeekStartDay",
@@ -88,14 +57,9 @@ __all__ = [
     "MessageCode",
     "PlanID",
     "PlanKind",
-    "RefreshScheduleResult",
     "RepeatMode",
     "RepetitionInstanceID",
     "RepetitionTimestampField",
-    "ResolutionIndexes",
-    "ResolveTasksResult",
-    "ResolvedPrecedenceConstraint",
-    "ResolvedTask",
     "ServiceMessage",
     "ServiceResult",
     "ServiceTransactionAborted",
@@ -105,14 +69,11 @@ __all__ = [
     "TimeWindow",
     "TimeWindowID",
     "WrongPlanTypeError",
-    "build_resolution_indexes",
-    "constraint_errors_for_plan",
     "fail",
     "is_minute_aligned",
     "new_id",
     "ok",
     "require_utc",
-    "resolve_tasks_from_graph",
     "truncate_to_minute",
     "validate_time_window",
 ]
