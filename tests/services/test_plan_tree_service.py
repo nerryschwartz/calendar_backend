@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from calendar_backend.db.session import transaction
-from calendar_backend.domain.enums import CalendarEntryType, PlanKind, RepeatMode
+from calendar_backend.domain.enums import CalendarEntryType, CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import CalendarEntryID, PlanID
 from calendar_backend.domain.plan_create import (
@@ -26,6 +26,7 @@ from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.plan_tree import PlanTreeService
 from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from calendar_backend.services.repetition import RepetitionService
+from calendar_backend.services.task import TaskService
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -59,6 +60,10 @@ def _plan_tree_service(session: Session) -> PlanTreeService:
 
 def _repetition_service(session: Session) -> RepetitionService:
     return RepetitionService(session, FakeClock(RUN_AT))
+
+
+def _task_service(session: Session) -> TaskService:
+    return TaskService(session, FakeClock(RUN_AT))
 
 
 def _all_plan_ids(session: Session) -> set[PlanID]:
@@ -638,3 +643,114 @@ def test_preview_delete_task_template_root_includes_shell(
     assert repetition_id in affected
     assert template_task_id in affected
     assert set(instance_root_ids).issubset(affected)
+
+
+@pytest.mark.integration
+def test_delete_plan_parity_task_template_root(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id = _create_repetition(
+        service_db_session,
+        master_plan_id,
+        _repetition_payload(
+            manual_count=2,
+            template_type=PlanKind.TASK,
+            template_payload=TaskCreatePayload("template task", 30, False, None),
+        ),
+    )
+    repetition = service_db_session.get(RepetitionPlan, repetition_id)
+    assert repetition is not None
+    template_task_id = PlanID(repetition.template_root_id)
+    _generate_instances(service_db_session, repetition_id)
+
+    _assert_delete_matches_preview(
+        service_db_session,
+        root_plan_id=template_task_id,
+        master_plan_id=master_plan_id,
+    )
+
+
+@pytest.mark.integration
+def test_delete_plan_parity_calendar_entries_on_instance_clone(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id, _, template_task_id = _setup_goal_repetition_with_task_child(
+        service_db_session,
+        master_plan_id,
+        manual_count=2,
+    )
+    _generate_instances(service_db_session, repetition_id)
+    root_clone_0 = _instance_root_clone_id(service_db_session, repetition_id, 0)
+    root_clone_1 = _instance_root_clone_id(service_db_session, repetition_id, 1)
+    task_clone_0 = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_0,
+        template_plan_id=template_task_id,
+    )
+    task_clone_1 = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_1,
+        template_plan_id=template_task_id,
+    )
+    _add_calendar_entry(service_db_session, source_plan_id=task_clone_0)
+    sibling_entry_id = _add_calendar_entry(service_db_session, source_plan_id=task_clone_1)
+
+    _assert_delete_matches_preview(
+        service_db_session,
+        root_plan_id=task_clone_0,
+        master_plan_id=master_plan_id,
+    )
+    assert service_db_session.get(CalendarEntry, sibling_entry_id) is not None
+    assert service_db_session.get(Plan, repetition_id) is not None
+
+
+@pytest.mark.integration
+def test_delete_plan_parity_detached_clone(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id, template_goal_id, template_task_id = _setup_goal_repetition_with_task_child(
+        service_db_session,
+        master_plan_id,
+        manual_count=2,
+    )
+    _generate_instances(service_db_session, repetition_id)
+    root_clone_0 = _instance_root_clone_id(service_db_session, repetition_id, 0)
+    root_clone_1 = _instance_root_clone_id(service_db_session, repetition_id, 1)
+    detached_task_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_0,
+        template_plan_id=template_task_id,
+    )
+    linked_task_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_1,
+        template_plan_id=template_task_id,
+    )
+    assert (
+        _task_service(service_db_session)
+        .update_scheduling_fields(detached_task_id, 45, False, None)
+        .success
+    )
+    detached_plan = service_db_session.get(Plan, detached_task_id)
+    assert detached_plan is not None
+    assert detached_plan.clone_status == CloneStatus.DETACHED
+
+    preview = _plan_tree_service(service_db_session).preview_delete(detached_task_id)
+    assert preview.success and preview.value is not None
+    affected = set(preview.value.affected_plan_ids)
+    assert affected == {detached_task_id}
+    assert linked_task_id not in affected
+    assert repetition_id not in affected
+    assert template_goal_id not in affected
+
+    _assert_delete_matches_preview(
+        service_db_session,
+        root_plan_id=detached_task_id,
+        master_plan_id=master_plan_id,
+    )
+    assert service_db_session.get(Plan, linked_task_id) is not None
+    assert service_db_session.get(Plan, repetition_id) is not None
+    assert service_db_session.get(Plan, template_goal_id) is not None
