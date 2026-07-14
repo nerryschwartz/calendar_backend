@@ -181,6 +181,19 @@ def test_solve_fails_insufficient_total_capacity() -> None:
     assert result.failure.code == MessageCode.INSUFFICIENT_TOTAL_CAPACITY
 
 
+def test_solve_fails_when_narrowed_effective_window_shorter_than_duration() -> None:
+    task = schedulable_task(
+        duration_minutes=45,
+        effective_time_windows=(window(utc(2026, 6, 7, 10, 15), utc(2026, 6, 7, 10, 45)),),
+    )
+
+    result = HeuristicAssignmentSolver().solve(assignment_input(tasks=(task,)))
+
+    assert result.status == SolverStatus.INFEASIBLE
+    assert result.failure is not None
+    assert result.failure.code == MessageCode.INSUFFICIENT_TOTAL_CAPACITY
+
+
 def test_solve_feasible_includes_heuristic_feasible_warning() -> None:
     task = schedulable_task(
         duration_minutes=30,

@@ -14,16 +14,22 @@ from calendar_backend.domain.enums import (
     CalendarRunStatus,
     LastFailureReason,
     PlanKind,
+    RepeatMode,
     SolverStatus,
 )
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
-from calendar_backend.domain.plan_create import TaskCreatePayload
+from calendar_backend.domain.plan_create import (
+    GoalCreatePayload,
+    RepetitionCreatePayload,
+    TaskCreatePayload,
+)
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.free_time import FreeTimeActivity
-from calendar_backend.models.plans import Plan
+from calendar_backend.models.plans import Plan, RepetitionPlan
+from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.scheduling.exact_cp_sat import ExactAssignmentSolver
 from calendar_backend.scheduling.input import AssignmentInput
@@ -32,6 +38,7 @@ from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
+from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
 from calendar_backend.services.task_assignment import TaskAssignmentService
 from calendar_backend.services.task_resolution import (
@@ -77,6 +84,10 @@ def _bootstrap_master_with_horizon(session: Session) -> PlanID:
     return master.value.plan_id
 
 
+def _repetition_service(session: Session) -> RepetitionService:
+    return RepetitionService(session, _clock())
+
+
 def _create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> PlanID:
     result = _goal_service(session).create_child(
         parent_id,
@@ -86,6 +97,124 @@ def _create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> 
     )
     assert result.success and result.value is not None
     return result.value.plan_id
+
+
+def _generate_instances(session: Session, repetition_id: PlanID) -> None:
+    assert _repetition_service(session).generate_instances(repetition_id, RUN_AT).success
+
+
+def _create_goal_template_repetition_with_task_child(
+    session: Session,
+    master_plan_id: PlanID,
+    *,
+    manual_count: int = 1,
+) -> tuple[PlanID, PlanID, PlanID]:
+    repetition_result = _goal_service(session).create_child(
+        master_plan_id,
+        PlanKind.REPETITION,
+        RepetitionCreatePayload(
+            name="weekly",
+            repeat_mode=RepeatMode.MANUAL_COUNT,
+            start_time=RUN_AT,
+            repeat_interval_minutes=60,
+            manual_count=manual_count,
+            end_time=None,
+            default_instance_critical=False,
+            template_type=PlanKind.GOAL,
+            template_payload=GoalCreatePayload(name="template goal"),
+        ),
+        is_critical=False,
+    )
+    assert repetition_result.success and repetition_result.value is not None
+    repetition = session.get(RepetitionPlan, repetition_result.value.plan_id)
+    assert repetition is not None
+    template_goal_id = PlanID(repetition.template_root_id)
+    child_result = _goal_service(session).create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("template child", 30, False, None),
+        is_critical=False,
+    )
+    assert child_result.success and child_result.value is not None
+    return (
+        repetition_result.value.plan_id,
+        template_goal_id,
+        child_result.value.plan_id,
+    )
+
+
+def _create_goal_template_repetition_with_chained_tasks(
+    session: Session,
+    master_plan_id: PlanID,
+) -> tuple[PlanID, PlanID, PlanID, PlanID]:
+    repetition_result = _goal_service(session).create_child(
+        master_plan_id,
+        PlanKind.REPETITION,
+        RepetitionCreatePayload(
+            name="weekly",
+            repeat_mode=RepeatMode.MANUAL_COUNT,
+            start_time=RUN_AT,
+            repeat_interval_minutes=60,
+            manual_count=1,
+            end_time=None,
+            default_instance_critical=False,
+            template_type=PlanKind.GOAL,
+            template_payload=GoalCreatePayload(name="template goal"),
+        ),
+        is_critical=False,
+    )
+    assert repetition_result.success and repetition_result.value is not None
+    repetition = session.get(RepetitionPlan, repetition_result.value.plan_id)
+    assert repetition is not None
+    template_goal_id = PlanID(repetition.template_root_id)
+    goal_service = _goal_service(session)
+    first_result = goal_service.create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("first template task", 30, False, None),
+        is_critical=False,
+    )
+    second_result = goal_service.create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("second template task", 30, False, None),
+        is_critical=False,
+    )
+    assert first_result.success and first_result.value is not None
+    assert second_result.success and second_result.value is not None
+    first_task_id = first_result.value.plan_id
+    second_task_id = second_result.value.plan_id
+    assert goal_service.move_plan(second_task_id, 0, 1).success
+    return (
+        repetition_result.value.plan_id,
+        template_goal_id,
+        first_task_id,
+        second_task_id,
+    )
+
+
+def _clone_for_template(
+    session: Session,
+    *,
+    parent_clone_id: PlanID,
+    template_plan_id: PlanID,
+) -> PlanID:
+    clone = session.scalar(
+        select(Plan).where(
+            Plan.parent_id == parent_clone_id,
+            Plan.cloned_from_id == template_plan_id,
+        )
+    )
+    assert clone is not None
+    return PlanID(clone.plan_id)
+
+
+def _instance_root_clone_goal_id(session: Session, repetition_id: PlanID) -> PlanID:
+    instance = session.scalar(
+        select(RepetitionInstance).where(RepetitionInstance.repetition_plan_id == repetition_id)
+    )
+    assert instance is not None
+    return PlanID(instance.root_clone_id)
 
 
 def _bootstrap_narrow_assignable_task(session: Session) -> tuple[PlanID, PlanID]:
@@ -798,3 +927,109 @@ def test_assign_tasks_occupied_past_task_blocks_placement(
     assert result.success and result.value is not None
     assert len(result.value.calendar_entries) == 1
     assert result.value.calendar_entries[0].start_time == _utc(2026, 6, 7, 10, 30)
+
+
+@pytest.mark.integration
+def test_assign_tasks_repetition_clone_chain_precedence_orders_calendar(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    repetition_id, _, first_template_id, second_template_id = (
+        _create_goal_template_repetition_with_chained_tasks(service_db_session, master_id)
+    )
+    _generate_instances(service_db_session, repetition_id)
+    clone_goal_id = _instance_root_clone_goal_id(service_db_session, repetition_id)
+    first_clone_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=clone_goal_id,
+        template_plan_id=first_template_id,
+    )
+    second_clone_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=clone_goal_id,
+        template_plan_id=second_template_id,
+    )
+    clock = _clock()
+    TimeConstraintService(service_db_session, clock).add_user_group(
+        master_id,
+        (_window(_utc(2026, 6, 7, 10, 0), _utc(2026, 6, 7, 12, 0)),),
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    entries_by_source = {entry.source_plan_id: entry for entry in result.value.calendar_entries}
+    first_entry = entries_by_source[first_clone_id]
+    second_entry = entries_by_source[second_clone_id]
+    assert first_entry.end_time <= second_entry.start_time
+
+
+@pytest.mark.integration
+def test_assign_tasks_infeasible_when_past_task_fills_narrow_window(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    clock = _clock()
+    TimeConstraintService(service_db_session, clock).add_user_group(
+        master_id,
+        (_window(RUN_AT, RUN_AT + timedelta(minutes=30)),),
+    )
+    _seed_active_calendar_state_with_past_task(
+        service_db_session,
+        past_start=RUN_AT - timedelta(minutes=30),
+        past_end=RUN_AT + timedelta(minutes=30),
+        source_plan_id=task_id,
+    )
+    entries_before = _calendar_entry_count(service_db_session)
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert not result.success
+    assert result.value is not None
+    assert result.value.optimization_status == SolverStatus.INFEASIBLE
+    assert result.value.calendar_entries == ()
+    assert _calendar_entry_count(service_db_session) == entries_before
+
+
+@pytest.mark.integration
+def test_assign_tasks_persists_only_instance_clone_source_plan_ids(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    repetition_id, template_goal_id, template_task_id = (
+        _create_goal_template_repetition_with_task_child(service_db_session, master_id)
+    )
+    _generate_instances(service_db_session, repetition_id)
+    clone_goal_id = _instance_root_clone_goal_id(service_db_session, repetition_id)
+    task_clone_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=clone_goal_id,
+        template_plan_id=template_task_id,
+    )
+    clock = _clock()
+    TimeConstraintService(service_db_session, clock).add_user_group(
+        master_id,
+        (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    calendar_source_ids = {
+        entry.source_plan_id
+        for entry in result.value.calendar_entries
+        if entry.source_plan_id is not None
+    }
+    assert template_goal_id not in calendar_source_ids
+    assert template_task_id not in calendar_source_ids
+    assert task_clone_id in calendar_source_ids

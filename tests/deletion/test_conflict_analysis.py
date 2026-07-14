@@ -34,10 +34,15 @@ def _empty_assignment_input() -> AssignmentInput:
     )
 
 
-def _resolved_task(plan_id: uuid.UUID) -> ResolvedTask:
+def _resolved_task(
+    plan_id: uuid.UUID,
+    *,
+    priority_path: tuple[int, ...] = (0,),
+    name: str = "task",
+) -> ResolvedTask:
     return ResolvedTask(
         plan_id=PlanID(plan_id),
-        name="task",
+        name=name,
         duration_minutes=30,
         divisible=False,
         minimum_chunk_size_minutes=None,
@@ -45,7 +50,7 @@ def _resolved_task(plan_id: uuid.UUID) -> ResolvedTask:
         completed_at=None,
         effective_time_windows=(_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
         constraint_sources=(),
-        priority_path=(0,),
+        priority_path=priority_path,
         criticality_path=(),
         parent_path=(PlanID(plan_id),),
         chain_path=(),
@@ -80,6 +85,41 @@ def test_analyze_returns_ok_with_conflicts_for_infeasible_solver() -> None:
     assert result.success and result.value is not None
     assert len(result.value) == 1
     assert result.value[0].reason_code == MessageCode.NO_VALID_WINDOW_FOR_TASK
+
+
+def test_analyze_task_local_failure_targets_one_of_multiple_resolved_tasks() -> None:
+    blocked_id = uuid.uuid4()
+    other_id = uuid.uuid4()
+    resolved = ResolveTasksResult(
+        run_started_at=RUN_AT,
+        valid_incomplete=(
+            _resolved_task(blocked_id, priority_path=(0,)),
+            _resolved_task(other_id, priority_path=(1,), name="other"),
+        ),
+        valid_completed=(),
+        invalid_incomplete=(),
+        invalid_completed=(),
+        precedence_constraints=(),
+        warnings=(),
+    )
+    failure = ServiceMessage(
+        code=MessageCode.NO_VALID_WINDOW_FOR_TASK,
+        message="No valid placement",
+        details={"plan_id": str(blocked_id)},
+    )
+
+    result = ConflictAnalysisService().analyze(
+        _empty_assignment_input(),
+        resolved,
+        infeasible_result(failure),
+    )
+
+    assert result.success and result.value is not None
+    assert len(result.value) == 1
+    conflict = result.value[0]
+    assert conflict.conflicting_plan_ids == (PlanID(blocked_id),)
+    assert conflict.is_global is False
+    assert conflict.affected_priority_by_plan_id == ((PlanID(blocked_id), 0),)
 
 
 def test_analyze_returns_empty_tuple_for_feasible_solver() -> None:
