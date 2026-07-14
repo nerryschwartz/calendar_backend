@@ -80,7 +80,11 @@ def _create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> 
 
 
 def _create_repetition(
-    session: Session, master_plan_id: PlanID, *, manual_count: int = 2
+    session: Session,
+    master_plan_id: PlanID,
+    *,
+    manual_count: int = 2,
+    start_time: datetime = _START,
 ) -> PlanID:
     result = _goal_service(session).create_child(
         master_plan_id,
@@ -88,7 +92,7 @@ def _create_repetition(
         RepetitionCreatePayload(
             name="weekly",
             repeat_mode=RepeatMode.MANUAL_COUNT,
-            start_time=_START,
+            start_time=start_time,
             repeat_interval_minutes=60,
             manual_count=manual_count,
             end_time=None,
@@ -100,6 +104,96 @@ def _create_repetition(
     )
     assert result.success and result.value is not None
     return result.value.plan_id
+
+
+def _create_goal_template_repetition_with_task_child(
+    session: Session,
+    master_plan_id: PlanID,
+    *,
+    manual_count: int = 1,
+) -> tuple[PlanID, PlanID, PlanID]:
+    repetition_result = _goal_service(session).create_child(
+        master_plan_id,
+        PlanKind.REPETITION,
+        RepetitionCreatePayload(
+            name="weekly",
+            repeat_mode=RepeatMode.MANUAL_COUNT,
+            start_time=RUN_AT,
+            repeat_interval_minutes=60,
+            manual_count=manual_count,
+            end_time=None,
+            default_instance_critical=False,
+            template_type=PlanKind.GOAL,
+            template_payload=GoalCreatePayload(name="template goal"),
+        ),
+        is_critical=False,
+    )
+    assert repetition_result.success and repetition_result.value is not None
+    repetition = session.get(RepetitionPlan, repetition_result.value.plan_id)
+    assert repetition is not None
+    template_goal_id = PlanID(repetition.template_root_id)
+    child_result = _goal_service(session).create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("template child", 30, False, None),
+        is_critical=False,
+    )
+    assert child_result.success and child_result.value is not None
+    return (
+        repetition_result.value.plan_id,
+        template_goal_id,
+        child_result.value.plan_id,
+    )
+
+
+def _three_tasks_in_master_chain(
+    session: Session, master_plan_id: PlanID
+) -> tuple[PlanID, PlanID, PlanID]:
+    first_id = _create_task(session, master_plan_id, name="first")
+    second_id = _create_task(session, master_plan_id, name="second")
+    third_id = _create_task(session, master_plan_id, name="third")
+    goal_service = _goal_service(session)
+    assert goal_service.move_plan(second_id, 0, 1).success
+    assert goal_service.move_plan(third_id, 0, 2).success
+    return first_id, second_id, third_id
+
+
+def _instance_root_clone_goal_id(
+    session: Session,
+    repetition_id: PlanID,
+    *,
+    instance_index: int = 0,
+) -> PlanID:
+    instance = session.scalar(
+        select(RepetitionInstance)
+        .where(RepetitionInstance.repetition_plan_id == repetition_id)
+        .where(RepetitionInstance.instance_index == instance_index)
+    )
+    assert instance is not None
+    return PlanID(instance.root_clone_id)
+
+
+def _attach_user_group(session: Session, plan_id: PlanID) -> None:
+    clock = FakeClock(RUN_AT)
+    assert (
+        TimeConstraintService(session, clock)
+        .add_user_group(
+            plan_id,
+            (TimeWindow(start_time=RUN_AT, end_time=RUN_AT + timedelta(hours=1)),),
+        )
+        .success
+    )
+
+
+def _corrupt_user_window_on_plan(plans: tuple[Plan, ...], plan_id: PlanID) -> None:
+    for plan in plans:
+        if PlanID(plan.plan_id) != plan_id:
+            continue
+        for group in plan.constraint_groups:
+            if group.constraint_kind != ConstraintKind.USER:
+                continue
+            for window in group.windows:
+                window.end_time = window.start_time - timedelta(hours=1)
 
 
 def _generate_instances(session: Session, repetition_id: PlanID) -> None:
@@ -346,3 +440,123 @@ def test_resolve_tasks_warnings_empty_in_v1(service_db_session: Session) -> None
 
     assert result.success and result.value is not None
     assert result.value.warnings == ()
+
+
+@pytest.mark.integration
+def test_resolve_tasks_skips_completed_predecessor_in_precedence(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    first_id, second_id, third_id = _three_tasks_in_master_chain(service_db_session, master_id)
+    assert _task_service(service_db_session).mark_complete(second_id).success
+
+    result = _resolve_seam(service_db_session)
+
+    assert (
+        first_id,
+        third_id,
+    ) in {
+        (edge.predecessor_task_id, edge.successor_task_id) for edge in result.precedence_constraints
+    }
+    assert not any(edge.predecessor_task_id == second_id for edge in result.precedence_constraints)
+
+
+@pytest.mark.integration
+def test_resolve_tasks_malformed_constraint_on_clone_ancestor_invalid_incomplete(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    repetition_id, _, template_task_id = _create_goal_template_repetition_with_task_child(
+        service_db_session, master_id
+    )
+    _generate_instances(service_db_session, repetition_id)
+
+    clone_goal_id = _instance_root_clone_goal_id(service_db_session, repetition_id)
+    _attach_user_group(service_db_session, clone_goal_id)
+
+    clone_task = service_db_session.scalar(
+        select(Plan).where(
+            Plan.parent_id == clone_goal_id,
+            Plan.cloned_from_id == template_task_id,
+        )
+    )
+    assert clone_task is not None
+    clone_task_id = PlanID(clone_task.plan_id)
+
+    plans = _load_plans_with_utc_windows(service_db_session)
+    _corrupt_user_window_on_plan(plans, clone_goal_id)
+    result = _resolve_from_current_tree(RUN_AT, plans=plans)
+
+    assert len(result.invalid_incomplete) == 1
+    assert result.invalid_incomplete[0].plan_id == clone_task_id
+    assert is_invalid_incomplete_task(result.invalid_incomplete[0])
+    assert any(
+        error.code == MessageCode.INVALID_TIME_WINDOW
+        for error in result.invalid_incomplete[0].validation_errors
+    )
+
+
+@pytest.mark.integration
+def test_resolve_tasks_intersects_repetition_horizon_and_user_windows(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    repetition_id = _create_repetition(
+        service_db_session, master_id, manual_count=1, start_time=RUN_AT
+    )
+    _generate_instances(service_db_session, repetition_id)
+
+    user_start = RUN_AT + timedelta(minutes=15)
+    user_end = RUN_AT + timedelta(minutes=45)
+    clock = FakeClock(RUN_AT)
+    assert (
+        TimeConstraintService(service_db_session, clock)
+        .add_user_group(master_id, (TimeWindow(start_time=user_start, end_time=user_end),))
+        .success
+    )
+
+    result = _resolution_service(service_db_session).resolve_tasks(RUN_AT)
+    assert result.success and result.value is not None
+
+    task = result.value.valid_incomplete[0]
+    assert task.effective_time_windows == (TimeWindow(start_time=user_start, end_time=user_end),)
+    assert {source.constraint_kind for source in task.constraint_sources} == {
+        ConstraintKind.SYSTEM_MASTER_HORIZON,
+        ConstraintKind.USER,
+        ConstraintKind.SYSTEM_REPETITION_WINDOW,
+    }
+
+
+@pytest.mark.integration
+def test_resolve_tasks_orders_instances_by_sort_order_within_critical_bucket(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    repetition_id = _create_repetition(service_db_session, master_id, manual_count=2)
+    _generate_instances(service_db_session, repetition_id)
+
+    with transaction(service_db_session) as txn:
+        instances = list(
+            txn.scalars(
+                select(RepetitionInstance)
+                .where(RepetitionInstance.repetition_plan_id == repetition_id)
+                .order_by(RepetitionInstance.instance_index)
+            ).all()
+        )
+        assert len(instances) == 2
+        for instance in instances:
+            instance.is_critical = True
+        instances[0].sort_order = 1
+        instances[1].sort_order = 0
+        lower_sort_order_task_id = PlanID(instances[1].root_clone_id)
+        higher_sort_order_task_id = PlanID(instances[0].root_clone_id)
+
+    result = _resolve_seam(service_db_session)
+    tasks = _all_tasks(result)
+    assert len(tasks) == 2
+
+    task_by_root = {task.plan_id: task for task in tasks}
+    assert (
+        task_by_root[lower_sort_order_task_id].priority_path
+        < task_by_root[higher_sort_order_task_id].priority_path
+    )
