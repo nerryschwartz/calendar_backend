@@ -410,10 +410,114 @@ def test_is_plan_logically_complete_template_subtree_is_incomplete() -> None:
         clone_status=CloneStatus.TEMPLATE,
     )
     _attach_goal(template)
+    template_task_id = uuid.uuid4()
+    template_task = _plan(
+        template_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=template_id,
+        clone_status=CloneStatus.TEMPLATE,
+    )
+    _attach_task(template_task, user_completed=True)
 
-    graph = free_time_plan_graph_from_plans((repetition, template))
+    graph = free_time_plan_graph_from_plans((repetition, template, template_task))
 
     assert not is_plan_logically_complete(PlanID(template_id), graph)
+    assert not is_plan_logically_complete(PlanID(template_task_id), graph)
+
+
+def test_blocked_activity_ids_blocks_template_subtree_prerequisite() -> None:
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+    template_task_id = uuid.uuid4()
+    activity_id = uuid.uuid4()
+
+    repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION)
+    repetition_plan = RepetitionPlan(
+        plan_id=repetition_id,
+        repeat_mode=RepeatMode.MANUAL_COUNT,
+        start_time=_RUN_AT,
+        repeat_interval_minutes=60,
+        manual_count=1,
+        end_time=None,
+        template_root_id=template_id,
+        default_instance_critical=False,
+        generated_at=_RUN_AT,
+    )
+    repetition.repetition_plan = repetition_plan
+
+    template = _plan(
+        template_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        clone_status=CloneStatus.TEMPLATE,
+    )
+    _attach_goal(template)
+    template_task = _plan(
+        template_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=template_id,
+        clone_status=CloneStatus.TEMPLATE,
+    )
+    _attach_task(template_task, user_completed=True)
+
+    graph = free_time_plan_graph_from_plans((repetition, template, template_task))
+    activities = (_activity_dto(activity_id, prerequisite_plan_ids=(template_task_id,)),)
+
+    assert blocked_activity_ids(activities, graph) == frozenset({FreeTimeActivityID(activity_id)})
+
+
+def test_compute_effective_fractions_renormalizes_when_template_prerequisite_blocks_partner() -> (
+    None
+):
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+    template_task_id = uuid.uuid4()
+    blocked_id = uuid.uuid4()
+    survivor_id = uuid.uuid4()
+
+    repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION)
+    repetition_plan = RepetitionPlan(
+        plan_id=repetition_id,
+        repeat_mode=RepeatMode.MANUAL_COUNT,
+        start_time=_RUN_AT,
+        repeat_interval_minutes=60,
+        manual_count=1,
+        end_time=None,
+        template_root_id=template_id,
+        default_instance_critical=False,
+        generated_at=_RUN_AT,
+    )
+    repetition.repetition_plan = repetition_plan
+
+    template = _plan(
+        template_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        clone_status=CloneStatus.TEMPLATE,
+    )
+    _attach_goal(template)
+    template_task = _plan(
+        template_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=template_id,
+        clone_status=CloneStatus.TEMPLATE,
+    )
+    _attach_task(template_task, user_completed=True)
+
+    graph = free_time_plan_graph_from_plans((repetition, template, template_task))
+    activities = (
+        _activity_dto(
+            blocked_id,
+            real_fraction=Decimal("0.5"),
+            prerequisite_plan_ids=(template_task_id,),
+        ),
+        _activity_dto(survivor_id, real_fraction=Decimal("0.5")),
+    )
+    blocked = blocked_activity_ids(activities, graph)
+
+    effective = compute_effective_fractions(activities, blocked)
+
+    assert effective == ((FreeTimeActivityID(survivor_id), Decimal("1")),)
 
 
 def test_blocked_activity_ids_blocks_incomplete_prerequisite() -> None:

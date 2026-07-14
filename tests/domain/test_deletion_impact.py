@@ -319,6 +319,112 @@ def _task_template_repetition_graph() -> tuple[Plan, ...]:
     return (master, repetition, template, clone)
 
 
+def _two_instance_one_detached_graph() -> tuple[Plan, ...]:
+    master_id = uuid.uuid4()
+    repetition_id = uuid.uuid4()
+    template_goal_id = uuid.uuid4()
+    template_task_id = uuid.uuid4()
+    clone_goal_0_id = uuid.uuid4()
+    detached_task_id = uuid.uuid4()
+    clone_goal_1_id = uuid.uuid4()
+    linked_task_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, name="master", is_master=True)
+    master.goal_plan = GoalPlan(plan_id=master_id)
+
+    repetition = _plan(
+        repetition_id,
+        plan_kind=PlanKind.REPETITION,
+        parent_id=master_id,
+        name="repetition",
+    )
+    _attach_repetition(repetition, template_goal_id)
+
+    template_goal = _plan(
+        template_goal_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        clone_status=CloneStatus.TEMPLATE,
+        name="template goal",
+    )
+    template_goal.goal_plan = GoalPlan(plan_id=template_goal_id)
+    template_task = _plan(
+        template_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=template_goal_id,
+        clone_status=CloneStatus.TEMPLATE,
+        name="template task",
+    )
+    _attach_task(template_task)
+
+    clone_goal_0 = _plan(
+        clone_goal_0_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        cloned_from_id=template_goal_id,
+        clone_status=CloneStatus.LINKED,
+        name="clone goal 0",
+    )
+    clone_goal_0.goal_plan = GoalPlan(plan_id=clone_goal_0_id)
+    detached_task = _plan(
+        detached_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=clone_goal_0_id,
+        cloned_from_id=template_task_id,
+        clone_status=CloneStatus.DETACHED,
+        name="detached task",
+    )
+    _attach_task(detached_task)
+
+    clone_goal_1 = _plan(
+        clone_goal_1_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        cloned_from_id=template_goal_id,
+        clone_status=CloneStatus.LINKED,
+        name="clone goal 1",
+    )
+    clone_goal_1.goal_plan = GoalPlan(plan_id=clone_goal_1_id)
+    linked_task = _plan(
+        linked_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=clone_goal_1_id,
+        cloned_from_id=template_task_id,
+        clone_status=CloneStatus.LINKED,
+        name="linked task",
+    )
+    _attach_task(linked_task)
+
+    return (
+        master,
+        repetition,
+        template_goal,
+        template_task,
+        clone_goal_0,
+        detached_task,
+        clone_goal_1,
+        linked_task,
+    )
+
+
+def test_compute_deletion_impact_detached_clone_stays_local() -> None:
+    plans = _two_instance_one_detached_graph()
+    detached_task_id = next(plan.plan_id for plan in plans if plan.name == "detached task")
+    linked_task_id = next(plan.plan_id for plan in plans if plan.name == "linked task")
+    repetition_id = next(plan.plan_id for plan in plans if plan.name == "repetition")
+    template_task_id = next(plan.plan_id for plan in plans if plan.name == "template task")
+
+    preview = compute_deletion_impact(PlanID(detached_task_id), plans, ())
+
+    assert set(preview.affected_plan_ids) == {PlanID(detached_task_id)}
+    assert PlanID(repetition_id) not in preview.affected_plan_ids
+    assert PlanID(template_task_id) not in preview.affected_plan_ids
+    assert PlanID(linked_task_id) not in preview.affected_plan_ids
+
+    linked_preview = compute_deletion_impact(PlanID(linked_task_id), plans, ())
+    assert PlanID(detached_task_id) not in linked_preview.affected_plan_ids
+
+
 def test_compute_deletion_impact_template_root_includes_repetition_shell_and_clones() -> None:
     plans = _goal_template_repetition_graph()
     template_id = next(plan.plan_id for plan in plans if plan.name == "template")

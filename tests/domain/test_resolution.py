@@ -499,6 +499,85 @@ def _repetition_two_instance_graph() -> tuple[Plan, ...]:
     return (master, repetition, template, clone_noncritical, clone_critical)
 
 
+def _repetition_same_bucket_sort_order_graph() -> tuple[Plan, ...]:
+    master_id = uuid.uuid4()
+    repetition_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+    clone_high_sort_id = uuid.uuid4()
+    clone_low_sort_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id, _utc(8, 0), _utc(18, 0))]
+
+    repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION, parent_id=master_id)
+    repetition_plan = RepetitionPlan(
+        plan_id=repetition_id,
+        repeat_mode=RepeatMode.MANUAL_COUNT,
+        start_time=_utc(10, 0),
+        repeat_interval_minutes=60,
+        manual_count=2,
+        end_time=None,
+        template_root_id=template_id,
+        default_instance_critical=False,
+        generated_at=_utc(10, 0),
+    )
+    repetition.repetition_plan = repetition_plan
+    _attach_chain_item(master, child_plan_id=repetition_id, position=0)
+
+    template = _plan(
+        template_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=repetition_id,
+        clone_status=CloneStatus.TEMPLATE,
+        name="template task",
+    )
+    _attach_task(template)
+
+    clone_high_sort = _plan(
+        clone_high_sort_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=repetition_id,
+        cloned_from_id=template_id,
+        clone_status=CloneStatus.LINKED,
+        name="clone-high-sort",
+    )
+    _attach_task(clone_high_sort)
+
+    clone_low_sort = _plan(
+        clone_low_sort_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=repetition_id,
+        cloned_from_id=template_id,
+        clone_status=CloneStatus.LINKED,
+        name="clone-low-sort",
+    )
+    _attach_task(clone_low_sort)
+
+    repetition_plan.instances = [
+        RepetitionInstance(
+            repetition_instance_id=uuid.uuid4(),
+            repetition_plan_id=repetition_id,
+            instance_index=0,
+            root_clone_id=clone_high_sort_id,
+            instance_start_time=_utc(10, 0),
+            is_critical=True,
+            sort_order=1,
+        ),
+        RepetitionInstance(
+            repetition_instance_id=uuid.uuid4(),
+            repetition_plan_id=repetition_id,
+            instance_index=1,
+            root_clone_id=clone_low_sort_id,
+            instance_start_time=_utc(11, 0),
+            is_critical=True,
+            sort_order=0,
+        ),
+    ]
+
+    return (master, repetition, template, clone_high_sort, clone_low_sort)
+
+
 def test_intersect_time_windows_returns_empty_when_disjoint() -> None:
     left = (_window(_utc(9, 0), _utc(10, 0)),)
     right = (_window(_utc(11, 0), _utc(12, 0)),)
@@ -686,3 +765,11 @@ def test_resolve_tasks_from_graph_orders_repetition_instances_critical_first() -
     by_name = {task.name: task for task in tasks}
 
     assert by_name["clone-critical"].priority_path < by_name["clone-noncritical"].priority_path
+
+
+def test_resolve_tasks_from_graph_orders_instances_by_sort_order_within_bucket() -> None:
+    result = resolve_tasks_from_graph(_RUN_AT, _repetition_same_bucket_sort_order_graph())
+    tasks = _all_tasks(result)
+    by_name = {task.name: task for task in tasks}
+
+    assert by_name["clone-low-sort"].priority_path < by_name["clone-high-sort"].priority_path

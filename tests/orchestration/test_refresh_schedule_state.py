@@ -14,6 +14,7 @@ from calendar_backend.domain.resolution import ResolveTasksResult
 from calendar_backend.domain.results import fail, ok
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
+from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task_resolution import TaskResolutionService
 from calendar_backend.services.time_constraint import TimeConstraintService
 from sqlalchemy import select
@@ -92,6 +93,9 @@ def test_refresh_schedule_precondition_failure_sets_reason_without_calendar_muta
 
     assert not result.success
     assert result.errors[0].code == MessageCode.INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT
+    assert result.value is not None
+    assert result.value.resolved is not None
+    assert len(result.value.resolved.invalid_incomplete) >= 1
     assert oh.calendar_entry_count(service_db_session) == entries_before
     assert oh.calendar_run_count(service_db_session) == runs_before
     state = oh.active_state(service_db_session)
@@ -173,3 +177,29 @@ def test_refresh_schedule_resolution_failure_writes_no_active_state(
     assert result.errors[0].code == MessageCode.INVALID_TIME_WINDOW
     assert oh.active_state(service_db_session) is None
     assert oh.calendar_entry_count(service_db_session) == entries_before
+
+
+@pytest.mark.integration
+def test_refresh_schedule_repetition_refresh_failure_writes_no_active_state(
+    service_db_session: Session,
+) -> None:
+    oh.bootstrap_assignable_task(service_db_session)
+    entries_before, runs_before = oh.entries_and_runs_before(service_db_session)
+
+    with patch.object(
+        RepetitionService,
+        "refresh_all_repetitions",
+        return_value=fail(
+            ServiceMessage(
+                code=MessageCode.REPETITION_NOT_GENERATED,
+                message="forced repetition refresh failure",
+            )
+        ),
+    ):
+        result = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
+
+    assert not result.success
+    assert result.value is None
+    assert oh.active_state(service_db_session) is None
+    assert oh.calendar_entry_count(service_db_session) == entries_before
+    assert oh.calendar_run_count(service_db_session) == runs_before

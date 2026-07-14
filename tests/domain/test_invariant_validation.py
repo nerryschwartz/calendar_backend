@@ -501,6 +501,137 @@ def test_validate_master_tree_graph_accepts_post_generation_repetition_with_inst
     assert validate_master_tree_graph(_valid_repetition_graph()) == ()
 
 
+def test_validate_master_tree_graph_accepts_repetition_with_instances_when_generated_at_null() -> (
+    None
+):
+    graph = list(_valid_repetition_graph())
+    _master, _goal, _template, repetition, clone = graph
+    assert repetition.repetition_plan is not None
+    repetition.repetition_plan.generated_at = None
+    clone.constraint_groups = []
+
+    assert validate_master_tree_graph(tuple(graph)) == ()
+
+
+def test_validate_master_tree_graph_reports_detached_clone_wrong_lineage() -> None:
+    graph = list(_valid_repetition_graph())
+    master, _goal, _template, _repetition, clone = graph
+    clone.clone_status = CloneStatus.DETACHED
+    clone.cloned_from_id = master.plan_id
+
+    violations = validate_master_tree_graph(tuple(graph))
+
+    assert any(
+        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
+        and "must clone from template root" in v.message
+        for v in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_template_subtree_descendant_with_template_status() -> (
+    None
+):
+    master, goal, template, repetition = _valid_repetition_create_graph()
+    child_id = uuid.uuid4()
+    child = _plan(
+        child_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=template.plan_id,
+        clone_status=CloneStatus.TEMPLATE,
+        name="bad-template-child",
+    )
+    _attach_task(child)
+
+    violations = validate_master_tree_graph((master, goal, template, repetition, child))
+
+    assert any(
+        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
+        and "TEMPLATE clone_status is only allowed on repetition template roots" in v.message
+        for v in violations
+    )
+
+
+def test_validate_master_tree_graph_accepts_linked_and_detached_sibling_instances() -> None:
+    master_id = uuid.uuid4()
+    goal_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+    repetition_id = uuid.uuid4()
+    linked_clone_id = uuid.uuid4()
+    detached_clone_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id)]
+
+    goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
+    _attach_goal(goal)
+    _attach_chain_item(master, child_plan_id=goal_id)
+
+    repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION, parent_id=goal_id)
+    repetition_plan = _attach_repetition(repetition, template_id)
+    repetition_plan.generated_at = _utc(10, 0)
+    repetition_plan.manual_count = 2
+    _attach_chain_item(goal, child_plan_id=repetition_id)
+
+    template = _plan(
+        template_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        clone_status=CloneStatus.TEMPLATE,
+        name="template",
+    )
+    _attach_goal(template)
+
+    linked_clone = _plan(
+        linked_clone_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        cloned_from_id=template_id,
+        clone_status=CloneStatus.LINKED,
+        name="linked",
+    )
+    _attach_goal(linked_clone)
+    linked_clone.constraint_groups = [
+        _repetition_window_group(linked_clone_id, _utc(10, 0), _utc(11, 0))
+    ]
+
+    detached_clone = _plan(
+        detached_clone_id,
+        plan_kind=PlanKind.GOAL,
+        parent_id=repetition_id,
+        cloned_from_id=template_id,
+        clone_status=CloneStatus.DETACHED,
+        name="detached",
+    )
+    _attach_goal(detached_clone)
+    detached_clone.constraint_groups = [
+        _repetition_window_group(detached_clone_id, _utc(11, 0), _utc(12, 0))
+    ]
+
+    repetition_plan.instances = [
+        _repetition_instance(
+            repetition_plan_id=repetition_id,
+            root_clone_id=linked_clone_id,
+            instance_index=0,
+            sort_order=0,
+        ),
+        _repetition_instance(
+            repetition_plan_id=repetition_id,
+            root_clone_id=detached_clone_id,
+            instance_index=1,
+            sort_order=1,
+        ),
+    ]
+    repetition_plan.instances[1].instance_start_time = _utc(11, 0)
+
+    assert (
+        validate_master_tree_graph(
+            (master, goal, template, repetition, linked_clone, detached_clone)
+        )
+        == ()
+    )
+
+
 def test_validate_master_tree_graph_reports_master_critical_chain() -> None:
     master_id = uuid.uuid4()
     child_id = uuid.uuid4()
