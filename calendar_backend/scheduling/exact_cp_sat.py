@@ -18,7 +18,10 @@ from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.scheduling import decomposition
-from calendar_backend.scheduling.decomposition import AssignmentComponent
+from calendar_backend.scheduling.decomposition import (
+    AssignmentComponent,
+    assignment_input_from_component,
+)
 from calendar_backend.scheduling.feasibility import validate_full_assignment
 from calendar_backend.scheduling.input import (
     AssignmentInput,
@@ -166,7 +169,7 @@ def _solve_component_with_status(
 
     assignments, status, limit_reached = lex_result
     validation_failure = validate_full_assignment(
-        _assignment_input_from_component(component),
+        assignment_input_from_component(component),
         assignments,
     )
     if validation_failure is not None:
@@ -889,17 +892,6 @@ def _extract_assignments(
         assignments.append(TaskAssignment(plan_id=task_vars.plan_id, segments=tuple(segments)))
 
     return tuple(assignments)
-
-
-def _assignment_input_from_component(component: AssignmentComponent) -> AssignmentInput:
-    return AssignmentInput(
-        run_started_at=component.run_started_at,
-        tasks=component.tasks,
-        precedence_edges=component.precedence_edges,
-        occupied_intervals=component.occupied_intervals,
-        previous_placements_by_task_id=component.previous_placements_by_task_id,
-        solver_limits=component.solver_limits,
-    )
 
 
 def _task_vars_by_plan_id(
