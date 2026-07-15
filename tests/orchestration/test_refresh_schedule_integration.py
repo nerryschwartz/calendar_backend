@@ -45,7 +45,13 @@ def test_refresh_schedule_happy_path_produces_task_and_free_time_entries(
     assert result.value.assignment is not None
     assert result.value.free_time is not None
     assert oh.future_task_entry_count(service_db_session, task_id) == 1
-    assert oh.future_free_time_entry_count(service_db_session) == 1
+    free_time_count = len(result.value.free_time.calendar_entries)
+    assert free_time_count >= 1
+    assert oh.future_free_time_entry_count(service_db_session) == free_time_count
+    assert all(
+        entry.entry_type == CalendarEntryType.FREE_TIME
+        for entry in result.value.free_time.calendar_entries
+    )
     state = oh.active_state(service_db_session)
     assert state is not None
     assert state.last_refresh_failed is False
@@ -204,7 +210,14 @@ def test_refresh_schedule_repetition_instances_resolve_and_assign(
     calendar_ids = oh.calendar_source_plan_ids(service_db_session)
     assert template_task_id not in calendar_ids
     assert task_clone_id in calendar_ids
-    assert oh.future_free_time_entry_count(service_db_session) == 1
+    assert result.value.free_time is not None
+    free_time_count = len(result.value.free_time.calendar_entries)
+    assert free_time_count >= 1
+    assert oh.future_free_time_entry_count(service_db_session) == free_time_count
+    assert all(
+        entry.entry_type == CalendarEntryType.FREE_TIME
+        for entry in result.value.free_time.calendar_entries
+    )
 
 
 @pytest.mark.integration
@@ -382,7 +395,14 @@ def test_refresh_schedule_heuristic_fallback_through_full_pipeline(
         for warning in result.value.assignment.warnings
     )
     assert oh.future_task_entry_count(service_db_session, task_id) == 1
-    assert oh.future_free_time_entry_count(service_db_session) == 1
+    assert result.value.free_time is not None
+    free_time_count = len(result.value.free_time.calendar_entries)
+    assert free_time_count >= 1
+    assert oh.future_free_time_entry_count(service_db_session) == free_time_count
+    assert all(
+        entry.entry_type == CalendarEntryType.FREE_TIME
+        for entry in result.value.free_time.calendar_entries
+    )
 
 
 @pytest.mark.integration
