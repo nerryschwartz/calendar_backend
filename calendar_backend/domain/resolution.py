@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -12,11 +11,15 @@ from calendar_backend.domain.constraints import intersect_time_windows, merge_or
 from calendar_backend.domain.enums import ConstraintKind, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import GoalChildChainID, PlanID, TimeConstraintGroupID
+from calendar_backend.domain.plan_traversal import (
+    collect_descendant_ids,
+    ordered_chains,
+    ordered_repetition_instances,
+    sorted_chain_items,
+)
 from calendar_backend.domain.time import TimeWindow, validate_time_window
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.constraints import TimeConstraintGroup
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
-from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.models.plans import Plan
 
 ChainPathStep = tuple[GoalChildChainID, int]
 
@@ -87,7 +90,7 @@ def build_resolution_indexes(plans: tuple[Plan, ...]) -> ResolutionIndexes:
     template_subtree_ids: set[uuid.UUID] = set()
     for template_root_id in template_roots:
         template_subtree_ids.update(
-            _collect_descendant_ids(template_root_id, children_by_parent, include_root=True)
+            collect_descendant_ids(template_root_id, children_by_parent, include_root=True)
         )
 
     masters = [plan for plan in plans if plan.is_master]
@@ -227,7 +230,7 @@ def collect_precedence_constraints(
 
         for chain in plan.goal_plan.chains:
             incomplete_predecessor: PlanID | None = None
-            for item in _sorted_chain_items(chain):
+            for item in sorted_chain_items(chain):
                 successor_id = PlanID(item.child_plan_id)
                 successor = task_by_id.get(successor_id)
                 if successor is None:
@@ -292,62 +295,6 @@ def resolve_tasks_from_graph(
     )
     validate_resolve_tasks_result(result)
     return result
-
-
-def _collect_descendant_ids(
-    root_id: uuid.UUID,
-    children_by_parent: dict[uuid.UUID, list[uuid.UUID]],
-    *,
-    include_root: bool,
-) -> set[uuid.UUID]:
-    collected: set[uuid.UUID] = set()
-    queue: deque[uuid.UUID] = deque([root_id])
-    while queue:
-        plan_id = queue.popleft()
-        if plan_id in collected:
-            continue
-        collected.add(plan_id)
-        queue.extend(children_by_parent.get(plan_id, ()))
-    if not include_root:
-        collected.discard(root_id)
-    return collected
-
-
-def _ordered_chains(goal_plan: GoalPlan) -> tuple[GoalChildChain, ...]:
-    return tuple(
-        sorted(
-            goal_plan.chains,
-            key=lambda chain: (
-                not chain.is_critical,
-                chain.sort_order,
-                str(chain.goal_child_chain_id),
-            ),
-        )
-    )
-
-
-def _sorted_chain_items(chain: GoalChildChain) -> tuple[GoalChildChainItem, ...]:
-    return tuple(
-        sorted(
-            chain.items,
-            key=lambda item: (item.position, str(item.goal_child_chain_item_id)),
-        )
-    )
-
-
-def _ordered_repetition_instances(
-    repetition_plan: RepetitionPlan,
-) -> tuple[RepetitionInstance, ...]:
-    return tuple(
-        sorted(
-            repetition_plan.instances,
-            key=lambda instance: (
-                not instance.is_critical,
-                instance.sort_order,
-                str(instance.repetition_instance_id),
-            ),
-        )
-    )
 
 
 def is_invalid_task(task: ResolvedTask) -> bool:
@@ -455,8 +402,8 @@ class _TaskCollector:
         goal_errors = constraint_errors_for_plan(plan)
         subtree_errors = inherited_errors + goal_errors
 
-        for chain in _ordered_chains(plan.goal_plan):
-            for item in _sorted_chain_items(chain):
+        for chain in ordered_chains(plan.goal_plan):
+            for item in sorted_chain_items(chain):
                 child_id = PlanID(item.child_plan_id)
                 if child_id in self.indexes.template_subtree_ids:
                     continue
@@ -506,7 +453,7 @@ class _TaskCollector:
         if repetition_plan is None or repetition_plan.generated_at is None:
             return
 
-        for instance_index, instance in enumerate(_ordered_repetition_instances(repetition_plan)):
+        for instance_index, instance in enumerate(ordered_repetition_instances(repetition_plan)):
             root_id = PlanID(instance.root_clone_id)
             if root_id in self.indexes.template_subtree_ids:
                 continue

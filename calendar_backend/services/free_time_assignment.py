@@ -8,7 +8,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.assignment import (
@@ -36,9 +36,9 @@ from calendar_backend.domain.ids import CalendarEntryID, CalendarRunID, FreeTime
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.runs import ActiveCalendarState
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.free_time_activity import load_all_activities
 from calendar_backend.services.master_horizon import get_master_horizon_end, validate_run_started_at
 from calendar_backend.services.task_resolution import load_plan_graph
 
@@ -135,7 +135,7 @@ def _load_assignment_inputs(
         )
     master_horizon_end = sqlite_utc(horizon_end_raw)
 
-    activities = _load_all_activities(session)
+    activities = load_all_activities(session)
     activity_dtos = tuple(free_time_activity_dto_from_row(activity) for activity in activities)
     activities_by_id = {dto.free_time_activity_id: dto for dto in activity_dtos}
 
@@ -212,14 +212,4 @@ def _persist_successful_free_time_assignment(
         warnings=(),
         runtime_ms=runtime_ms,
         calendar_run_id=active_calendar_run_id,
-    )
-
-
-def _load_all_activities(session: Session) -> tuple[FreeTimeActivity, ...]:
-    return tuple(
-        session.scalars(
-            select(FreeTimeActivity)
-            .options(selectinload(FreeTimeActivity.prerequisites))
-            .order_by(FreeTimeActivity.name, FreeTimeActivity.free_time_activity_id)
-        ).all()
     )

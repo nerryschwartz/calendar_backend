@@ -52,6 +52,7 @@ from calendar_backend.scheduling.types import (
     weakest_solver_status,
 )
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.calendar_state import load_or_create_active_calendar_state
 from calendar_backend.services.master_horizon import validate_run_started_at
 
 
@@ -368,7 +369,7 @@ def _persist_failed_assignment(
     session.add(calendar_run)
     session.flush()
 
-    active_state = _load_or_create_active_calendar_state(session, clock)
+    active_state = load_or_create_active_calendar_state(session, clock)
     active_state.last_refresh_failed = True
     active_state.last_failure_at = now
     active_state.last_failure_reason = LastFailureReason.ASSIGNMENT_FAILED
@@ -440,7 +441,7 @@ def _persist_successful_assignment(
         session.add(entry)
         inserted_entries.append(entry)
 
-    active_state = _load_or_create_active_calendar_state(session, clock)
+    active_state = load_or_create_active_calendar_state(session, clock)
     active_state.active_calendar_run_id = calendar_run.calendar_run_id
     active_state.last_refresh_failed = False
     active_state.last_failure_at = None
@@ -457,25 +458,6 @@ def _persist_successful_assignment(
         runtime_ms=runtime_ms,
         calendar_run_id=CalendarRunID(calendar_run.calendar_run_id),
     )
-
-
-def _load_or_create_active_calendar_state(session: Session, clock: Clock) -> ActiveCalendarState:
-    row = session.get(ActiveCalendarState, 1)
-    if row is not None:
-        return row
-
-    now = clock.now_utc()
-    row = ActiveCalendarState(
-        singleton_id=1,
-        active_calendar_run_id=None,
-        last_refresh_failed=False,
-        last_failure_at=None,
-        last_failure_reason=None,
-        updated_at=now,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _new_calendar_run(

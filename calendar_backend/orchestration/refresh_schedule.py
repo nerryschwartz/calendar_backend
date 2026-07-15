@@ -13,7 +13,7 @@ from calendar_backend.domain.orchestration import RefreshScheduleResult
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.runs import ActiveCalendarState
+from calendar_backend.services.calendar_state import load_or_create_active_calendar_state
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
 from calendar_backend.services.task_assignment import TaskAssignmentService
 from calendar_backend.services.task_resolution import TaskResolutionService
@@ -115,7 +115,7 @@ def _persist_partial_free_time_failure(
             )
         )
         now = clock.now_utc()
-        active_state = _load_or_create_active_calendar_state(session, clock)
+        active_state = load_or_create_active_calendar_state(session, clock)
         active_state.last_refresh_failed = True
         active_state.last_failure_at = now
         active_state.last_failure_reason = LastFailureReason.FREE_TIME_ASSIGNMENT_FAILED
@@ -126,27 +126,8 @@ def _persist_assignment_precondition_failure(session: Session, clock: Clock) -> 
     """Record assignment precondition failure without mutating calendar rows or active run."""
     with transaction(session):
         now = clock.now_utc()
-        active_state = _load_or_create_active_calendar_state(session, clock)
+        active_state = load_or_create_active_calendar_state(session, clock)
         active_state.last_refresh_failed = True
         active_state.last_failure_at = now
         active_state.last_failure_reason = LastFailureReason.ASSIGNMENT_PRECONDITION_FAILED
         active_state.updated_at = now
-
-
-def _load_or_create_active_calendar_state(session: Session, clock: Clock) -> ActiveCalendarState:
-    row = session.get(ActiveCalendarState, 1)
-    if row is not None:
-        return row
-
-    now = clock.now_utc()
-    row = ActiveCalendarState(
-        singleton_id=1,
-        active_calendar_run_id=None,
-        last_refresh_failed=False,
-        last_failure_at=None,
-        last_failure_reason=None,
-        updated_at=now,
-    )
-    session.add(row)
-    session.flush()
-    return row

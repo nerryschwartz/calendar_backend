@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.time import TimeWindow
+from calendar_backend.domain.time import TimeWindow, gaps_in_window
 from calendar_backend.scheduling.feasibility import (
     segment_within_windows,
     segments_non_overlapping,
@@ -327,38 +327,9 @@ def _failure_for_no_placement(
 def _total_free_minutes(task: SchedulableTask, occupied: tuple[TimeWindow, ...]) -> int:
     total = 0
     for window in task.effective_time_windows:
-        for gap_start, gap_end in _gaps_in_window(window, occupied):
+        for gap_start, gap_end in gaps_in_window(window, occupied):
             total += _segment_duration_minutes(TimeWindow(start_time=gap_start, end_time=gap_end))
     return total
-
-
-def _gaps_in_window(
-    window: TimeWindow,
-    occupied: tuple[TimeWindow, ...],
-) -> list[tuple[datetime, datetime]]:
-    blocking = sorted(
-        (
-            segment
-            for segment in occupied
-            if segment.start_time < window.end_time and segment.end_time > window.start_time
-        ),
-        key=lambda segment: segment.start_time,
-    )
-
-    gaps: list[tuple[datetime, datetime]] = []
-    cursor = window.start_time
-    for segment in blocking:
-        gap_end = min(segment.start_time, window.end_time)
-        if cursor < gap_end:
-            gaps.append((cursor, gap_end))
-        cursor = max(cursor, segment.end_time)
-        if cursor >= window.end_time:
-            break
-
-    if cursor < window.end_time:
-        gaps.append((cursor, window.end_time))
-
-    return gaps
 
 
 def _segment_duration_minutes(segment: TimeWindow) -> int:

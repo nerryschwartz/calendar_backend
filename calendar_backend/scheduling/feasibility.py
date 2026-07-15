@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
-from calendar_backend.domain.time import TimeWindow
+from calendar_backend.domain.time import TimeWindow, gaps_in_window
 from calendar_backend.scheduling.input import AssignmentInput, PrecedenceEdge, SchedulableTask
 from calendar_backend.scheduling.types import TaskAssignment
 
@@ -232,7 +232,7 @@ def available_minutes_for_task(
 ) -> int:
     total = 0
     for window in task.effective_time_windows:
-        for gap_start, gap_end in _gaps_in_window(window, occupied):
+        for gap_start, gap_end in gaps_in_window(window, occupied):
             total += _window_duration_minutes(TimeWindow(start_time=gap_start, end_time=gap_end))
     return total
 
@@ -339,30 +339,6 @@ def _can_task_finish_by(
         ):
             return True
     return False
-
-
-def _gaps_in_window(
-    window: TimeWindow,
-    occupied: tuple[TimeWindow, ...],
-) -> list[tuple[datetime, datetime]]:
-    blocking = sorted(
-        (
-            segment
-            for segment in occupied
-            if segment.start_time < window.end_time and segment.end_time > window.start_time
-        ),
-        key=lambda segment: segment.start_time,
-    )
-
-    gaps: list[tuple[datetime, datetime]] = []
-    cursor = window.start_time
-    for segment in blocking:
-        if cursor < segment.start_time:
-            gaps.append((cursor, segment.start_time))
-        cursor = max(cursor, segment.end_time)
-    if cursor < window.end_time:
-        gaps.append((cursor, window.end_time))
-    return gaps
 
 
 def _windows_overlap(left: TimeWindow, right: TimeWindow) -> bool:

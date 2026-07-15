@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
@@ -14,11 +13,15 @@ from calendar_backend.domain.constraints import merge_or_windows
 from calendar_backend.domain.enums import FreeTimeWeekStartDay, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import CalendarRunID, FreeTimeActivityID, PlanID
-from calendar_backend.domain.time import TimeWindow
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.domain.plan_traversal import (
+    collect_descendant_ids,
+    ordered_chains,
+    ordered_repetition_instances,
+    sorted_chain_items,
+)
+from calendar_backend.domain.time import TimeWindow, gaps_in_window
 from calendar_backend.models.free_time import FreeTimeActivity
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
-from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.models.plans import Plan
 
 if TYPE_CHECKING:
     from calendar_backend.domain.assignment import CalendarEntryDTO
@@ -90,7 +93,7 @@ def free_time_plan_graph_from_plans(plans: tuple[Plan, ...]) -> FreeTimePlanGrap
         if plan.repetition_plan is None:
             continue
         template_subtree_ids.update(
-            _collect_descendant_ids(
+            collect_descendant_ids(
                 plan.repetition_plan.template_root_id,
                 children_by_parent,
                 include_root=True,
@@ -182,7 +185,7 @@ def discover_free_time_gaps(
             for blocker in merged_blockers
             if blocker.start_time < bucket_end and blocker.end_time > bucket_start
         )
-        for gap_start, gap_end in _gaps_in_window(bucket, bucket_blockers):
+        for gap_start, gap_end in gaps_in_window(bucket, bucket_blockers):
             gaps.append(
                 FreeTimeGap(
                     start_time=gap_start,
@@ -302,10 +305,10 @@ def _goal_is_logically_complete(
     if goal_plan is None:
         return False
 
-    for chain in _ordered_chains(goal_plan):
+    for chain in ordered_chains(goal_plan):
         if not chain.is_critical:
             continue
-        for item in _sorted_chain_items(chain):
+        for item in sorted_chain_items(chain):
             child_id = PlanID(item.child_plan_id)
             if not _is_plan_logically_complete(child_id, graph, memo=memo, visiting=visiting):
                 return False
@@ -323,7 +326,7 @@ def _repetition_is_logically_complete(
     if repetition_plan is None or repetition_plan.generated_at is None:
         return False
 
-    for instance in _ordered_repetition_instances(repetition_plan):
+    for instance in ordered_repetition_instances(repetition_plan):
         if not instance.is_critical:
             continue
         root_id = PlanID(instance.root_clone_id)
@@ -449,35 +452,6 @@ def _local_week_start(local_dt: datetime, week_start_day: FreeTimeWeekStartDay) 
     return datetime.combine(week_start_date, time.min, tzinfo=local_dt.tzinfo)
 
 
-def _gaps_in_window(
-    window: TimeWindow,
-    blockers: tuple[TimeWindow, ...],
-) -> tuple[tuple[datetime, datetime], ...]:
-    blocking = sorted(
-        (
-            segment
-            for segment in blockers
-            if segment.start_time < window.end_time and segment.end_time > window.start_time
-        ),
-        key=lambda segment: segment.start_time,
-    )
-
-    gaps: list[tuple[datetime, datetime]] = []
-    cursor = window.start_time
-    for segment in blocking:
-        gap_end = min(segment.start_time, window.end_time)
-        if cursor < gap_end:
-            gaps.append((cursor, gap_end))
-        cursor = max(cursor, segment.end_time)
-        if cursor >= window.end_time:
-            break
-
-    if cursor < window.end_time:
-        gaps.append((cursor, window.end_time))
-
-    return tuple(gaps)
-
-
 @dataclass
 class _MutableGap:
     start_time: datetime
@@ -547,59 +521,3 @@ def _place_minutes_in_gaps(
             break
 
     return tuple(placements)
-
-
-def _collect_descendant_ids(
-    root_id: uuid.UUID,
-    children_by_parent: dict[uuid.UUID, list[uuid.UUID]],
-    *,
-    include_root: bool,
-) -> set[uuid.UUID]:
-    collected: set[uuid.UUID] = set()
-    queue: deque[uuid.UUID] = deque([root_id])
-    while queue:
-        plan_id = queue.popleft()
-        if plan_id in collected:
-            continue
-        collected.add(plan_id)
-        queue.extend(children_by_parent.get(plan_id, ()))
-    if not include_root:
-        collected.discard(root_id)
-    return collected
-
-
-def _ordered_chains(goal_plan: GoalPlan) -> tuple[GoalChildChain, ...]:
-    return tuple(
-        sorted(
-            goal_plan.chains,
-            key=lambda chain: (
-                not chain.is_critical,
-                chain.sort_order,
-                str(chain.goal_child_chain_id),
-            ),
-        )
-    )
-
-
-def _sorted_chain_items(chain: GoalChildChain) -> tuple[GoalChildChainItem, ...]:
-    return tuple(
-        sorted(
-            chain.items,
-            key=lambda item: (item.position, str(item.goal_child_chain_item_id)),
-        )
-    )
-
-
-def _ordered_repetition_instances(
-    repetition_plan: RepetitionPlan,
-) -> tuple[RepetitionInstance, ...]:
-    return tuple(
-        sorted(
-            repetition_plan.instances,
-            key=lambda instance: (
-                not instance.is_critical,
-                instance.sort_order,
-                str(instance.repetition_instance_id),
-            ),
-        )
-    )
