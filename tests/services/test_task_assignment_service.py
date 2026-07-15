@@ -969,6 +969,14 @@ def test_assign_tasks_divisible_task_produces_multiple_calendar_entries(
         entry for entry in result.value.calendar_entries if entry.source_plan_id == task_id
     ]
     assert len(entries_for_task) >= 2
+    total_minutes = sum(
+        int((entry.end_time - entry.start_time).total_seconds() // 60) for entry in entries_for_task
+    )
+    assert total_minutes == 90
+    for entry in entries_for_task:
+        segment_minutes = int((entry.end_time - entry.start_time).total_seconds() // 60)
+        assert segment_minutes >= 30
+        assert entry.start_time >= RUN_AT
 
 
 @pytest.mark.integration
@@ -1042,7 +1050,9 @@ def test_assign_tasks_failure_persists_failed_run_and_last_refresh_failed(
     failed_run = service_db_session.get(CalendarRun, result.value.calendar_run_id)
     assert failed_run is not None
     assert failed_run.status == CalendarRunStatus.FAILED
+    assert failed_run.conflict_count == len(result.value.conflicts)
     assert failed_run.conflict_count >= 1
+    assert result.value.conflicts
     state = _active_state(service_db_session)
     assert state is not None
     assert state.last_refresh_failed is True

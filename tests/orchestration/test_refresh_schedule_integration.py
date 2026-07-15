@@ -44,8 +44,8 @@ def test_refresh_schedule_happy_path_produces_task_and_free_time_entries(
     assert result.value.resolved is not None
     assert result.value.assignment is not None
     assert result.value.free_time is not None
-    assert oh.future_task_entry_count(service_db_session, task_id) >= 1
-    assert oh.future_free_time_entry_count(service_db_session) >= 1
+    assert oh.future_task_entry_count(service_db_session, task_id) == 1
+    assert oh.future_free_time_entry_count(service_db_session) == 1
     state = oh.active_state(service_db_session)
     assert state is not None
     assert state.last_refresh_failed is False
@@ -102,7 +102,7 @@ def test_refresh_schedule_invalid_incomplete_blocks_before_assignment(
     assert result.errors[0].code == MessageCode.INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT
     assert result.value is not None
     assert result.value.resolved is not None
-    assert len(result.value.resolved.invalid_incomplete) >= 1
+    assert len(result.value.resolved.invalid_incomplete) == 1
     assert result.value.assignment is None
     assert result.value.free_time is None
     assert oh.calendar_entry_count(service_db_session) == entries_before
@@ -172,7 +172,7 @@ def test_refresh_schedule_partial_free_time_failure_preserves_future_tasks_only(
     assert result.value is not None
     assert result.value.assignment is not None
     assert result.value.free_time is None
-    assert oh.future_task_entry_count(service_db_session, task_id) >= 1
+    assert oh.future_task_entry_count(service_db_session, task_id) == 1
     assert service_db_session.get(CalendarEntry, stale_future_id) is None
 
 
@@ -204,7 +204,7 @@ def test_refresh_schedule_repetition_instances_resolve_and_assign(
     calendar_ids = oh.calendar_source_plan_ids(service_db_session)
     assert template_task_id not in calendar_ids
     assert task_clone_id in calendar_ids
-    assert oh.future_free_time_entry_count(service_db_session) >= 1
+    assert oh.future_free_time_entry_count(service_db_session) == 1
 
 
 @pytest.mark.integration
@@ -381,8 +381,8 @@ def test_refresh_schedule_heuristic_fallback_through_full_pipeline(
         warning.code == MessageCode.HEURISTIC_FEASIBLE
         for warning in result.value.assignment.warnings
     )
-    assert oh.future_task_entry_count(service_db_session, task_id) >= 1
-    assert oh.future_free_time_entry_count(service_db_session) >= 1
+    assert oh.future_task_entry_count(service_db_session, task_id) == 1
+    assert oh.future_free_time_entry_count(service_db_session) == 1
 
 
 @pytest.mark.integration
@@ -397,7 +397,7 @@ def test_refresh_schedule_multi_activity_proportional_split(
 
     assert result.success and result.value is not None
     assert result.value.free_time is not None
-    assert oh.future_task_entry_count(service_db_session, task_id) >= 1
+    assert oh.future_task_entry_count(service_db_session, task_id) == 1
     free_time_entries = result.value.free_time.calendar_entries
     activity_ids = {
         entry.source_free_time_activity_id
@@ -517,8 +517,8 @@ def test_refresh_schedule_post_delete_instance_clone_clears_calendar(
 
     first_refresh = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
     assert first_refresh.success
-    assert oh.future_task_entry_count(service_db_session, task_clone_0) >= 1
-    assert oh.future_task_entry_count(service_db_session, task_clone_1) >= 1
+    assert oh.future_task_entry_count(service_db_session, task_clone_0) == 1
+    assert oh.future_task_entry_count(service_db_session, task_clone_1) == 1
 
     oh.delete_plan(service_db_session, task_clone_0)
     assert service_db_session.get(Plan, task_clone_0) is None

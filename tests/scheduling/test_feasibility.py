@@ -330,3 +330,34 @@ def test_diagnose_assignment_input_reports_insufficient_capacity() -> None:
     assert len(failures) == 1
     assert failures[0].code == MessageCode.INSUFFICIENT_TOTAL_CAPACITY
     assert failures[0].details["plan_id"] == str(task_id)
+
+
+def test_diagnose_assignment_input_reports_precedence_impossible() -> None:
+    predecessor_id = plan_id()
+    successor_id = plan_id()
+    predecessor = schedulable_task(
+        task_id=predecessor_id,
+        duration_minutes=60,
+        effective_time_windows=(window(utc(2026, 6, 7, 10, 0), utc(2026, 6, 7, 12, 0)),),
+    )
+    successor = schedulable_task(
+        task_id=successor_id,
+        duration_minutes=30,
+        effective_time_windows=(window(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 10, 0)),),
+    )
+
+    failures = diagnose_assignment_input(
+        assignment_input(
+            tasks=(predecessor, successor),
+            precedence_edges=(
+                PrecedenceEdge(
+                    predecessor_plan_id=predecessor_id,
+                    successor_plan_id=successor_id,
+                ),
+            ),
+        )
+    )
+
+    assert len(failures) == 1
+    assert failures[0].code == MessageCode.PRECEDENCE_IMPOSSIBLE
+    assert failures[0].details == {}

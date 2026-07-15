@@ -95,7 +95,7 @@ def test_refresh_schedule_precondition_failure_sets_reason_without_calendar_muta
     assert result.errors[0].code == MessageCode.INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT
     assert result.value is not None
     assert result.value.resolved is not None
-    assert len(result.value.resolved.invalid_incomplete) >= 1
+    assert len(result.value.resolved.invalid_incomplete) == 1
     assert oh.calendar_entry_count(service_db_session) == entries_before
     assert oh.calendar_run_count(service_db_session) == runs_before
     state = oh.active_state(service_db_session)
@@ -115,7 +115,7 @@ def test_refresh_schedule_partial_free_time_failure_clears_future_free_time(
     state = oh.active_state(service_db_session)
     assert state is not None
     prior_active_run_id = state.active_calendar_run_id
-    assert oh.future_task_entry_count(service_db_session, task_id) >= 1
+    assert oh.future_task_entry_count(service_db_session, task_id) == 1
     activity_id = service_db_session.scalar(
         select(CalendarEntry.source_free_time_activity_id).where(
             CalendarEntry.entry_type == CalendarEntryType.FREE_TIME,
@@ -161,7 +161,7 @@ def test_refresh_schedule_partial_free_time_failure_clears_future_free_time(
     assert state.last_failure_reason == LastFailureReason.FREE_TIME_ASSIGNMENT_FAILED
     assert service_db_session.get(CalendarEntry, stale_future_id) is None
     assert service_db_session.get(CalendarEntry, past_free_time_id) is not None
-    assert oh.future_task_entry_count(service_db_session, task_id) >= 1
+    assert oh.future_task_entry_count(service_db_session, task_id) == 1
 
 
 @pytest.mark.integration
