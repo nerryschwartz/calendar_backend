@@ -1574,10 +1574,6 @@ Store the finalized plan in docs/plans/.
 
 ### Prompt 10: Repetition service
 
-**Deferred carry-over:**
-- [`calendar_backend/domain/invariant_validation.py`](../../calendar_backend/domain/invariant_validation.py): Relax plan_kind == GOAL for non-goal templates — `# TODO(Prompt 10 / RepetitionService)` in source
-- [`calendar_backend/domain/repetitions.py`](../../calendar_backend/domain/repetitions.py): Replace `_validate_repetition_template` with `validate_create_payload` when non-goal templates are supported — `# TODO(Prompt 10 / RepetitionService slice 1)` in source
-
 ```text
 Use /request-questions first.
 
@@ -1636,9 +1632,6 @@ Store the finalized plan in docs/plans/.
 ```
 
 ### Prompt 12: Deletion previews and conflict deletion suggestions
-
-**Deferred carry-over:**
-- [`calendar_backend/domain/deletion.py`](../../calendar_backend/domain/deletion.py): template-root delete includes owning repetition shell — `# TODO(Prompt 12)` (see §0.1 Template semantics)
 
 ```text
 Use /request-questions first.
@@ -1879,6 +1872,8 @@ Split into slices:
 
 Store the finalized plan in docs/plans/.
 ```
+
+**Completion note (2026-07-15):** Finalized audit plan [`docs/plans/v1_design_conformance_audit.md`](plans/v1_design_conformance_audit.md); slices 1–7 complete on branch `final-v1-design-conformance-audit`.
 
 ## 10. Branch workflow for solo sequential work
 
