@@ -32,6 +32,7 @@ from calendar_backend.scheduling.types import (
     exact_feasible_result,
     exact_optimal_result,
     infeasible_result,
+    is_usable_solver_result,
     weakest_solver_status,
 )
 
@@ -75,6 +76,26 @@ class _ComponentSolveResult:
     limit_reached: bool
 
 
+def solve_exact_component(component: AssignmentComponent) -> AssignmentSolverResult:
+    """Solve one precedence-connected component with exact CP-SAT."""
+    if not component.tasks:
+        return exact_optimal_result(())
+
+    if model_size_guard_exceeded(component, component.solver_limits):
+        return _exact_guard_not_usable_result()
+
+    component_result = _solve_component_with_status(component)
+    if component_result is None:
+        return _exact_not_usable_result()
+
+    if component_result.status == SolverStatus.OPTIMAL:
+        return exact_optimal_result(component_result.assignments)
+    return exact_feasible_result(
+        component_result.assignments,
+        limit_reached=component_result.limit_reached,
+    )
+
+
 class ExactAssignmentSolver:
     """CP-SAT exact assignment solver with per-component lexicographic objectives."""
 
@@ -92,18 +113,19 @@ class ExactAssignmentSolver:
                 assignment_input,
                 prior_solved_assignments=prior_solved_assignments,
             )[component_index]
-            component_result = _solve_component_with_status(component)
-            if component_result is None:
-                if model_size_guard_exceeded(component, component.solver_limits):
-                    return _exact_guard_not_usable_result()
-                return _exact_not_usable_result()
+            component_result = solve_exact_component(component)
+            if not is_usable_solver_result(component_result):
+                return component_result
 
             prior_solved_assignments = (
                 *prior_solved_assignments,
                 *component_result.assignments,
             )
             component_statuses.append(component_result.status)
-            any_limit_reached = any_limit_reached or component_result.limit_reached
+            any_limit_reached = any_limit_reached or any(
+                warning.code == MessageCode.SOLVER_LIMIT_REACHED
+                for warning in component_result.warnings
+            )
 
         merged_assignments = prior_solved_assignments
         validation_failure = validate_full_assignment(assignment_input, merged_assignments)
