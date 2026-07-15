@@ -82,6 +82,10 @@ class Plan(Base):
         back_populates="parent",
         foreign_keys=[parent_id],
     )
+    cloned_from: Mapped[Plan | None] = relationship(
+        remote_side=[plan_id],
+        foreign_keys=[cloned_from_id],
+    )
     goal_plan: Mapped[GoalPlan | None] = relationship(
         back_populates="plan",
         uselist=False,
@@ -204,5 +208,8 @@ class RepetitionPlan(Base):
     plan: Mapped[Plan] = relationship(
         back_populates="repetition_plan",
         foreign_keys=[plan_id],
+    )
+    template_root: Mapped[Plan] = relationship(
+        foreign_keys=[template_root_id],
     )
     instances: Mapped[list[RepetitionInstance]] = relationship(back_populates="repetition_plan")
