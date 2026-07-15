@@ -42,8 +42,8 @@ from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
 from calendar_backend.services.task_assignment import TaskAssignmentService
 from calendar_backend.services.task_resolution import (
-    _load_plan_graph,  # pyright: ignore[reportPrivateUsage]
     _resolve_from_current_tree,  # pyright: ignore[reportPrivateUsage]
+    load_plan_graph,
 )
 from calendar_backend.services.time_constraint import TimeConstraintService
 from sqlalchemy import func, select
@@ -239,7 +239,7 @@ def _normalize_plan_window_timezones(plans: tuple[Plan, ...]) -> tuple[Plan, ...
 
 
 def _resolve_seam(session: Session) -> ResolveTasksResult:
-    plans = _normalize_plan_window_timezones(_load_plan_graph(session))
+    plans = _normalize_plan_window_timezones(load_plan_graph(session))
     return _resolve_from_current_tree(RUN_AT, plans=plans)
 
 
@@ -259,13 +259,14 @@ def _empty_resolve_result(
     *,
     run_started_at: datetime = RUN_AT,
     invalid_incomplete: tuple[ResolvedTask, ...] = (),
+    invalid_completed: tuple[ResolvedTask, ...] = (),
 ) -> ResolveTasksResult:
     return ResolveTasksResult(
         run_started_at=run_started_at,
         valid_incomplete=(),
         valid_completed=(),
         invalid_incomplete=invalid_incomplete,
-        invalid_completed=(),
+        invalid_completed=invalid_completed,
         precedence_constraints=(),
         warnings=(),
     )
@@ -282,6 +283,34 @@ def _invalid_incomplete_task() -> tuple[ResolvedTask, ...]:
             minimum_chunk_size_minutes=None,
             user_completed=False,
             completed_at=None,
+            effective_time_windows=(),
+            constraint_sources=(),
+            priority_path=(0,),
+            criticality_path=(),
+            parent_path=(PlanID(plan_id),),
+            chain_path=(),
+            validation_errors=(
+                ServiceMessage(
+                    code=MessageCode.INVALID_DURATION,
+                    message="invalid duration",
+                    details={},
+                ),
+            ),
+        ),
+    )
+
+
+def _invalid_completed_task() -> tuple[ResolvedTask, ...]:
+    plan_id = uuid.uuid4()
+    return (
+        ResolvedTask(
+            plan_id=PlanID(plan_id),
+            name="bad completed",
+            duration_minutes=0,
+            divisible=False,
+            minimum_chunk_size_minutes=None,
+            user_completed=True,
+            completed_at=RUN_AT,
             effective_time_windows=(),
             constraint_sources=(),
             priority_path=(0,),
@@ -395,6 +424,29 @@ def test_assign_tasks_invalid_incomplete_blocks_without_db_mutation(
     assert _calendar_entry_count(service_db_session) == entries_before
     assert _calendar_run_count(service_db_session) == runs_before
     assert _active_state(service_db_session) is None
+
+
+@pytest.mark.integration
+def test_assign_tasks_invalid_completed_does_not_block_assignment(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    _create_task(service_db_session, master_id)
+    base = _resolve_seam(service_db_session)
+    resolved = ResolveTasksResult(
+        run_started_at=base.run_started_at,
+        valid_incomplete=base.valid_incomplete,
+        valid_completed=base.valid_completed,
+        invalid_incomplete=(),
+        invalid_completed=_invalid_completed_task(),
+        precedence_constraints=base.precedence_constraints,
+        warnings=base.warnings,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(resolved, RUN_AT)
+
+    assert result.success and result.value is not None
+    assert len(result.value.calendar_entries) == 1
 
 
 @pytest.mark.integration
