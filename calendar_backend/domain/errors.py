@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 
-# TODO(Prompt 20): Audit MessageCode enum and remove values with no references.
 class MessageCode(StrEnum):
     INVALID_DURATION = "INVALID_DURATION"
     NON_MINUTE_ALIGNED_WINDOW = "NON_MINUTE_ALIGNED_WINDOW"
