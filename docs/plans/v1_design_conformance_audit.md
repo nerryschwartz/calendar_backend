@@ -18,7 +18,7 @@ Compare implemented code against:
 - Prompts 1–18: infrastructure, ORM, domain, services, scheduling, orchestration, dev CLI
 - Prompt 19: [`test_hardening.md`](test_hardening.md) — invariant through orchestration test hardening
 - 18 finalized implementation plans under [`docs/plans/`](.)
-- Remaining `# TODO(Prompt 20)` in source: [`calendar_backend/domain/enums.py`](../../calendar_backend/domain/enums.py), [`calendar_backend/domain/errors.py`](../../calendar_backend/domain/errors.py)
+- Prompt 20 conformance audit slices 1–6 complete (layer boundaries through abstraction discipline); slice 7 completes docs/CLI alignment
 
 Build workflow: use `/build-plan-slice` per slice against this file; stop after each slice for approval.
 
