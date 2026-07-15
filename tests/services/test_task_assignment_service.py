@@ -31,16 +31,23 @@ from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
-from calendar_backend.scheduling.exact_cp_sat import ExactAssignmentSolver
-from calendar_backend.scheduling.input import AssignmentInput
-from calendar_backend.scheduling.types import AssignmentSolverResult
+from calendar_backend.scheduling.exact_cp_sat import solve_exact_component
+from calendar_backend.scheduling.input import AssignmentInput, SchedulableTask, SolverLimits
+from calendar_backend.scheduling.types import (
+    AssignmentSolverResult,
+    TaskAssignment,
+    exact_optimal_result,
+)
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
-from calendar_backend.services.task_assignment import TaskAssignmentService
+from calendar_backend.services.task_assignment import (
+    TaskAssignmentService,
+    _solve_assignment,  # pyright: ignore[reportPrivateUsage]
+)
 from calendar_backend.services.task_resolution import (
     _resolve_from_current_tree,  # pyright: ignore[reportPrivateUsage]
     load_plan_graph,
@@ -336,6 +343,7 @@ def _add_calendar_entry(
     end_time: datetime,
     source_plan_id: PlanID | None = None,
     source_free_time_activity_id: uuid.UUID | None = None,
+    calendar_run_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     entry_id = uuid.uuid4()
     with transaction(session) as txn:
@@ -347,7 +355,7 @@ def _add_calendar_entry(
                 end_time=end_time,
                 source_plan_id=source_plan_id,
                 source_free_time_activity_id=source_free_time_activity_id,
-                calendar_run_id=None,
+                calendar_run_id=calendar_run_id,
                 display_label="seed",
                 created_at=RUN_AT,
                 updated_at=RUN_AT,
@@ -363,7 +371,7 @@ def _seed_active_calendar_state_with_past_task(
     past_start: datetime,
     past_end: datetime,
     source_plan_id: PlanID,
-) -> None:
+) -> uuid.UUID:
     run_id = uuid.uuid4()
     with transaction(session) as txn:
         txn.add(
@@ -404,6 +412,7 @@ def _seed_active_calendar_state_with_past_task(
             )
         )
         txn.flush()
+    return run_id
 
 
 @pytest.mark.integration
@@ -492,13 +501,10 @@ def test_assign_tasks_falls_back_to_heuristic_when_exact_not_usable(
     service_db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _bootstrap_master_with_horizon(service_db_session)
+    _bootstrap_narrow_assignable_task(service_db_session)
 
-    def exact_not_usable(
-        self: ExactAssignmentSolver,
-        assignment_input: AssignmentInput,
-    ) -> AssignmentSolverResult:
-        del self, assignment_input
+    def exact_not_usable(component) -> AssignmentSolverResult:
+        del component
         return AssignmentSolverResult(
             status=SolverStatus.INFEASIBLE,
             assignments=(),
@@ -506,7 +512,10 @@ def test_assign_tasks_falls_back_to_heuristic_when_exact_not_usable(
             failure=None,
         )
 
-    monkeypatch.setattr(ExactAssignmentSolver, "solve", exact_not_usable)
+    monkeypatch.setattr(
+        "calendar_backend.services.task_assignment.solve_exact_component",
+        exact_not_usable,
+    )
 
     result = _assignment_service(service_db_session).assign_tasks(
         _resolve_seam(service_db_session),
@@ -586,7 +595,7 @@ def test_assign_tasks_loads_stability_hints_from_future_task_entries(
 ) -> None:
     master_id = _bootstrap_master_with_horizon(service_db_session)
     task_id = _create_task(service_db_session, master_id)
-    _seed_active_calendar_state_with_past_task(
+    active_run_id = _seed_active_calendar_state_with_past_task(
         service_db_session,
         past_start=_utc(2026, 6, 7, 8, 0),
         past_end=_utc(2026, 6, 7, 8, 30),
@@ -599,18 +608,28 @@ def test_assign_tasks_loads_stability_hints_from_future_task_entries(
         start_time=hint_window.start_time,
         end_time=hint_window.end_time,
         source_plan_id=task_id,
+        calendar_run_id=active_run_id,
     )
     captured_inputs: list[AssignmentInput] = []
-    original_solve = ExactAssignmentSolver.solve
+    original_solve = solve_exact_component
 
-    def capture_exact_solve(
-        self: ExactAssignmentSolver,
-        assignment_input: AssignmentInput,
-    ) -> AssignmentSolverResult:
-        captured_inputs.append(assignment_input)
-        return original_solve(self, assignment_input)
+    def capture_exact_solve(component) -> AssignmentSolverResult:
+        captured_inputs.append(
+            AssignmentInput(
+                run_started_at=component.run_started_at,
+                tasks=component.tasks,
+                precedence_edges=component.precedence_edges,
+                occupied_intervals=component.occupied_intervals,
+                previous_placements_by_task_id=component.previous_placements_by_task_id,
+                solver_limits=component.solver_limits,
+            )
+        )
+        return original_solve(component)
 
-    monkeypatch.setattr(ExactAssignmentSolver, "solve", capture_exact_solve)
+    monkeypatch.setattr(
+        "calendar_backend.services.task_assignment.solve_exact_component",
+        capture_exact_solve,
+    )
 
     result = _assignment_service(service_db_session).assign_tasks(
         _resolve_seam(service_db_session),
@@ -673,6 +692,142 @@ def test_previous_placements_from_future_task_entries_filters_schedulable_tasks_
     )
 
     assert placements == ((schedulable_id, (hint_window,)),)
+
+
+def test_solve_assignment_mixed_exact_then_heuristic_per_component(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_id = PlanID(uuid.uuid4())
+    second_id = PlanID(uuid.uuid4())
+    if str(first_id) > str(second_id):
+        first_id, second_id = second_id, first_id
+    morning = _window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0))
+
+    assignment_input = AssignmentInput(
+        run_started_at=RUN_AT,
+        tasks=(
+            SchedulableTask(
+                plan_id=first_id,
+                duration_minutes=30,
+                divisible=False,
+                minimum_chunk_size_minutes=None,
+                effective_time_windows=(morning,),
+                priority_path=(0,),
+            ),
+            SchedulableTask(
+                plan_id=second_id,
+                duration_minutes=30,
+                divisible=False,
+                minimum_chunk_size_minutes=None,
+                effective_time_windows=(morning,),
+                priority_path=(1,),
+            ),
+        ),
+        precedence_edges=(),
+        occupied_intervals=(),
+        previous_placements_by_task_id=(),
+        solver_limits=SolverLimits(time_limit_seconds=30, model_size_limit=10_000),
+    )
+    exact_assignments = (
+        TaskAssignment(
+            plan_id=first_id,
+            segments=(_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 9, 30)),),
+        ),
+    )
+    calls: list[int] = []
+
+    def fake_solve_exact_component(component) -> AssignmentSolverResult:
+        calls.append(1)
+        if len(calls) == 1:
+            return exact_optimal_result(exact_assignments)
+        return AssignmentSolverResult(
+            status=SolverStatus.INFEASIBLE,
+            assignments=(),
+            warnings=(),
+            failure=None,
+        )
+
+    monkeypatch.setattr(
+        "calendar_backend.services.task_assignment.solve_exact_component",
+        fake_solve_exact_component,
+    )
+
+    solver_result, _runtime_ms = _solve_assignment(assignment_input, heuristic_enabled=True)
+
+    assert len(calls) == 2
+    assert solver_result.status == SolverStatus.FEASIBLE
+    assert len(solver_result.assignments) == 2
+    assert any(warning.code == MessageCode.HEURISTIC_FEASIBLE for warning in solver_result.warnings)
+    assert solver_result.assignments[0].plan_id == first_id
+
+
+@pytest.mark.integration
+def test_assign_tasks_ignores_stale_future_entries_from_other_calendar_runs(
+    service_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    _seed_active_calendar_state_with_past_task(
+        service_db_session,
+        past_start=_utc(2026, 6, 7, 8, 0),
+        past_end=_utc(2026, 6, 7, 8, 30),
+        source_plan_id=task_id,
+    )
+    stale_run_id = uuid.uuid4()
+    with transaction(service_db_session) as txn:
+        txn.add(
+            CalendarRun(
+                calendar_run_id=stale_run_id,
+                run_started_at=RUN_AT,
+                run_finished_at=RUN_AT,
+                status=CalendarRunStatus.FAILED,
+                solver_status=SolverStatus.INFEASIBLE,
+                conflict_count=1,
+                warning_count=0,
+                runtime_ms=1,
+                created_at=RUN_AT,
+            )
+        )
+        txn.flush()
+    stale_hint_window = _window(_utc(2026, 6, 7, 11, 0), _utc(2026, 6, 7, 11, 30))
+    _add_calendar_entry(
+        service_db_session,
+        entry_type=CalendarEntryType.TASK,
+        start_time=stale_hint_window.start_time,
+        end_time=stale_hint_window.end_time,
+        source_plan_id=task_id,
+        calendar_run_id=stale_run_id,
+    )
+    captured_inputs: list[AssignmentInput] = []
+    original_solve = solve_exact_component
+
+    def capture_exact_solve(component) -> AssignmentSolverResult:
+        captured_inputs.append(
+            AssignmentInput(
+                run_started_at=component.run_started_at,
+                tasks=component.tasks,
+                precedence_edges=component.precedence_edges,
+                occupied_intervals=component.occupied_intervals,
+                previous_placements_by_task_id=component.previous_placements_by_task_id,
+                solver_limits=component.solver_limits,
+            )
+        )
+        return original_solve(component)
+
+    monkeypatch.setattr(
+        "calendar_backend.services.task_assignment.solve_exact_component",
+        capture_exact_solve,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success
+    assert captured_inputs
+    assert captured_inputs[0].previous_placements_by_task_id == ()
 
 
 @pytest.mark.integration

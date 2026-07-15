@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.scheduling.feasibility import (
+    diagnose_assignment_input,
     precedence_satisfied,
     segment_within_windows,
     segments_non_overlapping,
@@ -298,3 +299,34 @@ def test_validate_assignment_input_rejects_non_minute_aligned_run_started_at() -
 
     with pytest.raises(ValueError, match="minute-aligned"):
         validate_assignment_input(misaligned)
+
+
+def test_diagnose_assignment_input_reports_empty_windows_before_capacity() -> None:
+    empty_windows_id = plan_id()
+    schedulable = schedulable_task(
+        task_id=empty_windows_id,
+        duration_minutes=30,
+        effective_time_windows=(),
+    )
+
+    failures = diagnose_assignment_input(assignment_input(tasks=(schedulable,)))
+
+    assert len(failures) == 1
+    assert failures[0].code == MessageCode.NO_VALID_WINDOW_FOR_TASK
+    assert failures[0].details["plan_id"] == str(empty_windows_id)
+
+
+def test_diagnose_assignment_input_reports_insufficient_capacity() -> None:
+    task_id = plan_id()
+    narrow = window(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 9, 15))
+    task = schedulable_task(
+        task_id=task_id,
+        duration_minutes=30,
+        effective_time_windows=(narrow,),
+    )
+
+    failures = diagnose_assignment_input(assignment_input(tasks=(task,)))
+
+    assert len(failures) == 1
+    assert failures[0].code == MessageCode.INSUFFICIENT_TOTAL_CAPACITY
+    assert failures[0].details["plan_id"] == str(task_id)
