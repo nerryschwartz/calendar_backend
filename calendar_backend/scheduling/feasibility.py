@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.time import TimeWindow
+from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.time import TimeWindow, gaps_in_window
 from calendar_backend.scheduling.input import AssignmentInput, PrecedenceEdge, SchedulableTask
 from calendar_backend.scheduling.types import TaskAssignment
+
+_STAGED_DIAGNOSIS_ORDER: tuple[MessageCode, ...] = (
+    MessageCode.NO_VALID_WINDOW_FOR_TASK,
+    MessageCode.INSUFFICIENT_TOTAL_CAPACITY,
+    MessageCode.PRECEDENCE_IMPOSSIBLE,
+    MessageCode.MINIMUM_CHUNK_SIZE_IMPOSSIBLE,
+    MessageCode.TASK_OVERLAP_REQUIRED,
+)
 
 
 def segment_within_windows(segment: TimeWindow, windows: tuple[TimeWindow, ...]) -> bool:
@@ -166,6 +177,168 @@ def validate_full_assignment(
         )
 
     return None
+
+
+def diagnose_assignment_input(assignment_input: AssignmentInput) -> tuple[ServiceMessage, ...]:
+    """Return deterministic staged input failures in PDF section 9.5 order."""
+    occupied = _occupied_windows(assignment_input)
+    tasks_by_plan_id = {task.plan_id: task for task in assignment_input.tasks}
+    failures_by_code: dict[MessageCode, list[ServiceMessage]] = {
+        code: [] for code in _STAGED_DIAGNOSIS_ORDER
+    }
+
+    for task in sorted(assignment_input.tasks, key=lambda item: str(item.plan_id)):
+        if not task.effective_time_windows:
+            failures_by_code[MessageCode.NO_VALID_WINDOW_FOR_TASK].append(
+                _task_failure(
+                    task.plan_id,
+                    code=MessageCode.NO_VALID_WINDOW_FOR_TASK,
+                    message="Task has no effective time windows",
+                )
+            )
+            continue
+
+        if available_minutes_for_task(task, occupied) < task.duration_minutes:
+            failures_by_code[MessageCode.INSUFFICIENT_TOTAL_CAPACITY].append(
+                _task_failure(
+                    task.plan_id,
+                    code=MessageCode.INSUFFICIENT_TOTAL_CAPACITY,
+                    message="Insufficient total capacity to assign task",
+                )
+            )
+
+        chunk_failure = _minimum_chunk_failure(task)
+        if chunk_failure is not None:
+            failures_by_code[MessageCode.MINIMUM_CHUNK_SIZE_IMPOSSIBLE].append(chunk_failure)
+
+    precedence_failure = _precedence_failure(assignment_input, tasks_by_plan_id, occupied)
+    if precedence_failure is not None:
+        failures_by_code[MessageCode.PRECEDENCE_IMPOSSIBLE].append(precedence_failure)
+
+    ordered_failures: list[ServiceMessage] = []
+    for code in _STAGED_DIAGNOSIS_ORDER:
+        ordered_failures.extend(
+            sorted(
+                failures_by_code[code],
+                key=lambda failure: str(failure.details.get("plan_id", "")),
+            )
+        )
+    return tuple(ordered_failures)
+
+
+def available_minutes_for_task(
+    task: SchedulableTask,
+    occupied: tuple[TimeWindow, ...],
+) -> int:
+    total = 0
+    for window in task.effective_time_windows:
+        for gap_start, gap_end in gaps_in_window(window, occupied):
+            total += _window_duration_minutes(TimeWindow(start_time=gap_start, end_time=gap_end))
+    return total
+
+
+def _occupied_windows(assignment_input: AssignmentInput) -> tuple[TimeWindow, ...]:
+    return tuple(
+        TimeWindow(start_time=interval.start_time, end_time=interval.end_time)
+        for interval in assignment_input.occupied_intervals
+    )
+
+
+def _task_failure(
+    plan_id: PlanID,
+    *,
+    code: MessageCode,
+    message: str,
+) -> ServiceMessage:
+    return ServiceMessage(
+        code=code,
+        message=message,
+        details={"plan_id": str(plan_id)},
+    )
+
+
+def _minimum_chunk_failure(task: SchedulableTask) -> ServiceMessage | None:
+    if not task.divisible:
+        return None
+
+    details = {"plan_id": str(task.plan_id)}
+    minimum_chunk = task.minimum_chunk_size_minutes
+    if minimum_chunk is None:
+        return ServiceMessage(
+            code=MessageCode.MINIMUM_CHUNK_SIZE_IMPOSSIBLE,
+            message="Divisible task is missing minimum chunk size",
+            details=details,
+        )
+
+    longest_window_minutes = max(
+        (_window_duration_minutes(window) for window in task.effective_time_windows),
+        default=0,
+    )
+    if longest_window_minutes < minimum_chunk:
+        return ServiceMessage(
+            code=MessageCode.MINIMUM_CHUNK_SIZE_IMPOSSIBLE,
+            message="Task windows are shorter than minimum chunk size",
+            details=details,
+        )
+    return None
+
+
+def _precedence_failure(
+    assignment_input: AssignmentInput,
+    tasks_by_plan_id: dict[PlanID, SchedulableTask],
+    occupied: tuple[TimeWindow, ...],
+) -> ServiceMessage | None:
+    for edge in sorted(
+        assignment_input.precedence_edges,
+        key=lambda item: (
+            str(item.predecessor_plan_id),
+            str(item.successor_plan_id),
+        ),
+    ):
+        predecessor = tasks_by_plan_id.get(edge.predecessor_plan_id)
+        successor = tasks_by_plan_id.get(edge.successor_plan_id)
+        if predecessor is None or successor is None:
+            continue
+        if not _precedence_edge_schedulable(predecessor, successor, occupied):
+            return ServiceMessage(
+                code=MessageCode.PRECEDENCE_IMPOSSIBLE,
+                message="Assignment violates precedence constraints",
+                details={},
+            )
+    return None
+
+
+def _precedence_edge_schedulable(
+    predecessor: SchedulableTask,
+    successor: SchedulableTask,
+    occupied: tuple[TimeWindow, ...],
+) -> bool:
+    if not predecessor.effective_time_windows or not successor.effective_time_windows:
+        return True
+
+    earliest_successor_start = min(window.start_time for window in successor.effective_time_windows)
+    return _can_task_finish_by(predecessor, earliest_successor_start, occupied)
+
+
+def _can_task_finish_by(
+    task: SchedulableTask,
+    deadline: datetime,
+    occupied: tuple[TimeWindow, ...],
+) -> bool:
+    duration = timedelta(minutes=task.duration_minutes)
+    for window in sorted(task.effective_time_windows, key=lambda item: item.start_time):
+        latest_start = deadline - duration
+        if latest_start < window.start_time:
+            continue
+        segment = TimeWindow(start_time=latest_start, end_time=deadline)
+        if segment_within_windows(
+            segment, task.effective_time_windows
+        ) and segments_non_overlapping(
+            (segment,),
+            occupied,
+        ):
+            return True
+    return False
 
 
 def _windows_overlap(left: TimeWindow, right: TimeWindow) -> bool:

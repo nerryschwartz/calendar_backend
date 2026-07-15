@@ -8,7 +8,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.assignment import (
@@ -36,13 +36,11 @@ from calendar_backend.domain.ids import CalendarEntryID, CalendarRunID, FreeTime
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChain
-from calendar_backend.models.constraints import TimeConstraintGroup
-from calendar_backend.models.free_time import FreeTimeActivity
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
 from calendar_backend.models.runs import ActiveCalendarState
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.free_time_activity import load_all_activities
 from calendar_backend.services.master_horizon import get_master_horizon_end, validate_run_started_at
+from calendar_backend.services.task_resolution import load_plan_graph
 
 
 class FreeTimeAssignmentService:
@@ -65,17 +63,12 @@ class FreeTimeAssignmentService:
         if validation_error is not None:
             return fail(validation_error)
 
-        precondition_error = _assign_free_time_precondition_error(self._session)
-        if precondition_error is not None:
-            return fail(precondition_error)
-
-        settings_result = AppSettingsService(self._session, self._clock).get_settings()
-        if not settings_result.success or settings_result.value is None:
-            return fail(*settings_result.errors)
-
         started = time.perf_counter()
         try:
             with transaction(self._session) as txn:
+                settings_result = AppSettingsService(txn, self._clock).get_settings()
+                if not settings_result.success or settings_result.value is None:
+                    raise ServiceTransactionAborted(settings_result.errors)
                 loaded = _load_assignment_inputs(
                     txn,
                     run_started_at,
@@ -111,17 +104,6 @@ class _AssignmentInputs:
     activities_by_id: dict[FreeTimeActivityID, FreeTimeActivityDTO]
 
 
-def _assign_free_time_precondition_error(session: Session) -> ServiceMessage | None:
-    state = session.get(ActiveCalendarState, 1)
-    if state is None or state.active_calendar_run_id is None:
-        return ServiceMessage(
-            code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
-            message="active_calendar_run_id must be set before free-time assignment",
-            details={},
-        )
-    return None
-
-
 def _load_assignment_inputs(
     session: Session,
     run_started_at: datetime,
@@ -129,7 +111,16 @@ def _load_assignment_inputs(
     settings: AppSettingsDTO,
 ) -> _AssignmentInputs:
     state = session.get(ActiveCalendarState, 1)
-    assert state is not None and state.active_calendar_run_id is not None
+    if state is None or state.active_calendar_run_id is None:
+        raise ServiceTransactionAborted(
+            (
+                ServiceMessage(
+                    code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
+                    message="active_calendar_run_id must be set before free-time assignment",
+                    details={},
+                ),
+            )
+        )
 
     horizon_end_raw = get_master_horizon_end(session)
     if horizon_end_raw is None:
@@ -144,11 +135,11 @@ def _load_assignment_inputs(
         )
     master_horizon_end = sqlite_utc(horizon_end_raw)
 
-    activities = _load_all_activities(session)
+    activities = load_all_activities(session)
     activity_dtos = tuple(free_time_activity_dto_from_row(activity) for activity in activities)
     activities_by_id = {dto.free_time_activity_id: dto for dto in activity_dtos}
 
-    plans = _load_plan_graph(session)
+    plans = load_plan_graph(session)
     graph = free_time_plan_graph_from_plans(plans)
     blocked = blocked_activity_ids(activity_dtos, graph)
     effective_fractions = compute_effective_fractions(activity_dtos, blocked)
@@ -221,29 +212,4 @@ def _persist_successful_free_time_assignment(
         warnings=(),
         runtime_ms=runtime_ms,
         calendar_run_id=active_calendar_run_id,
-    )
-
-
-def _load_all_activities(session: Session) -> tuple[FreeTimeActivity, ...]:
-    return tuple(
-        session.scalars(
-            select(FreeTimeActivity)
-            .options(selectinload(FreeTimeActivity.prerequisites))
-            .order_by(FreeTimeActivity.name, FreeTimeActivity.free_time_activity_id)
-        ).all()
-    )
-
-
-def _load_plan_graph(session: Session) -> tuple[Plan, ...]:
-    return tuple(
-        session.scalars(
-            select(Plan).options(
-                selectinload(Plan.goal_plan)
-                .selectinload(GoalPlan.chains)
-                .selectinload(GoalChildChain.items),
-                selectinload(Plan.task_plan),
-                selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
-                selectinload(Plan.constraint_groups).selectinload(TimeConstraintGroup.windows),
-            )
-        ).all()
     )

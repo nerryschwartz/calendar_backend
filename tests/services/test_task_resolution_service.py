@@ -31,8 +31,8 @@ from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
 from calendar_backend.services.task_resolution import (
     TaskResolutionService,
-    _load_plan_graph,  # pyright: ignore[reportPrivateUsage]
     _resolve_from_current_tree,  # pyright: ignore[reportPrivateUsage]
+    load_plan_graph,
 )
 from calendar_backend.services.time_constraint import TimeConstraintService
 from sqlalchemy import func, select
@@ -212,7 +212,7 @@ def _normalize_plan_window_timezones(plans: tuple[Plan, ...]) -> tuple[Plan, ...
 
 
 def _load_plans_with_utc_windows(session: Session) -> tuple[Plan, ...]:
-    return _normalize_plan_window_timezones(_load_plan_graph(session))
+    return _normalize_plan_window_timezones(load_plan_graph(session))
 
 
 def _resolve_seam(session: Session, run_at: datetime = RUN_AT) -> ResolveTasksResult:

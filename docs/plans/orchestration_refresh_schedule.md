@@ -181,7 +181,7 @@ uv run pyright
 - [`calendar_backend/orchestration/refresh_schedule.py`](../../calendar_backend/orchestration/refresh_schedule.py) — guard-fail and solver-fail branches
 
 **May also change:**
-- [`calendar_backend/services/task_assignment.py`](../../calendar_backend/services/task_assignment.py) — only if a package-private helper must be reused for precondition persistence (prefer orchestration-owned helper mirroring `_load_or_create_active_calendar_state`)
+- [`calendar_backend/services/calendar_state.py`](../../calendar_backend/services/calendar_state.py) — shared `load_or_create_active_calendar_state` for precondition persistence (used by orchestration and task assignment)
 
 **Implementation steps:**
 1. **Guard failures** (`assign_tasks` returns `fail` without `_value`): detect assignment precondition errors (`INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT`, `RUN_STARTED_AT_MISMATCH`, heuristic disabled, etc.).

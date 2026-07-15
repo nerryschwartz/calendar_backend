@@ -15,7 +15,7 @@ from calendar_backend.db.base import Base
 from calendar_backend.db.session import create_engine_for_url, create_session_factory, transaction
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
-from calendar_backend.models.plans import GoalPlan, Plan, TaskPlan
+from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from sqlalchemy import CheckConstraint, DateTime, UniqueConstraint, insert, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -795,6 +795,134 @@ def test_relationships_navigate_goal_to_chain_item(plan_schema_engine: Engine) -
         assert len(loaded.chains[0].items) == 1
         assert loaded.chains[0].items[0].child_plan.plan_kind == PlanKind.TASK
         assert loaded.plan.is_master is True
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_relationships_navigate_plan_cloned_from(plan_schema_engine: Engine) -> None:
+    session = create_session_factory(plan_schema_engine)()
+    template_id = uuid.uuid4()
+    clone_id = uuid.uuid4()
+    now = _now()
+
+    try:
+        with transaction(session):
+            session.add(
+                Plan(
+                    plan_id=template_id,
+                    plan_kind=PlanKind.TASK,
+                    name="template task",
+                    parent_id=None,
+                    is_master=False,
+                    cloned_from_id=None,
+                    clone_status=CloneStatus.TEMPLATE,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                TaskPlan(
+                    plan_id=template_id,
+                    duration_minutes=30,
+                    divisible=False,
+                    minimum_chunk_size_minutes=None,
+                    user_completed=False,
+                    completed_at=None,
+                )
+            )
+            session.add(
+                Plan(
+                    plan_id=clone_id,
+                    plan_kind=PlanKind.TASK,
+                    name="linked clone",
+                    parent_id=None,
+                    is_master=False,
+                    cloned_from_id=template_id,
+                    clone_status=CloneStatus.LINKED,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                TaskPlan(
+                    plan_id=clone_id,
+                    duration_minutes=30,
+                    divisible=False,
+                    minimum_chunk_size_minutes=None,
+                    user_completed=False,
+                    completed_at=None,
+                )
+            )
+
+        loaded = session.get(Plan, clone_id)
+        assert loaded is not None
+        assert loaded.cloned_from is not None
+        assert loaded.cloned_from.plan_id == template_id
+        assert loaded.cloned_from.name == "template task"
+        assert loaded.cloned_from.clone_status == CloneStatus.TEMPLATE
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_relationships_navigate_repetition_plan_template_root(
+    plan_schema_engine: Engine,
+) -> None:
+    session = create_session_factory(plan_schema_engine)()
+    template_id = uuid.uuid4()
+    repetition_id = uuid.uuid4()
+    now = _now()
+
+    try:
+        with transaction(session):
+            session.add(
+                Plan(
+                    plan_id=template_id,
+                    plan_kind=PlanKind.GOAL,
+                    name="template root",
+                    parent_id=None,
+                    is_master=True,
+                    cloned_from_id=None,
+                    clone_status=CloneStatus.NOT_CLONED,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(GoalPlan(plan_id=template_id))
+            session.add(
+                Plan(
+                    plan_id=repetition_id,
+                    plan_kind=PlanKind.REPETITION,
+                    name="repetition shell",
+                    parent_id=template_id,
+                    is_master=False,
+                    cloned_from_id=None,
+                    clone_status=CloneStatus.NOT_CLONED,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                RepetitionPlan(
+                    plan_id=repetition_id,
+                    repeat_mode=RepeatMode.MANUAL_COUNT,
+                    start_time=now,
+                    repeat_interval_minutes=60,
+                    manual_count=1,
+                    end_time=None,
+                    template_root_id=template_id,
+                    default_instance_critical=False,
+                    generated_at=None,
+                )
+            )
+
+        loaded = session.get(RepetitionPlan, repetition_id)
+        assert loaded is not None
+        assert loaded.template_root.plan_id == template_id
+        assert loaded.template_root.name == "template root"
+        assert loaded.template_root.is_master is True
+        assert loaded.plan.plan_kind == PlanKind.REPETITION
     finally:
         session.close()
 

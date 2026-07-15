@@ -3,7 +3,6 @@ from __future__ import annotations
 from enum import StrEnum
 
 
-# TODO(Prompt 20): Audit domain StrEnum values and remove entries with no references.
 class PlanKind(StrEnum):
     GOAL = "GOAL"
     TASK = "TASK"

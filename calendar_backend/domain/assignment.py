@@ -19,6 +19,7 @@ from calendar_backend.domain.ids import (
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.calendar import CalendarEntry
+from calendar_backend.scheduling.feasibility import diagnose_assignment_input
 from calendar_backend.scheduling.input import AssignmentInput, OccupiedInterval
 from calendar_backend.scheduling.types import AssignmentSolverResult, TaskAssignment
 
@@ -127,28 +128,41 @@ def analyze_assignment_conflicts(
     resolved: ResolveTasksResult,
     solver_result: AssignmentSolverResult,
 ) -> tuple[AssignmentConflict, ...]:
-    """Derive one diagnostic AssignmentConflict from a failed solver result."""
-    del assignment_input  # reserved for staged analysis extensions; v1 uses solver failure only
+    """Derive deterministic assignment conflicts from solver failure and staged input checks."""
     if solver_result.status != SolverStatus.INFEASIBLE or solver_result.failure is None:
         return ()
 
-    failure = solver_result.failure
     resolved_tasks_by_id = {task.plan_id: task for task in resolved.valid_incomplete}
-    conflicting_plan_ids = _conflicting_plan_ids_from_failure(failure, resolved)
-    task_ids = conflicting_plan_ids
-    return (
-        build_assignment_conflict(
-            reason_code=failure.code,
-            conflicting_plan_ids=conflicting_plan_ids,
-            task_ids=task_ids,
-            explanation=_conflict_explanation_from_failure(failure),
-            affected_priority_by_plan_id=_affected_priority_by_plan_id(
-                conflicting_plan_ids,
-                resolved_tasks_by_id,
-            ),
-            is_global=failure.code in _GLOBAL_ASSIGNMENT_FAILURE_CODES,
-        ),
-    )
+    conflicts: list[AssignmentConflict] = []
+    seen_keys: set[tuple[MessageCode, str]] = set()
+
+    def append_conflict(failure: ServiceMessage) -> None:
+        plan_id_key = str(failure.details.get("plan_id", ""))
+        dedupe_key = (failure.code, plan_id_key)
+        if dedupe_key in seen_keys:
+            return
+        seen_keys.add(dedupe_key)
+
+        conflicting_plan_ids = _conflicting_plan_ids_from_failure(failure, resolved)
+        conflicts.append(
+            build_assignment_conflict(
+                reason_code=failure.code,
+                conflicting_plan_ids=conflicting_plan_ids,
+                task_ids=conflicting_plan_ids,
+                explanation=_conflict_explanation_from_failure(failure),
+                affected_priority_by_plan_id=_affected_priority_by_plan_id(
+                    conflicting_plan_ids,
+                    resolved_tasks_by_id,
+                ),
+                is_global=failure.code in _GLOBAL_ASSIGNMENT_FAILURE_CODES,
+            )
+        )
+
+    append_conflict(solver_result.failure)
+    for staged_failure in diagnose_assignment_input(assignment_input):
+        append_conflict(staged_failure)
+
+    return tuple(conflicts)
 
 
 def _conflicting_plan_ids_from_failure(

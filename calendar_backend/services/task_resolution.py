@@ -64,11 +64,15 @@ class TaskResolutionService:
                 if not invariant_result.success:
                     raise ServiceTransactionAborted(invariant_result.errors)
 
-                plans = _load_plan_graph(txn)
+                plans = load_plan_graph(txn)
                 result = _resolve_from_current_tree(run_started_at, plans=plans)
                 return ok(result)
         except ServiceTransactionAborted as exc:
             return fail(*exc.errors)
+
+    def load_plan_graph(self, txn: Session) -> tuple[Plan, ...]:
+        """Load the full master plan tree graph for resolution-shaped consumers."""
+        return load_plan_graph(txn)
 
 
 def _resolve_from_current_tree(
@@ -80,7 +84,7 @@ def _resolve_from_current_tree(
     return resolve_tasks_from_graph(run_started_at, plans)
 
 
-def _load_plan_graph(session: Session) -> tuple[Plan, ...]:
+def load_plan_graph(session: Session) -> tuple[Plan, ...]:
     plans = tuple(
         session.scalars(
             select(Plan).options(

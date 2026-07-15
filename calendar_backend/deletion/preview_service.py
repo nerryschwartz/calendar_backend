@@ -33,27 +33,41 @@ class DeletionPreviewService:
 
     def preview_delete(self, operation: DeletionOperation) -> ServiceResult[DeletionPreview]:
         with transaction(self._session) as txn:
-            root_plan = txn.get(Plan, operation.root_plan_id)
-            if root_plan is None:
-                return fail(
-                    ServiceMessage(
-                        code=MessageCode.PLAN_NOT_FOUND,
-                        message="Plan not found",
-                        details={"plan_id": str(operation.root_plan_id)},
-                    )
-                )
-            if root_plan.is_master:
-                return fail(
-                    ServiceMessage(
-                        code=MessageCode.MASTER_DELETE_FORBIDDEN,
-                        message="Master plan cannot be deleted",
-                        details={"plan_id": str(operation.root_plan_id)},
-                    )
-                )
+            return preview_delete_in_txn(txn, operation)
 
-            plans, calendar_entries = _load_deletion_graph(txn)
-            preview = build_deletion_preview(operation, plans, calendar_entries)
-            return ok(preview)
+    def preview_delete_plan_in_txn(
+        self,
+        txn: Session,
+        plan_id: PlanID,
+    ) -> ServiceResult[DeletionPreview]:
+        return preview_delete_in_txn(txn, DeletionOperation(root_plan_id=plan_id))
+
+
+def preview_delete_in_txn(
+    txn: Session,
+    operation: DeletionOperation,
+) -> ServiceResult[DeletionPreview]:
+    root_plan = txn.get(Plan, operation.root_plan_id)
+    if root_plan is None:
+        return fail(
+            ServiceMessage(
+                code=MessageCode.PLAN_NOT_FOUND,
+                message="Plan not found",
+                details={"plan_id": str(operation.root_plan_id)},
+            )
+        )
+    if root_plan.is_master:
+        return fail(
+            ServiceMessage(
+                code=MessageCode.MASTER_DELETE_FORBIDDEN,
+                message="Master plan cannot be deleted",
+                details={"plan_id": str(operation.root_plan_id)},
+            )
+        )
+
+    plans, calendar_entries = _load_deletion_graph(txn)
+    preview = build_deletion_preview(operation, plans, calendar_entries)
+    return ok(preview)
 
 
 def _load_deletion_graph(

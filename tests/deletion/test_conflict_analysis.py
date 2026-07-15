@@ -11,7 +11,7 @@ from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
 from calendar_backend.domain.time import TimeWindow
-from calendar_backend.scheduling.input import AssignmentInput
+from calendar_backend.scheduling.input import AssignmentInput, SchedulableTask
 from calendar_backend.scheduling.types import AssignmentSolverResult, infeasible_result
 
 RUN_AT = datetime(2026, 6, 7, 10, 0, tzinfo=UTC)
@@ -120,6 +120,79 @@ def test_analyze_task_local_failure_targets_one_of_multiple_resolved_tasks() -> 
     assert conflict.conflicting_plan_ids == (PlanID(blocked_id),)
     assert conflict.is_global is False
     assert conflict.affected_priority_by_plan_id == ((PlanID(blocked_id), 0),)
+
+
+def test_analyze_returns_multiple_staged_conflicts_for_solver_plus_input() -> None:
+    blocked_id = uuid.uuid4()
+    empty_windows_id = uuid.uuid4()
+    resolved = ResolveTasksResult(
+        run_started_at=RUN_AT,
+        valid_incomplete=(
+            _resolved_task(blocked_id, priority_path=(0,)),
+            ResolvedTask(
+                plan_id=PlanID(empty_windows_id),
+                name="no windows",
+                duration_minutes=30,
+                divisible=False,
+                minimum_chunk_size_minutes=None,
+                user_completed=False,
+                completed_at=None,
+                effective_time_windows=(),
+                constraint_sources=(),
+                priority_path=(1,),
+                criticality_path=(),
+                parent_path=(PlanID(empty_windows_id),),
+                chain_path=(),
+                validation_errors=(),
+            ),
+        ),
+        valid_completed=(),
+        invalid_incomplete=(),
+        invalid_completed=(),
+        precedence_constraints=(),
+        warnings=(),
+    )
+    assignment_input = AssignmentInput(
+        run_started_at=RUN_AT,
+        tasks=(
+            SchedulableTask(
+                plan_id=PlanID(blocked_id),
+                duration_minutes=30,
+                divisible=False,
+                minimum_chunk_size_minutes=None,
+                effective_time_windows=(_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
+                priority_path=(0,),
+            ),
+            SchedulableTask(
+                plan_id=PlanID(empty_windows_id),
+                duration_minutes=30,
+                divisible=False,
+                minimum_chunk_size_minutes=None,
+                effective_time_windows=(),
+                priority_path=(1,),
+            ),
+        ),
+        precedence_edges=(),
+        occupied_intervals=(),
+    )
+    failure = ServiceMessage(
+        code=MessageCode.NO_VALID_WINDOW_FOR_TASK,
+        message="No valid placement",
+        details={"plan_id": str(blocked_id)},
+    )
+
+    result = ConflictAnalysisService().analyze(
+        assignment_input,
+        resolved,
+        infeasible_result(failure),
+    )
+
+    assert result.success and result.value is not None
+    assert len(result.value) == 2
+    assert {conflict.conflicting_plan_ids[0] for conflict in result.value} == {
+        PlanID(blocked_id),
+        PlanID(empty_windows_id),
+    }
 
 
 def test_analyze_returns_empty_tuple_for_feasible_solver() -> None:

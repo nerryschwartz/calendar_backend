@@ -99,7 +99,7 @@ flowchart TD
 **Files expected to change:**
 - [`calendar_backend/domain/assignment.py`](../../calendar_backend/domain/assignment.py) (new) — `CalendarEntryDTO`, `AssignmentResult`, row→DTO mappers, `calendar_entry_dto_from_row(...)`
 - [`calendar_backend/domain/deletion.py`](../../calendar_backend/domain/deletion.py) — extend `AssignmentConflict` with `reason_code`, `task_ids`, `explanation`, `is_global`, `is_approximate`; remove Prompt 14 TODO block once populated
-- [`calendar_backend/services/task_assignment.py`](../../calendar_backend/services/task_assignment.py) (new) — `TaskAssignmentService`, `assign_tasks` guard path, `_load_or_create_active_calendar_state(...)`, `_new_calendar_run(...)` helpers (unused until slices 3–4)
+- [`calendar_backend/services/task_assignment.py`](../../calendar_backend/services/task_assignment.py) (new) — `TaskAssignmentService`, `assign_tasks` guard path, `load_or_create_active_calendar_state(...)` from [`calendar_state.py`](../../calendar_backend/services/calendar_state.py), `_new_calendar_run(...)` helpers (unused until slices 3–4)
 
 **May also change:**
 - [`calendar_backend/domain/dtos.py`](../../calendar_backend/domain/dtos.py) — only if `CalendarEntryDTO` fits existing DTO module better (prefer dedicated `domain/assignment.py` per slice objective)

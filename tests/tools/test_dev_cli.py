@@ -130,6 +130,58 @@ def test_dispatch_settings_show_bootstraps(capsys: pytest.CaptureFixture[str]) -
     assert "heuristic_enabled: True" in captured.out
 
 
+def test_dispatch_master_show_service_failure_prints_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert dispatch(["db", "init"]) == 0
+
+    def fake_ensure_master_exists(self: object) -> ServiceResult[object]:
+        del self
+        return fail(
+            ServiceMessage(
+                code=MessageCode.PLAN_NOT_FOUND,
+                message="master missing",
+            )
+        )
+
+    monkeypatch.setattr(
+        "tools.dev_cli.MasterPlanService.ensure_master_exists",
+        fake_ensure_master_exists,
+    )
+    exit_code = dispatch(["master", "show"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "PLAN_NOT_FOUND" in captured.err
+
+
+def test_dispatch_settings_show_service_failure_prints_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert dispatch(["db", "init"]) == 0
+
+    def fake_get_settings(self: object) -> ServiceResult[object]:
+        del self
+        return fail(
+            ServiceMessage(
+                code=MessageCode.INVALID_MASTER_PLAN,
+                message="settings unavailable",
+            )
+        )
+
+    monkeypatch.setattr(
+        "tools.dev_cli.AppSettingsService.get_settings",
+        fake_get_settings,
+    )
+    exit_code = dispatch(["settings", "show"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "INVALID_MASTER_PLAN" in captured.err
+
+
 def test_dispatch_refresh_schedule_rejects_sub_minute(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -138,6 +190,16 @@ def test_dispatch_refresh_schedule_rejects_sub_minute(
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "minute-aligned" in captured.err
+
+
+def test_dispatch_refresh_schedule_rejects_non_utc(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = dispatch(["refresh", "schedule", "--run-started-at", "2026-06-07T10:00:00+05:00"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "UTC" in captured.err
 
 
 def test_dispatch_refresh_schedule_stubbed_success(

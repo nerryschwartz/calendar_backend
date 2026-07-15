@@ -378,7 +378,10 @@ def test_assign_free_time_success_replaces_future_free_time_only(
     assert result.success and result.value is not None
     assert service_db_session.get(CalendarEntry, past_entry_id) is not None
     assert service_db_session.get(CalendarEntry, stale_future_id) is None
-    assert _free_time_entry_count(service_db_session) >= 1
+    assert len(result.value.calendar_entries) >= 1
+    assert all(
+        entry.entry_type == CalendarEntryType.FREE_TIME for entry in result.value.calendar_entries
+    )
 
 
 @pytest.mark.integration
@@ -498,7 +501,8 @@ def test_assign_free_time_second_run_replaces_future_free_time_only(
 
     assert second.success and second.value is not None
     assert service_db_session.get(CalendarEntry, first_future_id) is None
-    assert _free_time_entry_count(service_db_session) >= 1
+    assert len(second.value.calendar_entries) >= 1
+    assert all(entry.start_time >= RUN_AT for entry in second.value.calendar_entries)
     for entry in second.value.calendar_entries:
         assert entry.calendar_run_id == active_run_id
 

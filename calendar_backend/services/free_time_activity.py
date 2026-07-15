@@ -228,7 +228,7 @@ class FreeTimeActivityService:
 
     def list_activities(self) -> ServiceResult[tuple[FreeTimeActivityDTO, ...]]:
         with transaction(self._session) as txn:
-            activities = _load_all_activities(txn)
+            activities = load_all_activities(txn)
             return ok(
                 tuple(
                     free_time_activity_dto_from_row(activity)
@@ -289,9 +289,9 @@ def _load_activity(txn: Session, activity_id: FreeTimeActivityID) -> FreeTimeAct
     )
 
 
-def _load_all_activities(txn: Session) -> tuple[FreeTimeActivity, ...]:
+def load_all_activities(session: Session) -> tuple[FreeTimeActivity, ...]:
     return tuple(
-        txn.scalars(
+        session.scalars(
             select(FreeTimeActivity)
             .options(selectinload(FreeTimeActivity.prerequisites))
             .order_by(FreeTimeActivity.name, FreeTimeActivity.free_time_activity_id)
@@ -304,7 +304,7 @@ def _validate_global_enabled_fractions(
     *,
     prospective: tuple[FreeTimeActivity, ...] = (),
 ) -> ServiceMessage | None:
-    existing = list(_load_all_activities(txn))
+    existing = list(load_all_activities(txn))
     existing_ids = {activity.free_time_activity_id for activity in existing}
     for activity in prospective:
         if activity.free_time_activity_id not in existing_ids:

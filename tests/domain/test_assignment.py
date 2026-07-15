@@ -16,7 +16,7 @@ from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.scheduling.input import AssignmentInput
+from calendar_backend.scheduling.input import AssignmentInput, SchedulableTask
 from calendar_backend.scheduling.types import (
     AssignmentSolverResult,
     TaskAssignment,
@@ -256,6 +256,68 @@ def test_analyze_assignment_conflicts_returns_empty_for_feasible_solver() -> Non
             feasible,
         )
         == ()
+    )
+
+
+def test_analyze_assignment_conflicts_adds_staged_input_failures_for_other_tasks() -> None:
+    blocked_id = uuid.uuid4()
+    empty_windows_id = uuid.uuid4()
+    blocked_task = _resolved_task(blocked_id, name="blocked")
+    empty_windows_task = ResolvedTask(
+        plan_id=PlanID(empty_windows_id),
+        name="no windows",
+        duration_minutes=30,
+        divisible=False,
+        minimum_chunk_size_minutes=None,
+        user_completed=False,
+        completed_at=None,
+        effective_time_windows=(),
+        constraint_sources=(),
+        priority_path=(1,),
+        criticality_path=(),
+        parent_path=(PlanID(empty_windows_id),),
+        chain_path=(),
+        validation_errors=(),
+    )
+    resolved = _resolve_result(
+        valid_incomplete=(blocked_task, empty_windows_task),
+    )
+    assignment_input = AssignmentInput(
+        run_started_at=RUN_AT,
+        tasks=(
+            _schedulable_from_resolved(blocked_task),
+            _schedulable_from_resolved(empty_windows_task),
+        ),
+        precedence_edges=(),
+        occupied_intervals=(),
+    )
+    solver_failure = ServiceMessage(
+        code=MessageCode.NO_VALID_WINDOW_FOR_TASK,
+        message="No valid placement",
+        details={"plan_id": str(blocked_id)},
+    )
+
+    conflicts = analyze_assignment_conflicts(
+        assignment_input,
+        resolved,
+        infeasible_result(solver_failure),
+    )
+
+    assert len(conflicts) == 2
+    assert conflicts[0].reason_code == MessageCode.NO_VALID_WINDOW_FOR_TASK
+    assert conflicts[0].conflicting_plan_ids == (PlanID(blocked_id),)
+    assert conflicts[1].reason_code == MessageCode.NO_VALID_WINDOW_FOR_TASK
+    assert conflicts[1].conflicting_plan_ids == (PlanID(empty_windows_id),)
+
+
+def _schedulable_from_resolved(task: ResolvedTask) -> SchedulableTask:
+    return SchedulableTask(
+        plan_id=task.plan_id,
+        duration_minutes=task.duration_minutes,
+        divisible=task.divisible,
+        minimum_chunk_size_minutes=task.minimum_chunk_size_minutes,
+        effective_time_windows=task.effective_time_windows,
+        priority_path=task.priority_path,
     )
 
 

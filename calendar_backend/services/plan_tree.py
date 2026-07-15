@@ -15,10 +15,7 @@ from calendar_backend.deletion.preview_service import (
     DeletionPreviewService,
     _load_deletion_graph,  # pyright: ignore[reportPrivateUsage]
 )
-from calendar_backend.domain.deletion import (
-    DeletionPreview,
-    plan_deletion_preview_dto_from_deletion_preview,
-)
+from calendar_backend.domain.deletion import DeletionPreview
 from calendar_backend.domain.dtos import PlanDeletionPreviewDTO
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
@@ -96,19 +93,26 @@ class PlanTreeService:
             return fail(*preview_result.errors)
 
         assert preview_result.value is not None
-        return ok(plan_deletion_preview_dto_from_deletion_preview(preview_result.value))
+        preview = preview_result.value
+        return ok(
+            PlanDeletionPreviewDTO(
+                root_plan_id=preview.root_plan_id,
+                affected_plan_ids=preview.affected_plan_ids,
+                affected_calendar_entry_ids=preview.affected_calendar_entry_ids,
+                warnings=preview.warnings,
+            )
+        )
 
     def delete_plan(self, plan_id: PlanID) -> ServiceResult[None]:
-        preview_result = DeletionPreviewService(self._session, self._clock).preview_delete_plan(
-            plan_id
-        )
-        if not preview_result.success:
-            return fail(*preview_result.errors)
-
-        assert preview_result.value is not None
-        preview = preview_result.value
-
+        preview_service = DeletionPreviewService(self._session, self._clock)
         with transaction(self._session) as txn:
+            preview_result = preview_service.preview_delete_plan_in_txn(txn, plan_id)
+            if not preview_result.success:
+                return fail(*preview_result.errors)
+
+            assert preview_result.value is not None
+            preview = preview_result.value
+
             master = txn.scalar(select(Plan).where(Plan.is_master))
             if master is not None and PlanID(master.plan_id) in preview.affected_plan_ids:
                 return fail(

@@ -6,7 +6,7 @@ import importlib.util
 import time
 from datetime import datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
@@ -34,7 +34,7 @@ from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.scheduling import decomposition
-from calendar_backend.scheduling.exact_cp_sat import ExactAssignmentSolver
+from calendar_backend.scheduling.exact_cp_sat import solve_exact_component
 from calendar_backend.scheduling.feasibility import validate_full_assignment
 from calendar_backend.scheduling.heuristic import HeuristicAssignmentSolver
 from calendar_backend.scheduling.input import (
@@ -45,11 +45,14 @@ from calendar_backend.scheduling.input import (
 from calendar_backend.scheduling.types import (
     AssignmentSolverResult,
     TaskAssignment,
-    feasible_result,
+    exact_feasible_result,
+    exact_optimal_result,
     infeasible_result,
     is_usable_solver_result,
+    weakest_solver_status,
 )
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.calendar_state import load_or_create_active_calendar_state
 from calendar_backend.services.master_horizon import validate_run_started_at
 
 
@@ -75,25 +78,25 @@ class TaskAssignmentService:
         if precondition_error is not None:
             return fail(precondition_error)
 
-        settings_result = AppSettingsService(self._session, self._clock).get_settings()
-        if not settings_result.success or settings_result.value is None:
-            if settings_result.errors:
-                return fail(settings_result.errors[0])
-            return fail(
-                ServiceMessage(
-                    code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
-                    message="App settings could not be loaded",
-                    details={},
-                )
-            )
-        settings = settings_result.value
-
-        exact_unavailable_error = _exact_solver_unavailable_error(settings)
-        if exact_unavailable_error is not None:
-            return fail(exact_unavailable_error)
-
         with transaction(self._session) as txn:
-            task_entries = _load_task_calendar_entries(txn)
+            settings_result = AppSettingsService(txn, self._clock).get_settings()
+            if not settings_result.success or settings_result.value is None:
+                if settings_result.errors:
+                    return fail(settings_result.errors[0])
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.ACTIVE_CALENDAR_RUN_NOT_SET,
+                        message="App settings could not be loaded",
+                        details={},
+                    )
+                )
+            settings = settings_result.value
+
+            exact_unavailable_error = _exact_solver_unavailable_error(settings)
+            if exact_unavailable_error is not None:
+                return fail(exact_unavailable_error)
+
+            task_entries = _load_task_calendar_entries(txn, run_started_at=run_started_at)
             occupied_intervals = occupied_intervals_from_calendar_entries(
                 task_entries,
                 run_started_at,
@@ -200,14 +203,25 @@ def _solver_limits_from_settings(settings: AppSettingsDTO) -> SolverLimits:
     )
 
 
-def _load_task_calendar_entries(session: Session) -> tuple[CalendarEntry, ...]:
+def _load_task_calendar_entries(
+    session: Session,
+    *,
+    run_started_at: datetime,
+) -> tuple[CalendarEntry, ...]:
     state = session.get(ActiveCalendarState, 1)
     if state is None or state.active_calendar_run_id is None:
         return ()
 
+    active_calendar_run_id = state.active_calendar_run_id
     return tuple(
         session.scalars(
-            select(CalendarEntry).where(CalendarEntry.entry_type == CalendarEntryType.TASK)
+            select(CalendarEntry).where(
+                CalendarEntry.entry_type == CalendarEntryType.TASK,
+                or_(
+                    CalendarEntry.start_time < run_started_at,
+                    CalendarEntry.calendar_run_id == active_calendar_run_id,
+                ),
+            )
         ).all()
     )
 
@@ -218,46 +232,99 @@ def _solve_assignment(
     heuristic_enabled: bool,
 ) -> tuple[AssignmentSolverResult, int]:
     started = time.perf_counter()
-    exact_result = ExactAssignmentSolver().solve(assignment_input)
-    if is_usable_solver_result(exact_result):
+
+    if not assignment_input.tasks:
         runtime_ms = int((time.perf_counter() - started) * 1000)
-        return exact_result, runtime_ms
+        return exact_optimal_result(()), runtime_ms
 
-    if not heuristic_enabled:
-        runtime_ms = int((time.perf_counter() - started) * 1000)
-        return exact_result, runtime_ms
-
-    heuristic_result = _solve_heuristic_per_component(assignment_input)
-    runtime_ms = int((time.perf_counter() - started) * 1000)
-    return heuristic_result, runtime_ms
-
-
-def _solve_heuristic_per_component(
-    assignment_input: AssignmentInput,
-) -> AssignmentSolverResult:
     base_components = decomposition.decompose_assignment_input(assignment_input)
     prior_solved_assignments: tuple[TaskAssignment, ...] = ()
+    component_statuses: list[SolverStatus] = []
+    all_warnings: list[ServiceMessage] = []
+    used_heuristic = False
 
     for component_index in range(len(base_components)):
         component = decomposition.iter_component_sub_inputs(
             assignment_input,
             prior_solved_assignments=prior_solved_assignments,
         )[component_index]
-        component_input = decomposition.assignment_input_from_component(component)
-        component_result = HeuristicAssignmentSolver().solve(component_input)
-        if component_result.status == SolverStatus.INFEASIBLE:
-            return component_result
+        exact_result = solve_exact_component(component)
+        if is_usable_solver_result(exact_result):
+            prior_solved_assignments = (
+                *prior_solved_assignments,
+                *exact_result.assignments,
+            )
+            component_statuses.append(exact_result.status)
+            all_warnings.extend(exact_result.warnings)
+            continue
 
+        if not heuristic_enabled:
+            runtime_ms = int((time.perf_counter() - started) * 1000)
+            return exact_result, runtime_ms
+
+        component_input = decomposition.assignment_input_from_component(component)
+        heuristic_result = HeuristicAssignmentSolver().solve(component_input)
+        if heuristic_result.status == SolverStatus.INFEASIBLE:
+            runtime_ms = int((time.perf_counter() - started) * 1000)
+            return heuristic_result, runtime_ms
+
+        used_heuristic = True
         prior_solved_assignments = (
             *prior_solved_assignments,
-            *component_result.assignments,
+            *heuristic_result.assignments,
         )
+        component_statuses.append(SolverStatus.FEASIBLE)
+        all_warnings.extend(heuristic_result.warnings)
 
     validation_failure = validate_full_assignment(assignment_input, prior_solved_assignments)
     if validation_failure is not None:
-        return infeasible_result(validation_failure)
+        runtime_ms = int((time.perf_counter() - started) * 1000)
+        return infeasible_result(validation_failure), runtime_ms
 
-    return feasible_result(prior_solved_assignments)
+    runtime_ms = int((time.perf_counter() - started) * 1000)
+    return (
+        _aggregate_mixed_solver_result(
+            prior_solved_assignments,
+            component_statuses,
+            tuple(all_warnings),
+            used_heuristic=used_heuristic,
+        ),
+        runtime_ms,
+    )
+
+
+def _aggregate_mixed_solver_result(
+    assignments: tuple[TaskAssignment, ...],
+    component_statuses: list[SolverStatus],
+    warnings: tuple[ServiceMessage, ...],
+    *,
+    used_heuristic: bool,
+) -> AssignmentSolverResult:
+    if used_heuristic:
+        merged_warnings = list(warnings)
+        if not any(warning.code == MessageCode.HEURISTIC_FEASIBLE for warning in merged_warnings):
+            merged_warnings.append(
+                ServiceMessage(
+                    code=MessageCode.HEURISTIC_FEASIBLE,
+                    message="Heuristic solver produced a feasible assignment",
+                    details={},
+                )
+            )
+        aggregate_status = weakest_solver_status(*component_statuses)
+        if aggregate_status == SolverStatus.OPTIMAL:
+            aggregate_status = SolverStatus.FEASIBLE
+        return AssignmentSolverResult(
+            status=aggregate_status,
+            assignments=assignments,
+            warnings=tuple(merged_warnings),
+            failure=None,
+        )
+
+    aggregate_status = weakest_solver_status(*component_statuses)
+    if aggregate_status == SolverStatus.OPTIMAL:
+        return exact_optimal_result(assignments)
+    limit_reached = any(warning.code == MessageCode.SOLVER_LIMIT_REACHED for warning in warnings)
+    return exact_feasible_result(assignments, limit_reached=limit_reached)
 
 
 def _normalize_infeasible_solver_result(
@@ -302,7 +369,7 @@ def _persist_failed_assignment(
     session.add(calendar_run)
     session.flush()
 
-    active_state = _load_or_create_active_calendar_state(session, clock)
+    active_state = load_or_create_active_calendar_state(session, clock)
     active_state.last_refresh_failed = True
     active_state.last_failure_at = now
     active_state.last_failure_reason = LastFailureReason.ASSIGNMENT_FAILED
@@ -374,7 +441,7 @@ def _persist_successful_assignment(
         session.add(entry)
         inserted_entries.append(entry)
 
-    active_state = _load_or_create_active_calendar_state(session, clock)
+    active_state = load_or_create_active_calendar_state(session, clock)
     active_state.active_calendar_run_id = calendar_run.calendar_run_id
     active_state.last_refresh_failed = False
     active_state.last_failure_at = None
@@ -391,25 +458,6 @@ def _persist_successful_assignment(
         runtime_ms=runtime_ms,
         calendar_run_id=CalendarRunID(calendar_run.calendar_run_id),
     )
-
-
-def _load_or_create_active_calendar_state(session: Session, clock: Clock) -> ActiveCalendarState:
-    row = session.get(ActiveCalendarState, 1)
-    if row is not None:
-        return row
-
-    now = clock.now_utc()
-    row = ActiveCalendarState(
-        singleton_id=1,
-        active_calendar_run_id=None,
-        last_refresh_failed=False,
-        last_failure_at=None,
-        last_failure_reason=None,
-        updated_at=now,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _new_calendar_run(
