@@ -99,16 +99,15 @@ class PlanTreeService:
         return ok(plan_deletion_preview_dto_from_deletion_preview(preview_result.value))
 
     def delete_plan(self, plan_id: PlanID) -> ServiceResult[None]:
-        preview_result = DeletionPreviewService(self._session, self._clock).preview_delete_plan(
-            plan_id
-        )
-        if not preview_result.success:
-            return fail(*preview_result.errors)
-
-        assert preview_result.value is not None
-        preview = preview_result.value
-
+        preview_service = DeletionPreviewService(self._session, self._clock)
         with transaction(self._session) as txn:
+            preview_result = preview_service.preview_delete_plan_in_txn(txn, plan_id)
+            if not preview_result.success:
+                return fail(*preview_result.errors)
+
+            assert preview_result.value is not None
+            preview = preview_result.value
+
             master = txn.scalar(select(Plan).where(Plan.is_master))
             if master is not None and PlanID(master.plan_id) in preview.affected_plan_ids:
                 return fail(
