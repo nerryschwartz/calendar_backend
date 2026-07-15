@@ -36,13 +36,11 @@ from calendar_backend.domain.ids import CalendarEntryID, CalendarRunID, FreeTime
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChain
-from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.free_time import FreeTimeActivity
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
 from calendar_backend.models.runs import ActiveCalendarState
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.master_horizon import get_master_horizon_end, validate_run_started_at
+from calendar_backend.services.task_resolution import load_plan_graph
 
 
 class FreeTimeAssignmentService:
@@ -141,7 +139,7 @@ def _load_assignment_inputs(
     activity_dtos = tuple(free_time_activity_dto_from_row(activity) for activity in activities)
     activities_by_id = {dto.free_time_activity_id: dto for dto in activity_dtos}
 
-    plans = _load_plan_graph(session)
+    plans = load_plan_graph(session)
     graph = free_time_plan_graph_from_plans(plans)
     blocked = blocked_activity_ids(activity_dtos, graph)
     effective_fractions = compute_effective_fractions(activity_dtos, blocked)
@@ -223,20 +221,5 @@ def _load_all_activities(session: Session) -> tuple[FreeTimeActivity, ...]:
             select(FreeTimeActivity)
             .options(selectinload(FreeTimeActivity.prerequisites))
             .order_by(FreeTimeActivity.name, FreeTimeActivity.free_time_activity_id)
-        ).all()
-    )
-
-
-def _load_plan_graph(session: Session) -> tuple[Plan, ...]:
-    return tuple(
-        session.scalars(
-            select(Plan).options(
-                selectinload(Plan.goal_plan)
-                .selectinload(GoalPlan.chains)
-                .selectinload(GoalChildChain.items),
-                selectinload(Plan.task_plan),
-                selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
-                selectinload(Plan.constraint_groups).selectinload(TimeConstraintGroup.windows),
-            )
         ).all()
     )
