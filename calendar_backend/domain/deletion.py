@@ -185,17 +185,6 @@ def build_deletion_preview(
     )
 
 
-def plan_deletion_preview_dto_from_deletion_preview(
-    preview: DeletionPreview,
-) -> PlanDeletionPreviewDTO:
-    return PlanDeletionPreviewDTO(
-        root_plan_id=preview.root_plan_id,
-        affected_plan_ids=preview.affected_plan_ids,
-        affected_calendar_entry_ids=preview.affected_calendar_entry_ids,
-        warnings=preview.warnings,
-    )
-
-
 def generate_deletion_operations(
     conflict: AssignmentConflict,
     *,
