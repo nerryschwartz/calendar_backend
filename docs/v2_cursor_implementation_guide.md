@@ -64,6 +64,7 @@ These V1 sections remain valid unless this document or the V2 design says otherw
 - Layer boundaries (`.cursor/rules/10-layer-boundaries.mdc`)
 - Abstraction discipline, testing expectations, planning slice rules
 - Cursor commands: `/request-questions`, `/draft-plan`, `/revise-plan`, `/build-plan-slice`, `/small-change`, `/commit-changes`, `/review-validation`, `/review-consistency`, `/review-abstractions`
+- For the full V2 single-PR pipeline, use [`.cursor/commands/run-v2-implementation.md`](../.cursor/commands/run-v2-implementation.md) (see [`docs/v2_cursor_implementation_guide.md`](v2_cursor_implementation_guide.md) §2.1).
 - Scripts under `scripts/cursor/`
 - Alembic tutorial (§8 below) — **except** use the five-step slice split (§0.2)
 - Test-creation slice convention (§7 below)
@@ -85,6 +86,48 @@ These V1 sections remain valid unless this document or the V2 design says otherw
 ---
 
 ## 2. How to use Cursor for V2
+
+### 2.1 Single-PR loop (recommended for phases 0–7)
+
+Use [`.cursor/commands/run-v2-implementation.md`](../.cursor/commands/run-v2-implementation.md) on one branch for the full V2 pipeline:
+
+```text
+/run-v2-implementation
+  Resume: true
+```
+
+State lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). The command runs **one step per invocation**, then exits so you can switch Plan/Agent mode when required.
+
+**Plan mode** (once per phase, at plan bootstrap):
+
+1. `/request-questions` with `Mode: plan` — **only** at `phase_N_request_questions`
+2. `/draft-plan` → finalize in `docs/plans/<phase>.md`
+3. Non-interactive commit of the finalized plan doc
+
+**Agent mode** (all build slices until the next phase plan):
+
+1. `/build-plan-slice` (or Alembic five-step: pre-alembic → preview → manual edit → continue → post-alembic)
+2. `/review-validation` and `/review-consistency` on the diff
+3. `/audit-commit-readiness` and `/review-abstractions` before commit
+4. `python scripts/cursor/commit_changes.py --non-interactive --skip-tests --message "…"`
+5. At **end of each phase**: `bash scripts/cursor/checks.sh` (full ruff, pyright, pytest)
+
+**Mode handoff:** if the command reports a mode mismatch, switch Cursor to the required mode and re-invoke with `Resume: true`. Do not use chat approval between slices — the loop advances via state file updates.
+
+**Slice ambiguity:** ask in Agent-mode chat during `/build-plan-slice`; do **not** run `/request-questions` on build slices.
+
+Initialize or reset state:
+
+```bash
+uv run python scripts/cursor/v2_loop_state.py init
+uv run python scripts/cursor/v2_loop_state.py validate
+```
+
+See [Loop Design Spec](plans/v2_implementation_loop_command.md#loop-design-spec) for commit policy, skip-if-done rules, and Alembic no-double-commit rules.
+
+### 2.2 Manual per-phase workflow
+
+When not using the loop command:
 
 ```text
 1. Open Cursor in the repo; start a branch for the V2 phase.

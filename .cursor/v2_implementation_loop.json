@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "branch": "new-design-and-implementation-doc",
+  "next_required_mode": "plan",
+  "next_step": "phase_1_plan_bootstrap",
+  "current_phase": 1,
+  "current_plan_path": "docs/plans/v2_flat_goal_children.md",
+  "current_slice_id": null,
+  "skip_tests_on_commit": true,
+  "completed_steps": [
+    "phase_0_verify"
+  ],
+  "alembic_group": null,
+  "plan_mode_escape_hatches": []
+}
