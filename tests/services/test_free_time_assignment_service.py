@@ -286,17 +286,6 @@ def _calendar_entry_count(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(CalendarEntry)) or 0
 
 
-def _free_time_entry_count(session: Session) -> int:
-    return (
-        session.scalar(
-            select(func.count())
-            .select_from(CalendarEntry)
-            .where(CalendarEntry.entry_type == CalendarEntryType.FREE_TIME)
-        )
-        or 0
-    )
-
-
 def _normalize_entry_time(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 

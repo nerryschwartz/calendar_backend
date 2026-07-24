@@ -31,6 +31,7 @@ from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
+from calendar_backend.scheduling.decomposition import AssignmentComponent
 from calendar_backend.scheduling.exact_cp_sat import solve_exact_component
 from calendar_backend.scheduling.input import AssignmentInput, SchedulableTask, SolverLimits
 from calendar_backend.scheduling.types import (
@@ -503,7 +504,7 @@ def test_assign_tasks_falls_back_to_heuristic_when_exact_not_usable(
 ) -> None:
     _bootstrap_narrow_assignable_task(service_db_session)
 
-    def exact_not_usable(component) -> AssignmentSolverResult:
+    def exact_not_usable(component: AssignmentComponent) -> AssignmentSolverResult:
         del component
         return AssignmentSolverResult(
             status=SolverStatus.INFEASIBLE,
@@ -613,7 +614,7 @@ def test_assign_tasks_loads_stability_hints_from_future_task_entries(
     captured_inputs: list[AssignmentInput] = []
     original_solve = solve_exact_component
 
-    def capture_exact_solve(component) -> AssignmentSolverResult:
+    def capture_exact_solve(component: AssignmentComponent) -> AssignmentSolverResult:
         captured_inputs.append(
             AssignmentInput(
                 run_started_at=component.run_started_at,
@@ -736,7 +737,7 @@ def test_solve_assignment_mixed_exact_then_heuristic_per_component(
     )
     calls: list[int] = []
 
-    def fake_solve_exact_component(component) -> AssignmentSolverResult:
+    def fake_solve_exact_component(component: AssignmentComponent) -> AssignmentSolverResult:
         calls.append(1)
         if len(calls) == 1:
             return exact_optimal_result(exact_assignments)
@@ -802,7 +803,7 @@ def test_assign_tasks_ignores_stale_future_entries_from_other_calendar_runs(
     captured_inputs: list[AssignmentInput] = []
     original_solve = solve_exact_component
 
-    def capture_exact_solve(component) -> AssignmentSolverResult:
+    def capture_exact_solve(component: AssignmentComponent) -> AssignmentSolverResult:
         captured_inputs.append(
             AssignmentInput(
                 run_started_at=component.run_started_at,
