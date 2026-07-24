@@ -1,6 +1,6 @@
 # Repository code conventions
 
-These conventions take precedence over `docs/calendar_backend_v1_engineering_design_updated.pdf`, `docs/cursor_implementation_guide.md`, finalized plans in `docs/plans/`, and existing code.
+These conventions take precedence over `docs/v2_engineering_design.md`, `docs/v2_cursor_implementation_guide.md`, archived V1 PDF/guide, finalized plans in `docs/plans/`, and existing code.
 
 Add or change conventions only via [`/add-repo-convention`](commands/add-repo-convention.md).
 
@@ -395,3 +395,29 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 - No test that `reopen` does not detach — incidental, not a guarantee.
 
 **Aligns with:** [§7](#7-plan-tree-invariant-ideal-shape); [testing and checks](../rules/20-testing-and-checks.mdc), [planning slices](../rules/30-planning-slices.mdc).
+
+---
+
+## 20. V2 design supersessions (documentation authority)
+
+**Scope:** Planning and implementation after adoption of V2 documentation (`docs/v2_engineering_design.md`, `docs/v2_cursor_implementation_guide.md`).
+
+**Rule:**
+
+- **Architecture and behavior:** Follow `docs/v2_engineering_design.md` when no numbered convention in this file applies.
+- **Cursor workflow:** Follow `docs/v2_cursor_implementation_guide.md` for slice workflow, migration five-step split, and V2 phase sequencing.
+- **Archived V1:** `docs/calendar_backend_v1_engineering_design_updated.pdf` and `docs/cursor_implementation_guide.md` are historical unless V2 docs explicitly reference them for unchanged tooling (Alembic style, layer boundaries, scripts).
+- **Contradictions:** When V2 docs conflict with archived V1 docs, **V2 wins**. Record any intentional exception in this file via `/add-repo-convention`.
+
+**V2 behavioral supersessions (summary — detail in V2 design):**
+
+| Topic | V1 | V2 |
+|---|---|---|
+| Goal child layout | `GoalChildChain` / items | Direct child ordering fields on `Plan` under goals |
+| Precedence | Chain adjacency edges | Plan prerequisites + immediate touch prerequisites |
+| Plan relationships | No plan-level prereq DAG | Unordered plan prerequisite DAG (cycle-checked) |
+| Calendar | Task `CalendarEntry` only | Task calendar + separate `BlockCalendarEntry` |
+| Scheduling | Single task assignment pass | Two-phase: blocks then tasks |
+| Migration slices | Sometimes bundled in one slice | Five-step: pre-alembic → preview → edit → continue → post-alembic |
+
+**Aligns with:** [00-project-source-of-truth](../rules/00-project-source-of-truth.mdc); V2 implementation guide §0.
