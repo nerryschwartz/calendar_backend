@@ -41,6 +41,12 @@ class Plan(Base):
             "NOT is_master OR plan_kind = 'GOAL'",
             name="master_is_goal",
         ),
+        CheckConstraint(
+            "(goal_is_critical IS NULL AND goal_sort_order IS NULL) "
+            "OR (goal_is_critical IS NOT NULL AND goal_sort_order IS NOT NULL "
+            "AND goal_sort_order >= 0)",
+            name="goal_child_ordering_fields_paired",
+        ),
         Index(
             "uq_plan_is_master",
             "is_master",
@@ -70,6 +76,8 @@ class Plan(Base):
         Enum(CloneStatus, native_enum=False),
         nullable=False,
     )
+    goal_is_critical: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    goal_sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
