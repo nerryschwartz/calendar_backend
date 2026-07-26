@@ -419,6 +419,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def complete_step(state: dict[str, Any], step_id: str) -> tuple[dict[str, Any], list[str]]:
+    state = advance_after_step(state, step_id)
+    return state, validate_state(state)
+
+
 def cmd_complete(args: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         print(f"Missing state file: {STATE_PATH}")
@@ -426,14 +431,37 @@ def cmd_complete(args: argparse.Namespace) -> int:
     state = load_state()
     if state.get("next_step") != args.step_id:
         print(f"WARNING: completing {args.step_id!r} but next_step is {state.get('next_step')!r}")
-    state = advance_after_step(state, args.step_id)
-    errors = validate_state(state)
+    state, errors = complete_step(state, args.step_id)
     if errors:
         for error in errors:
             print(f"ERROR: {error}")
         return 1
     save_state(state)
     print(json.dumps(state, indent=2))
+    return 0
+
+
+def cmd_fast_forward(_args: argparse.Namespace) -> int:
+    if not STATE_PATH.is_file():
+        print(f"Missing state file: {STATE_PATH}")
+        return 1
+    state = load_state()
+    completed_ids: list[str] = []
+    for _ in range(64):
+        step = state.get("next_step")
+        if not isinstance(step, str) or step == "done":
+            break
+        is_bootstrap = re.match(r"phase_\d+_plan_bootstrap$", step) is not None
+        if not is_bootstrap and not skip_if_done(state, step):
+            break
+        state, errors = complete_step(state, step)
+        if errors:
+            for error in errors:
+                print(f"ERROR: {error}")
+            return 1
+        completed_ids.append(step)
+    save_state(state)
+    print(json.dumps({"fast_forwarded": completed_ids, "state": state}, indent=2))
     return 0
 
 
@@ -471,12 +499,18 @@ def main() -> int:
 
     subparsers.add_parser("show", help="Print current state and next step metadata")
 
+    subparsers.add_parser(
+        "fast-forward",
+        help="Auto-complete skip-if-done steps until substantive work (agent-only)",
+    )
+
     args = parser.parse_args()
     handlers = {
         "validate": cmd_validate,
         "init": cmd_init,
         "complete": cmd_complete,
         "show": cmd_show,
+        "fast-forward": cmd_fast_forward,
     }
     return handlers[args.command](args)
 

@@ -93,37 +93,25 @@ Use [`.cursor/commands/run-v2-implementation.md`](../.cursor/commands/run-v2-imp
 
 ```text
 /run-v2-implementation
-  Resume: true
 ```
 
-State lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). The command runs **one step per invocation**, then exits so you can switch Plan/Agent mode when required.
+**Your only interactions:**
 
-**Plan mode** (once per phase, at plan bootstrap):
+1. Switch Cursor **Plan / Agent** mode when the loop tells you to
+2. Invoke **`/run-v2-implementation`** (no parameters)
+3. Answer **`AskQuestion`** prompts during phase plan clarification (once per phase)
 
-1. `/request-questions` with `Mode: plan` — **only** at `phase_N_request_questions`
-2. `/draft-plan` → finalize in `docs/plans/<phase>.md`
-3. Non-interactive commit of the finalized plan doc
+The agent runs all state updates, nested workflows, commits, checks, and migration edits internally. Do **not** run shell scripts or other slash commands during the loop.
 
-**Agent mode** (all build slices until the next phase plan):
+Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). One substantive step runs per invocation; no-op steps fast-forward automatically.
 
-1. `/build-plan-slice` (or Alembic five-step: pre-alembic → preview → manual edit → continue → post-alembic)
-2. `/review-validation` and `/review-consistency` on the diff
-3. `/audit-commit-readiness` and `/review-abstractions` before commit
-4. `python scripts/cursor/commit_changes.py --non-interactive --skip-tests --message "…"`
-5. At **end of each phase**: `bash scripts/cursor/checks.sh` (full ruff, pyright, pytest)
+**Mode handoff:** if the loop reports a mode mismatch, switch mode and invoke `/run-v2-implementation` again.
 
-**Mode handoff:** if the command reports a mode mismatch, switch Cursor to the required mode and re-invoke with `Resume: true`. Do not use chat approval between slices — the loop advances via state file updates.
+**Slice ambiguity:** the agent uses `AskQuestion` when needed — not freeform chat and not phase-plan clarification on build slices.
 
-**Slice ambiguity:** ask in Agent-mode chat during `/build-plan-slice`; do **not** run `/request-questions` on build slices.
+At loop `done`, open your PR manually (the agent does not run `gh pr create`).
 
-Initialize or reset state:
-
-```bash
-uv run python scripts/cursor/v2_loop_state.py init
-uv run python scripts/cursor/v2_loop_state.py validate
-```
-
-See [Loop Design Spec](plans/v2_implementation_loop_command.md#loop-design-spec) for commit policy, skip-if-done rules, and Alembic no-double-commit rules.
+See [Loop Design Spec](plans/v2_implementation_loop_command.md#loop-design-spec) for commit policy, skip-if-done rules, and Alembic automation.
 
 ### 2.2 Manual per-phase workflow
 

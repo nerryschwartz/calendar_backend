@@ -113,3 +113,23 @@ If no red flags or manual edits are likely, say so explicitly.
 Stop after preview output and wait for manual migration approval.
 
 The user edits the migration script as needed, then runs `/db-revision-continue`.
+
+## When called from `/run-v2-implementation` (loop context)
+
+This step maps to `phase_N_slice_<id>_alembic_preview`. The user does **not** invoke this command or edit migrations.
+
+**In preview step (`alembic_preview`):**
+
+- Follow sections 1–4 above (autogenerate + structured review report).
+- **Do not edit** the migration file in this step.
+- **Do not** wait for user approval.
+- Store the preview report in the agent turn for the next loop step.
+
+**In the next loop step (`migration_manual_edit`):**
+
+- Agent **applies** all preview-suggested edits to the revision file (CHECKs, batch mode, naming, ruff).
+- **No AskQuestion** and no user file edit.
+- Then the loop advances to `alembic_continue` (follow [`db-revision-continue.md`](db-revision-continue.md) internally).
+
+Standalone `/db-revision-preview` (outside the loop) keeps report-only behavior and manual user edit before continue.
+

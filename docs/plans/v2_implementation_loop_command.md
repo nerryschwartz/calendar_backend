@@ -317,15 +317,15 @@ None.
 | C3 | Phase 0 + idempotency | **Include Phase 0** in the state machine. **Skip-if-done** runs before **every** phase and slice step when its completion predicate is already satisfied (covers mostly-done Phase 0). | SC-11 |
 | C4 | Check suite timing | Run **[`scripts/cursor/checks.sh`](../../scripts/cursor/checks.sh)** (ruff format, ruff check, pyright, pytest) at **end of each V2 phase** and again when `next_step` is `done`. Loop commits still pass `--skip-tests`. | SC-9, SC-12 |
 | C5 | Plan file mapping | **One finalized plan per phase 0–7** (split old V2-3 mega-plan). See [Phase → plan paths](#phase--plan-paths) below. | A2, guide §9 |
-| C6 | Human approval | **No chat approval** between slices. Advance with **`Resume: true`**; **one state step per invocation**; command exits after each step with resume instructions. | SC-13 |
+| C6 | Human approval | **No chat approval** between slices. User re-invokes **`/run-v2-implementation`** only; **one substantive step per invocation**; command exits after each step with resume instructions. | SC-13 |
 | C7 | Non-interactive staging | **`commit_changes.py --non-interactive --message "…"`** stages **all working-tree changes** (tracked + untracked, non-ignored). No `input()` prompts. | SC-1, SC-10 |
-| C8 | Pre-commit reviews | Run **`/audit-commit-readiness`** then **`/review-abstractions`** before each loop commit step. Auto-fix only within **current step scope**; otherwise stop and report. | SC-14 |
+| C8 | Pre-commit reviews | Run audit-commit-readiness then review-abstractions before each loop commit step. **Auto-fix only in current step scope**; if still blocked, **stop** with error — user re-invokes `/run-v2-implementation` (no chat override). | SC-14 |
 
 ### Runtime `/request-questions` policy
 
 - **Runtime loop:** `/request-questions` **only** at `phase_N_plan_bootstrap` steps (`Mode: plan`), before `/draft-plan`.
 - **Not in runtime loop:** build slices, pre-alembic, Alembic preview/manual-edit/continue, post-alembic, commit steps.
-- **Slice ambiguity during build:** Agent-mode chat (blocking question in thread), not `/request-questions`.
+- **Slice ambiguity during build:** **`AskQuestion` tool** only when unavoidable; not phase-plan clarification.
 - **Meta-plan (this document):** `/request-questions` allowed manually between slices A–E; not encoded in `v2_implementation_loop.json`.
 
 ### Phase → plan paths
@@ -415,7 +415,7 @@ phase_0_verify [Agent] verify authority files → commit if missing → phase_1_
 | `_build` | `/build-plan-slice` | Yes (C1, C7) | Includes review-validation + review-consistency per build-plan-slice |
 | `_pre_alembic` | `/build-plan-slice` | Yes | ORM/schema only |
 | `_alembic_preview` | `/db-revision-preview` | **No** | SC-5 |
-| `_migration_manual_edit` | Human or `/small-change` | **No** | Pause until user approves migration file; SC-6 |
+| `_migration_manual_edit` | Agent applies preview edits | **No** | Loop auto-edits revision; no user edit, no AskQuestion (SC-6) |
 | `_alembic_continue` | `/db-revision-continue` | Yes (internal) | **No second loop commit** after continue (SC-7) |
 | `_post_alembic` | `/build-plan-slice` | Yes | Remove `failure_expected` markers per continue |
 
@@ -425,8 +425,8 @@ Alembic middle steps set `alembic_group.substep`; loop does not call `commit_cha
 
 For every step with `commit: true`:
 
-1. `/audit-commit-readiness` on working tree — stop on blocking findings unless user override in chat (loop has no override).
-2. `/review-abstractions` on diff — no edits unless auto-fix in current step scope (C8).
+1. Audit-commit-readiness on working tree — auto-fix blocking findings in current step scope; **stop** if still blocked (no chat override).
+2. Review-abstractions on diff — auto-fix only in current step scope (C8).
 3. `python scripts/cursor/commit_changes.py --non-interactive --message "<message>" --skip-tests`
 4. Append step ID to `completed_steps`; advance `next_step`.
 
@@ -437,7 +437,7 @@ For every step with `commit: true`:
 If Cursor mode ≠ `next_required_mode`, command **does not** advance state. Exit message must include:
 
 - Current `next_step` and required mode
-- Exact re-invocation: `/run-v2-implementation` with `Resume: true`
+- Exact re-invocation: `/run-v2-implementation`
 
 ### Phase 1 dry-run step IDs (Slice E reference)
 
@@ -493,3 +493,4 @@ When `next_step` is `done`:
 - **Slice D / E:** state schema, acceptance criteria, dry-run, and **Runtime loop pattern** updated for Agent-only stretches between phase plans.
 - **Diagram:** replaced meta-plan vs runtime-loop mermaid to separate building the command from running it.
 - **Slice C:** published [Loop Design Spec](#loop-design-spec); resolved forks C1–C8; locked `plan_mode_escape_hatches: []`; phase-end `checks.sh`; one commit per loop step; skip-if-done matrix; state schema v1; Phase 1 dry-run step ID catalog.
+- **Zero-friction UX:** loop command is closed orchestrator; user only switches mode, invokes `/run-v2-implementation`, and answers AskQuestion; migration manual edit automated.
