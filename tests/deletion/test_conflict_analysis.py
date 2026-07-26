@@ -53,7 +53,6 @@ def _resolved_task(
         priority_path=priority_path,
         criticality_path=(),
         parent_path=(PlanID(plan_id),),
-        chain_path=(),
         validation_errors=(),
     )
 
@@ -142,7 +141,6 @@ def test_analyze_returns_multiple_staged_conflicts_for_solver_plus_input() -> No
                 priority_path=(1,),
                 criticality_path=(),
                 parent_path=(PlanID(empty_windows_id),),
-                chain_path=(),
                 validation_errors=(),
             ),
         ),

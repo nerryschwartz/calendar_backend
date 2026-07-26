@@ -15,9 +15,8 @@ from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import CalendarRunID, FreeTimeActivityID, PlanID
 from calendar_backend.domain.plan_traversal import (
     collect_descendant_ids,
-    ordered_chains,
+    ordered_goal_children,
     ordered_repetition_instances,
-    sorted_chain_items,
 )
 from calendar_backend.domain.time import TimeWindow, gaps_in_window
 from calendar_backend.models.free_time import FreeTimeActivity
@@ -305,13 +304,15 @@ def _goal_is_logically_complete(
     if goal_plan is None:
         return False
 
-    for chain in ordered_chains(goal_plan):
-        if not chain.is_critical:
+    children = tuple(
+        child for child in graph.plans_by_id.values() if child.parent_id == plan.plan_id
+    )
+    for child in ordered_goal_children(plan, children=children):
+        if not child.goal_is_critical:
             continue
-        for item in sorted_chain_items(chain):
-            child_id = PlanID(item.child_plan_id)
-            if not _is_plan_logically_complete(child_id, graph, memo=memo, visiting=visiting):
-                return False
+        child_id = PlanID(child.plan_id)
+        if not _is_plan_logically_complete(child_id, graph, memo=memo, visiting=visiting):
+            return False
     return True
 
 

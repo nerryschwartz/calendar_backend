@@ -7,11 +7,7 @@ from datetime import UTC, datetime
 
 import calendar_backend.models.constraints  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from calendar_backend.domain.enums import CloneStatus, PlanKind
-from calendar_backend.domain.plan_traversal import (
-    ordered_chains,
-    ordered_goal_children,
-    sorted_chain_items,
-)
+from calendar_backend.domain.plan_traversal import ordered_goal_children
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.plans import GoalPlan, Plan
 
@@ -42,8 +38,14 @@ def _plan(
 
 def _chain_walk_child_ids(goal_plan: GoalPlan) -> tuple[uuid.UUID, ...]:
     child_ids: list[uuid.UUID] = []
-    for chain in ordered_chains(goal_plan):
-        for item in sorted_chain_items(chain):
+    for chain in sorted(
+        goal_plan.chains,
+        key=lambda row: (not row.is_critical, row.sort_order, str(row.goal_child_chain_id)),
+    ):
+        for item in sorted(
+            chain.items,
+            key=lambda row: (row.position, str(row.goal_child_chain_item_id)),
+        ):
             child_ids.append(item.child_plan_id)
     return tuple(child_ids)
 

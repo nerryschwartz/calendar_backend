@@ -84,7 +84,6 @@ def _resolved_task(
         priority_path=priority_path,
         criticality_path=(),
         parent_path=(PlanID(plan_id),),
-        chain_path=(),
         validation_errors=(),
     )
 
@@ -276,7 +275,6 @@ def test_analyze_assignment_conflicts_adds_staged_input_failures_for_other_tasks
         priority_path=(1,),
         criticality_path=(),
         parent_path=(PlanID(empty_windows_id),),
-        chain_path=(),
         validation_errors=(),
     )
     resolved = _resolve_result(

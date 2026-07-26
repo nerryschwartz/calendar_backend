@@ -19,9 +19,8 @@ from calendar_backend.domain.errors import ServiceTransactionAborted
 from calendar_backend.domain.resolution import ResolveTasksResult, resolve_tasks_from_graph
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
-from calendar_backend.models.chains import GoalChildChain
 from calendar_backend.models.constraints import TimeConstraintGroup
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
+from calendar_backend.models.plans import Plan, RepetitionPlan
 from calendar_backend.services.master_horizon import (
     MasterHorizonService,
     validate_run_started_at,
@@ -88,9 +87,7 @@ def load_plan_graph(session: Session) -> tuple[Plan, ...]:
     plans = tuple(
         session.scalars(
             select(Plan).options(
-                selectinload(Plan.goal_plan)
-                .selectinload(GoalPlan.chains)
-                .selectinload(GoalChildChain.items),
+                selectinload(Plan.goal_plan),
                 selectinload(Plan.task_plan),
                 selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
                 selectinload(Plan.constraint_groups).selectinload(TimeConstraintGroup.windows),

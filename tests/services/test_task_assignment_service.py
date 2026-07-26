@@ -296,7 +296,6 @@ def _invalid_incomplete_task() -> tuple[ResolvedTask, ...]:
             priority_path=(0,),
             criticality_path=(),
             parent_path=(PlanID(plan_id),),
-            chain_path=(),
             validation_errors=(
                 ServiceMessage(
                     code=MessageCode.INVALID_DURATION,
@@ -324,7 +323,6 @@ def _invalid_completed_task() -> tuple[ResolvedTask, ...]:
             priority_path=(0,),
             criticality_path=(),
             parent_path=(PlanID(plan_id),),
-            chain_path=(),
             validation_errors=(
                 ServiceMessage(
                     code=MessageCode.INVALID_DURATION,

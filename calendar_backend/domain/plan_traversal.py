@@ -5,8 +5,7 @@ from __future__ import annotations
 import uuid
 from collections import deque
 
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
+from calendar_backend.models.plans import Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 
 
@@ -55,28 +54,6 @@ def ordered_goal_children(
         if child.goal_is_critical is not None and child.goal_sort_order is not None
     ]
     return tuple(sorted(ordered, key=_goal_child_sort_key))
-
-
-def ordered_chains(goal_plan: GoalPlan) -> tuple[GoalChildChain, ...]:
-    return tuple(
-        sorted(
-            goal_plan.chains,
-            key=lambda chain: (
-                not chain.is_critical,
-                chain.sort_order,
-                str(chain.goal_child_chain_id),
-            ),
-        )
-    )
-
-
-def sorted_chain_items(chain: GoalChildChain) -> tuple[GoalChildChainItem, ...]:
-    return tuple(
-        sorted(
-            chain.items,
-            key=lambda item: (item.position, str(item.goal_child_chain_item_id)),
-        )
-    )
 
 
 def ordered_repetition_instances(
