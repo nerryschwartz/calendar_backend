@@ -956,7 +956,6 @@ def test_alembic_upgrade_creates_plan_tables(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_goal_child_chain_tables_absent_after_upgrade(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
