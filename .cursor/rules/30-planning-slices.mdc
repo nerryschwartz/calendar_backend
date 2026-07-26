@@ -3,6 +3,8 @@ description: Planning and slice discipline
 alwaysApply: true
 ---
 
+**`/run-v2-implementation` exception:** When executing [`.cursor/commands/run-v2-implementation.md`](../commands/run-v2-implementation.md), follow its mode-batched lifecycle and overrides instead of stop-after-slice approval, migration-slice manual-workflow gates, or one-step-per-invocation behavior below.
+
 For implementation plans:
 - Draft plans live in ~/.cursor/plans/.
 - Finalized plans live in docs/plans/.

@@ -2,6 +2,20 @@ Drive the V2 single-PR implementation loop using git-tracked state in [`.cursor/
 
 **Authority:** [Loop Design Spec](../../docs/plans/v2_implementation_loop_command.md#loop-design-spec); [`docs/v2_cursor_implementation_guide.md`](../../docs/v2_cursor_implementation_guide.md) §2.1.
 
+## CRITICAL — mode-batched execution
+
+**Do not exit after one loop step.** After the mode gate passes, run every step whose `next_required_mode` equals `batch_mode` in **one invocation** (lifecycle step 6). Only exit when:
+
+- `next_required_mode` ≠ `batch_mode` (batch complete — tell user to switch mode), or
+- a **hard failure** stops the batch (do not `complete`), or
+- `next_step` is `done`.
+
+Optional: list steps in the current batch with `uv run python scripts/cursor/v2_loop_state.py batch-steps`.
+
+**Mode assignment:** **Plan** = `plan_bootstrap`, `request_questions` only. **Agent** = `draft_plan`, `finalize_plan`, all slice substeps, `phase_checks`, `phase_0_verify`, `done`.
+
+If a turn ends on **`AskQuestion`**, the user answers and re-invokes `/run-v2-implementation` **once in the same mode** to resume the batch (state unchanged).
+
 ## User interaction model (locked)
 
 The user may **only**:
@@ -59,7 +73,11 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
 
 6. **Mode-batched loop** — repeat until `next_required_mode` ≠ `batch_mode`, a hard failure stops the batch, or `next_step` is `done`:
 
-   a. Re-read state. If `next_required_mode` ≠ `batch_mode`, go to step 7.
+   a. Re-read state. Run fast-forward, then re-read state:
+      ```bash
+      uv run python scripts/cursor/v2_loop_state.py fast-forward
+      ```
+      If `next_required_mode` ≠ `batch_mode`, go to step 7.
 
    b. If `next_step` is `done`, run the [`done`](#done-agent) handler once, then go to step 7.
 
@@ -71,7 +89,7 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
       ```
       Re-read state. If `next_required_mode` still equals `batch_mode`, return to step 6a.
 
-   **AskQuestion during a batch:** if a step uses `AskQuestion`, wait for the user's answer, finish that step, `complete` it, then continue the batch — do **not** exit the invocation early.
+   **AskQuestion during a batch:** if a step uses `AskQuestion`, wait for the user's answer, finish that step, `complete` it, then continue the batch — do **not** exit the invocation early unless the turn ends (user re-invokes in same mode to resume).
 
    **Hard failure:** report the error, do **not** call `complete`, do **not** advance state; exit the invocation. User fixes and re-invokes in the same mode.
 
@@ -116,11 +134,11 @@ Follow [`.cursor/commands/request-questions.md`](request-questions.md) with `Mod
 
 Do **not** run phase-plan clarification on any other loop step.
 
-### `phase_N_draft_plan` (Plan)
+### `phase_N_draft_plan` (Agent)
 
-Follow [`.cursor/commands/draft-plan.md`](draft-plan.md). Target path: `current_plan_path` in state ([phase → plan paths](../../docs/plans/v2_implementation_loop_command.md#phase--plan-paths)).
+Follow [`.cursor/commands/draft-plan.md`](draft-plan.md) **loop context**. Target path: `current_plan_path` in state ([phase → plan paths](../../docs/plans/v2_implementation_loop_command.md#phase--plan-paths)).
 
-### `phase_N_finalize_plan` (Plan)
+### `phase_N_finalize_plan` (Agent)
 
 Finalize plan in `docs/plans/`, then commit:
 
@@ -249,9 +267,8 @@ Verify every **mode stretch** allows **only** mode switch, one `/run-v2-implemen
 
 | Mode stretch | Steps run in one invocation | User: switch mode after batch? | User: `/run-v2-implementation` | User: AskQuestion? |
 |---|---|---|---|---|
-| Plan — phase 1 plan block | `plan_bootstrap` → `request_questions` → `draft_plan` → `finalize_plan` | yes → Agent | once per Plan stretch | **yes** (during `request_questions` only) |
-| Agent — phase 1 slices + checks | all `phase_1_slice_*` substeps → `phase_1_phase_checks` | yes → Plan (phase 2) | once per Agent stretch | only if slice ambiguous |
-| Plan — phase 2 plan block | `phase_2_plan_bootstrap` → … → `finalize_plan` | yes → Agent | once per Plan stretch | **yes** (during `request_questions` only) |
+| Plan — phase N clarification | `plan_bootstrap` → `request_questions` | yes → Agent | once per Plan stretch | **yes** (during `request_questions` only) |
+| Agent — phase N plan + slices + checks | `draft_plan` → `finalize_plan` → all `phase_N_slice_*` substeps → `phase_N_phase_checks` | yes → Plan (next phase) or done | once per Agent stretch | only if slice ambiguous |
 
 ---
 

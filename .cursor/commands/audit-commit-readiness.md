@@ -47,6 +47,10 @@ Always report:
 2. **Blocking findings** — file + one-line issue + why it is major/obvious (or **None**)
 3. **Non-blocking notes** (optional, at most a few — only if useful context, not a full review)
 
+## When called from `/run-v2-implementation` (loop context)
+
+During loop commit steps: auto-fix blocking findings within the current step scope when possible. If still blocked, **stop the batch** (do not `complete` the step) — not a chat-approval stop. User re-invokes `/run-v2-implementation` in the same mode after fixes.
+
 ## Stop rule for `/commit-changes`
 
 - If **any blocking** finding: **stop** the commit workflow. List findings; do not run `/review-abstractions` or `commit_changes.py` unless the user explicitly says to proceed anyway.

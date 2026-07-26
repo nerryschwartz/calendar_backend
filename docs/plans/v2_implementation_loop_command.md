@@ -189,7 +189,7 @@ Build workflow: use `/build-plan-slice` per slice **of this plan**; stop after e
 1. Implement state schema per Loop Design Spec (draft fields):
    - `version`, `branch`, `next_required_mode`, `next_step`, `current_phase`, `current_plan_path`, `current_slice_id`, `skip_tests_on_commit`, `completed_steps`, `alembic_group`, `plan_mode_escape_hatches`
 2. Write `run-v2-implementation.md` with labeled parameters: `Resume`, `Reset`, optional `Phase` (if spec allows).
-3. Document step handlers: mode check → run one step → advance state → exit or notify done.
+3. Document step handlers: mode check → run all same-mode steps → advance state after each → exit when mode changes or notify done.
    - **Default:** `next_required_mode: agent` for all build/db-revision/commit steps within a phase plan.
    - **Plan mode steps:** `phase_N_request_questions`, `phase_N_draft_plan`, `phase_N_finalize_plan` (names illustrative), plus any escape-hatch step IDs.
 4. Extend `commit_changes.py`:
@@ -317,13 +317,13 @@ None.
 | C3 | Phase 0 + idempotency | **Include Phase 0** in the state machine. **Skip-if-done** runs before **every** phase and slice step when its completion predicate is already satisfied (covers mostly-done Phase 0). | SC-11 |
 | C4 | Check suite timing | Run **[`scripts/cursor/checks.sh`](../../scripts/cursor/checks.sh)** (ruff format, ruff check, pyright, pytest) at **end of each V2 phase** and again when `next_step` is `done`. Loop commits still pass `--skip-tests`. | SC-9, SC-12 |
 | C5 | Plan file mapping | **One finalized plan per phase 0–7** (split old V2-3 mega-plan). See [Phase → plan paths](#phase--plan-paths) below. | A2, guide §9 |
-| C6 | Human approval | **No chat approval** between slices. User re-invokes **`/run-v2-implementation`** only; **one substantive step per invocation**; command exits after each step with resume instructions. | SC-13 |
+| C6 | Human approval | **No chat approval** between slices. User re-invokes **`/run-v2-implementation`** once per **mode stretch** (Plan: bootstrap + request_questions; Agent: draft + finalize + slices + checks); command runs all same-mode steps before exit. | SC-13 |
 | C7 | Non-interactive staging | **`commit_changes.py --non-interactive --message "…"`** stages **all working-tree changes** (tracked + untracked, non-ignored). No `input()` prompts. | SC-1, SC-10 |
 | C8 | Pre-commit reviews | Run audit-commit-readiness then review-abstractions before each loop commit step. **Auto-fix only in current step scope**; if still blocked, **stop** with error — user re-invokes `/run-v2-implementation` (no chat override). | SC-14 |
 
 ### Runtime `/request-questions` policy
 
-- **Runtime loop:** `/request-questions` **only** at `phase_N_plan_bootstrap` steps (`Mode: plan`), before `/draft-plan`.
+- **Runtime loop:** `/request-questions` **only** at `phase_N_request_questions` (**Plan** mode), before Agent-mode `draft_plan`.
 - **Not in runtime loop:** build slices, pre-alembic, Alembic preview/manual-edit/continue, post-alembic, commit steps.
 - **Slice ambiguity during build:** **`AskQuestion` tool** only when unavoidable; not phase-plan clarification.
 - **Meta-plan (this document):** `/request-questions` allowed manually between slices A–E; not encoded in `v2_implementation_loop.json`.
@@ -383,7 +383,7 @@ Git-tracked [`.cursor/v2_implementation_loop.json`](../../.cursor/v2_implementat
 
 Field notes:
 
-- **`next_required_mode`:** `plan` only for `phase_N_plan_bootstrap` subtree; `agent` for all build, db-revision, commit, and check steps.
+- **`next_required_mode`:** `plan` only for `phase_N_plan_bootstrap` and `phase_N_request_questions`; `agent` for `draft_plan`, `finalize_plan`, all build, db-revision, commit, and check steps.
 - **`alembic_group`:** When inside a five-step migration group, holds `{ "slice_id", "phase", "substep": "pre_alembic|preview|manual_edit|continue|post_alembic" }`; cleared after post-alembic commit.
 - **`skip_tests_on_commit`:** Always `true` during loop; phase-end and final steps run full `checks.sh` explicitly (C4).
 - **`plan_mode_escape_hatches`:** Empty array; reserved for future rare Plan-mode returns (C2).
@@ -395,8 +395,8 @@ Each phase follows this ordered subgraph (Agent unless noted):
 ```text
 phase_N_plan_bootstrap          [Plan]  mode gate only — user switches to Plan
   → phase_N_request_questions   [Plan]  /request-questions Mode: plan
-  → phase_N_draft_plan          [Plan]  /draft-plan
-  → phase_N_finalize_plan       [Plan]  finalize in docs/plans/ + commit (non-interactive)
+  → phase_N_draft_plan          [Agent] /draft-plan (loop context)
+  → phase_N_finalize_plan       [Agent] finalize in docs/plans/ + commit (non-interactive)
   → phase_N_slice_loop          [Agent] iterate slices from plan (see below)
   → phase_N_phase_checks        [Agent] scripts/cursor/checks.sh
   → phase_{N+1}_plan_bootstrap  [Plan]  or done when N=7
@@ -477,7 +477,7 @@ When `next_step` is `done`:
 | Adapt | SC-9 | C1 + C4 skip-tests vs phase checks |
 | Adapt | SC-10 | C7 stage all changes |
 | Adapt | SC-11 | C3 skip-if-done |
-| Adapt | SC-13 | C6 one step per invocation |
+| Adapt | SC-13 | C6 mode-batched execution |
 | Adapt | SC-14 | C8 pre-commit reviews |
 
 ---

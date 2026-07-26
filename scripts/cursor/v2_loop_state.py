@@ -75,10 +75,7 @@ def phase0_complete(root: Path) -> bool:
 def required_mode(step_id: str) -> str:
     if step_id == "done":
         return "agent"
-    match = re.match(
-        r"phase_(\d+)_(plan_bootstrap|request_questions|draft_plan|finalize_plan)$", step_id
-    )
-    if match:
+    if re.match(r"phase_\d+_(plan_bootstrap|request_questions)$", step_id):
         return "plan"
     return "agent"
 
@@ -479,6 +476,47 @@ def cmd_show(_: argparse.Namespace) -> int:
     return 0
 
 
+def batch_step_ids(state: dict[str, Any]) -> tuple[str, list[str]]:
+    step = state.get("next_step")
+    if not isinstance(step, str):
+        return "agent", []
+    batch_mode = required_mode(step)
+    steps: list[str] = []
+    sim = dict(state)
+    for _ in range(256):
+        current = sim.get("next_step")
+        if not isinstance(current, str):
+            break
+        if required_mode(current) != batch_mode:
+            break
+        steps.append(current)
+        if current == "done":
+            break
+        sim, errors = complete_step(sim, current)
+        if errors:
+            break
+    return batch_mode, steps
+
+
+def cmd_batch_steps(_: argparse.Namespace) -> int:
+    if not STATE_PATH.is_file():
+        print(f"Missing state file: {STATE_PATH}")
+        return 1
+    state = load_state()
+    batch_mode, steps = batch_step_ids(state)
+    print(
+        json.dumps(
+            {
+                "batch_mode": batch_mode,
+                "next_step": state.get("next_step"),
+                "steps_in_batch": steps,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -504,6 +542,11 @@ def main() -> int:
         help="Auto-complete skip-if-done steps until substantive work (agent-only)",
     )
 
+    subparsers.add_parser(
+        "batch-steps",
+        help="List step IDs in the current mode batch (simulated advance)",
+    )
+
     args = parser.parse_args()
     handlers = {
         "validate": cmd_validate,
@@ -511,6 +554,7 @@ def main() -> int:
         "complete": cmd_complete,
         "show": cmd_show,
         "fast-forward": cmd_fast_forward,
+        "batch-steps": cmd_batch_steps,
     }
     return handlers[args.command](args)
 

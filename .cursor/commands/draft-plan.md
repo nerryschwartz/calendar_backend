@@ -1,5 +1,14 @@
 Draft a Cursor implementation plan.
 
+## When called from `/run-v2-implementation` (loop context)
+
+Maps to `phase_N_draft_plan` (**Agent** mode batch).
+
+- Write the plan directly to `current_plan_path` from [`.cursor/v2_implementation_loop.json`](../v2_implementation_loop.json) — not `~/.cursor/plans/`.
+- Do **not** use the **`CreatePlan`** tool or wait for plan approval in chat.
+- Ignore **“Stop after each slice during implementation.”** below — that applies to manual builds, not the loop.
+- After the plan file is written, **`complete`** this step and continue the Agent batch to `finalize_plan`.
+
 Inputs:
 - [`.cursor/repo_conventions.md`](../repo_conventions.md) has highest precedence, then this guide and locked decisions, then the engineering design PDF.
 - Use the active conversation instructions and any locked decisions.

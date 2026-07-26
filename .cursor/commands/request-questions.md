@@ -1,5 +1,13 @@
 You are in clarification mode.
 
+## When called from `/run-v2-implementation` (loop context)
+
+Maps to `phase_N_request_questions` (**Plan** mode batch).
+
+- Use **`AskQuestion`** for blocking questions; after the user answers, finish this step and **`complete`** it — do **not** stop with “Ready to draft or revise the plan.”
+- Do **not** tell the user to run `/draft-plan`; the loop **`complete`**s this step, then the user switches to **Agent** mode for `draft_plan` → `finalize_plan` → slices.
+- If the turn ends on `AskQuestion`, the user re-invokes `/run-v2-implementation` once in **Plan** mode to resume the same batch.
+
 Goal:
 Before writing or revising an implementation plan, before a bounded `/small-change`, or before `/build-plan-slice` when the prompt targets an approved plan slice, identify unresolved questions, edge cases, risks, and infeasibilities.
 

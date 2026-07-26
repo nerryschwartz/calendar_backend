@@ -99,11 +99,16 @@ Use [`.cursor/commands/run-v2-implementation.md`](../.cursor/commands/run-v2-imp
 
 1. Switch Cursor **Plan / Agent** mode when the loop tells you to
 2. Invoke **`/run-v2-implementation`** (no parameters)
-3. Answer **`AskQuestion`** prompts during phase plan clarification (once per phase)
+3. Answer **`AskQuestion`** prompts during phase plan clarification (once per phase, Plan mode)
+
+**Mode stretches per phase:**
+
+- **Plan (once):** `plan_bootstrap` → `request_questions` — then switch to Agent
+- **Agent (once):** `draft_plan` → `finalize_plan` → all slice substeps → `phase_checks` — then switch to Plan for the next phase (or finish at `done`)
 
 The agent runs all state updates, nested workflows, commits, checks, and migration edits internally. Do **not** run shell scripts or other slash commands during the loop.
 
-Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). **One invocation per mode stretch** — all Plan steps (or all Agent steps) until `next_required_mode` changes; no-op steps fast-forward automatically within the batch.
+Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). **One invocation per mode stretch** — all steps listed above for that mode; no-op steps fast-forward automatically within the batch.
 
 **Mode handoff:** if the loop reports a mode mismatch at the start, or after a batch completes, switch mode and invoke `/run-v2-implementation` once in the new mode.
 
