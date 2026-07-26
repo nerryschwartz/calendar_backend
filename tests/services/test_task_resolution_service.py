@@ -146,7 +146,7 @@ def _create_goal_template_repetition_with_task_child(
     )
 
 
-def _three_tasks_in_master_chain(
+def _three_ordered_tasks_under_master(
     session: Session, master_plan_id: PlanID
 ) -> tuple[PlanID, PlanID, PlanID]:
     first_id = _create_task(session, master_plan_id, name="first")
@@ -384,7 +384,9 @@ def test_resolve_tasks_populates_effective_windows_and_constraint_sources(
 
 
 @pytest.mark.integration
-def test_resolve_tasks_emits_precedence_for_chain_order(service_db_session: Session) -> None:
+def test_resolve_tasks_flat_goal_order_emits_no_chain_precedence(
+    service_db_session: Session,
+) -> None:
     master_id = _bootstrap_master(service_db_session)
     first_id = _create_task(service_db_session, master_id, name="first")
     second_id = _create_task(service_db_session, master_id, name="second")
@@ -394,10 +396,9 @@ def test_resolve_tasks_emits_precedence_for_chain_order(service_db_session: Sess
 
     result = _resolve_seam(service_db_session)
 
-    assert any(
-        edge.predecessor_task_id == first_id and edge.successor_task_id == second_id
-        for edge in result.precedence_constraints
-    )
+    assert result.precedence_constraints == ()
+    ordered_ids = [task.plan_id for task in result.valid_incomplete]
+    assert ordered_ids.index(first_id) < ordered_ids.index(second_id)
 
 
 @pytest.mark.integration
@@ -443,22 +444,20 @@ def test_resolve_tasks_warnings_empty_in_v1(service_db_session: Session) -> None
 
 
 @pytest.mark.integration
-def test_resolve_tasks_skips_completed_predecessor_in_precedence(
+def test_resolve_tasks_excludes_completed_task_from_valid_incomplete(
     service_db_session: Session,
 ) -> None:
     master_id = _bootstrap_master(service_db_session)
-    first_id, second_id, third_id = _three_tasks_in_master_chain(service_db_session, master_id)
+    first_id, second_id, third_id = _three_ordered_tasks_under_master(service_db_session, master_id)
     assert _task_service(service_db_session).mark_complete(second_id).success
 
     result = _resolve_seam(service_db_session)
 
-    assert (
-        first_id,
-        third_id,
-    ) in {
-        (edge.predecessor_task_id, edge.successor_task_id) for edge in result.precedence_constraints
-    }
-    assert not any(edge.predecessor_task_id == second_id for edge in result.precedence_constraints)
+    valid_ids = {task.plan_id for task in result.valid_incomplete}
+    assert first_id in valid_ids
+    assert third_id in valid_ids
+    assert second_id not in valid_ids
+    assert result.precedence_constraints == ()
 
 
 @pytest.mark.integration

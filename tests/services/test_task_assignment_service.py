@@ -151,7 +151,7 @@ def _create_goal_template_repetition_with_task_child(
     )
 
 
-def _create_goal_template_repetition_with_chained_tasks(
+def _create_goal_template_repetition_with_ordered_tasks(
     session: Session,
     master_plan_id: PlanID,
 ) -> tuple[PlanID, PlanID, PlanID, PlanID]:
@@ -1146,12 +1146,13 @@ def test_assign_tasks_occupied_past_task_blocks_placement(
 
 
 @pytest.mark.integration
-def test_assign_tasks_repetition_clone_chain_precedence_orders_calendar(
+def test_assign_tasks_repetition_clone_flat_order_assigns_both_tasks(
     service_db_session: Session,
 ) -> None:
+    """Phase 1: flat goal-child order affects priority only; no chain precedence edges."""
     master_id = _bootstrap_master_with_horizon(service_db_session)
     repetition_id, _, first_template_id, second_template_id = (
-        _create_goal_template_repetition_with_chained_tasks(service_db_session, master_id)
+        _create_goal_template_repetition_with_ordered_tasks(service_db_session, master_id)
     )
     _generate_instances(service_db_session, repetition_id)
     clone_goal_id = _instance_root_clone_goal_id(service_db_session, repetition_id)
@@ -1178,9 +1179,8 @@ def test_assign_tasks_repetition_clone_chain_precedence_orders_calendar(
 
     assert result.success and result.value is not None
     entries_by_source = {entry.source_plan_id: entry for entry in result.value.calendar_entries}
-    first_entry = entries_by_source[first_clone_id]
-    second_entry = entries_by_source[second_clone_id]
-    assert first_entry.end_time <= second_entry.start_time
+    assert first_clone_id in entries_by_source
+    assert second_clone_id in entries_by_source
 
 
 @pytest.mark.integration
