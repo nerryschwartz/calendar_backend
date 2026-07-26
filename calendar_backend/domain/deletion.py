@@ -79,8 +79,8 @@ def compute_deletion_impact(
 ) -> PlanDeletionPreviewDTO:
     (
         children_by_parent,
-        chain_members_by_child,
-        critical_chains,
+        critical_siblings_by_child,
+        critical_sibling_groups,
         template_root_to_repetition,
     ) = _deletion_indexes(plans)
 
@@ -88,11 +88,11 @@ def compute_deletion_impact(
     changed = True
     while changed:
         changed = False
-        if _expand_chain_members(affected, chain_members_by_child):
+        if _expand_critical_siblings(affected, critical_siblings_by_child):
             changed = True
         if _expand_descendants(affected, children_by_parent):
             changed = True
-        if _expand_critical_chain_parents(affected, critical_chains):
+        if _expand_critical_sibling_parents(affected, critical_sibling_groups):
             changed = True
         if _expand_repetition_shells(affected, template_root_to_repetition):
             changed = True
@@ -262,22 +262,31 @@ def _deletion_indexes(
     list[tuple[frozenset[uuid.UUID], uuid.UUID]],
     dict[uuid.UUID, uuid.UUID],
 ]:
+    plans_by_id = {plan.plan_id: plan for plan in plans}
     children_by_parent: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
     for plan in plans:
         if plan.parent_id is not None:
             children_by_parent[plan.parent_id].append(plan.plan_id)
 
-    chain_members_by_child: dict[uuid.UUID, frozenset[uuid.UUID]] = {}
-    critical_chains: list[tuple[frozenset[uuid.UUID], uuid.UUID]] = []
+    critical_siblings_by_child: dict[uuid.UUID, frozenset[uuid.UUID]] = {}
+    critical_sibling_groups: list[tuple[frozenset[uuid.UUID], uuid.UUID]] = []
+    critical_buckets: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
+
     for plan in plans:
-        if plan.goal_plan is None:
+        if plan.parent_id is None:
             continue
-        for chain in plan.goal_plan.chains:
-            members = frozenset(item.child_plan_id for item in chain.items)
-            for child_plan_id in members:
-                chain_members_by_child[child_plan_id] = members
-            if chain.is_critical:
-                critical_chains.append((members, chain.parent_goal_id))
+        if plan.goal_is_critical is not True or plan.goal_sort_order is None:
+            continue
+        parent = plans_by_id.get(plan.parent_id)
+        if parent is None or parent.goal_plan is None:
+            continue
+        critical_buckets[plan.parent_id].append(plan.plan_id)
+
+    for parent_goal_id, member_ids in critical_buckets.items():
+        members = frozenset(member_ids)
+        critical_sibling_groups.append((members, parent_goal_id))
+        for child_id in members:
+            critical_siblings_by_child[child_id] = members
 
     template_root_to_repetition: dict[uuid.UUID, uuid.UUID] = {}
     for plan in plans:
@@ -287,22 +296,22 @@ def _deletion_indexes(
 
     return (
         children_by_parent,
-        chain_members_by_child,
-        critical_chains,
+        critical_siblings_by_child,
+        critical_sibling_groups,
         template_root_to_repetition,
     )
 
 
-def _expand_chain_members(
+def _expand_critical_siblings(
     affected: set[uuid.UUID],
-    chain_members_by_child: dict[uuid.UUID, frozenset[uuid.UUID]],
+    critical_siblings_by_child: dict[uuid.UUID, frozenset[uuid.UUID]],
 ) -> bool:
     changed = False
     for plan_id in list(affected):
-        members = chain_members_by_child.get(plan_id)
-        if members is None or members.issubset(affected):
+        siblings = critical_siblings_by_child.get(plan_id)
+        if siblings is None or siblings.issubset(affected):
             continue
-        affected |= members
+        affected |= siblings
         changed = True
     return changed
 
@@ -323,12 +332,12 @@ def _expand_descendants(
     return changed
 
 
-def _expand_critical_chain_parents(
+def _expand_critical_sibling_parents(
     affected: set[uuid.UUID],
-    critical_chains: list[tuple[frozenset[uuid.UUID], uuid.UUID]],
+    critical_sibling_groups: list[tuple[frozenset[uuid.UUID], uuid.UUID]],
 ) -> bool:
     changed = False
-    for members, parent_goal_id in critical_chains:
+    for members, parent_goal_id in critical_sibling_groups:
         if members.issubset(affected) and parent_goal_id not in affected:
             affected.add(parent_goal_id)
             changed = True

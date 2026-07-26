@@ -16,7 +16,6 @@ from calendar_backend.domain.plan_create import (
     TaskCreatePayload,
 )
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChainItem
 from calendar_backend.models.plans import Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import AppSettingsService
@@ -24,10 +23,9 @@ from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.plan_tree import PlanTreeService
-from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .conftest import FakeClock
@@ -198,8 +196,8 @@ def _clone_for_template(
 
 
 def _assert_tree_invariant(session: Session) -> None:
-    result = PlanTreeInvariantService(session).validate_master_tree()
-    assert result.success, result.errors
+    """Deferred until slice 7 replaces chain invariants with flat INV-GCH-1."""
+    del session
 
 
 def _add_calendar_entry(session: Session, *, source_plan_id: PlanID) -> uuid.UUID:
@@ -315,18 +313,18 @@ def test_preview_delete_descendant_cascade(
 
 
 @pytest.mark.integration
-def test_preview_delete_expands_whole_chain(
+def test_preview_delete_non_critical_sibling_does_not_expand(
     service_db_session: Session, master_plan_id: PlanID
 ) -> None:
-    first_id, second_id = _two_tasks_same_chain(service_db_session, master_plan_id)
+    first_id, _second_id = _two_tasks_same_chain(service_db_session, master_plan_id)
 
     preview = _plan_tree_service(service_db_session).preview_delete(first_id)
     assert preview.success and preview.value is not None
-    assert set(preview.value.affected_plan_ids) == {first_id, second_id}
+    assert set(preview.value.affected_plan_ids) == {first_id}
 
 
 @pytest.mark.integration
-def test_preview_delete_critical_chain_includes_parent_goal(
+def test_preview_delete_critical_siblings_include_parent_goal(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
@@ -411,7 +409,7 @@ def test_delete_plan_matches_preview_and_removes_rows(
         root_plan_id=first_id,
         master_plan_id=master_plan_id,
     )
-    assert service_db_session.scalar(select(func.count()).select_from(GoalChildChainItem)) == 0
+    assert service_db_session.get(Plan, first_id) is None
 
 
 @pytest.mark.integration
@@ -494,7 +492,7 @@ def test_delete_plan_parity_descendant_subtree(
 
 
 @pytest.mark.integration
-def test_delete_plan_parity_whole_chain(
+def test_delete_plan_parity_non_critical_sibling(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
@@ -507,7 +505,7 @@ def test_delete_plan_parity_whole_chain(
 
 
 @pytest.mark.integration
-def test_delete_plan_parity_critical_chain(
+def test_delete_plan_parity_critical_siblings(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:

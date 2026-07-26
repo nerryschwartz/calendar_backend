@@ -13,7 +13,6 @@ from calendar_backend.domain.deletion import (
 from calendar_backend.domain.enums import CalendarEntryType, CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.ids import CalendarEntryID, PlanID
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 
 _NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
@@ -42,35 +41,16 @@ def _plan(
     )
 
 
-def _attach_goal_with_chain(
+def _attach_ordered_children(
     goal: Plan,
     *,
-    chain_id: uuid.UUID,
-    is_critical: bool,
-    sort_order: int,
-    members: tuple[tuple[uuid.UUID, int], ...],
+    members: tuple[tuple[Plan, bool, int], ...],
 ) -> None:
     goal.goal_plan = GoalPlan(plan_id=goal.plan_id)
-    goal_plan = goal.goal_plan
-    assert goal_plan is not None
-    chain = GoalChildChain(
-        goal_child_chain_id=chain_id,
-        parent_goal_id=goal.plan_id,
-        is_critical=is_critical,
-        sort_order=sort_order,
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
-    chain.items = [
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=chain_id,
-            child_plan_id=child_id,
-            position=position,
-        )
-        for child_id, position in members
-    ]
-    goal_plan.chains = [chain]
+    for child, is_critical, sort_order in members:
+        child.parent_id = goal.plan_id
+        child.goal_is_critical = is_critical
+        child.goal_sort_order = sort_order
 
 
 def _attach_task(plan: Plan) -> None:
@@ -124,48 +104,66 @@ def test_compute_deletion_impact_includes_descendants() -> None:
     assert set(preview.affected_plan_ids) == {PlanID(parent_id), PlanID(child_id)}
 
 
-def test_compute_deletion_impact_expands_chain_members() -> None:
+def test_compute_deletion_impact_non_critical_sibling_does_not_expand() -> None:
     goal_id = uuid.uuid4()
     task_a_id = uuid.uuid4()
     task_b_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
     goal = _plan(goal_id, plan_kind=PlanKind.GOAL, name="goal")
     task_a = _plan(task_a_id, plan_kind=PlanKind.TASK, parent_id=goal_id, name="a")
     task_b = _plan(task_b_id, plan_kind=PlanKind.TASK, parent_id=goal_id, name="b")
     _attach_task(task_a)
     _attach_task(task_b)
-    _attach_goal_with_chain(
+    _attach_ordered_children(
         goal,
-        chain_id=chain_id,
-        is_critical=False,
-        sort_order=0,
-        members=((task_a_id, 0), (task_b_id, 1)),
+        members=(
+            (task_a, False, 0),
+            (task_b, False, 1),
+        ),
     )
 
     preview = compute_deletion_impact(PlanID(task_a_id), (goal, task_a, task_b), ())
 
-    assert set(preview.affected_plan_ids) == {
-        PlanID(task_a_id),
-        PlanID(task_b_id),
-    }
+    assert set(preview.affected_plan_ids) == {PlanID(task_a_id)}
 
 
-def test_compute_deletion_impact_includes_critical_chain_parent() -> None:
+def test_compute_deletion_impact_expands_critical_siblings() -> None:
     goal_id = uuid.uuid4()
     task_a_id = uuid.uuid4()
     task_b_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
     goal = _plan(goal_id, plan_kind=PlanKind.GOAL, name="goal")
     task_a = _plan(task_a_id, plan_kind=PlanKind.TASK, parent_id=goal_id, name="a")
     task_b = _plan(task_b_id, plan_kind=PlanKind.TASK, parent_id=goal_id, name="b")
     _attach_task(task_a)
     _attach_task(task_b)
-    _attach_goal_with_chain(
+    _attach_ordered_children(
         goal,
-        chain_id=chain_id,
-        is_critical=True,
-        sort_order=0,
-        members=((task_a_id, 0), (task_b_id, 1)),
+        members=(
+            (task_a, True, 0),
+            (task_b, True, 1),
+        ),
+    )
+
+    preview = compute_deletion_impact(PlanID(task_a_id), (goal, task_a, task_b), ())
+
+    affected = set(preview.affected_plan_ids)
+    assert {PlanID(task_a_id), PlanID(task_b_id)}.issubset(affected)
+
+
+def test_compute_deletion_impact_includes_critical_sibling_parent() -> None:
+    goal_id = uuid.uuid4()
+    task_a_id = uuid.uuid4()
+    task_b_id = uuid.uuid4()
+    goal = _plan(goal_id, plan_kind=PlanKind.GOAL, name="goal")
+    task_a = _plan(task_a_id, plan_kind=PlanKind.TASK, parent_id=goal_id, name="a")
+    task_b = _plan(task_b_id, plan_kind=PlanKind.TASK, parent_id=goal_id, name="b")
+    _attach_task(task_a)
+    _attach_task(task_b)
+    _attach_ordered_children(
+        goal,
+        members=(
+            (task_a, True, 0),
+            (task_b, True, 1),
+        ),
     )
 
     preview = compute_deletion_impact(PlanID(task_a_id), (goal, task_a, task_b), ())
@@ -448,7 +446,7 @@ def test_compute_deletion_impact_task_template_root_includes_repetition_shell() 
     assert PlanID(next(p.plan_id for p in plans if p.name == "clone task")) in affected
 
 
-def test_compute_deletion_impact_critical_chain_indirectly_reaches_template_subtree() -> None:
+def test_compute_deletion_impact_critical_siblings_indirectly_reach_template_subtree() -> None:
     master_id = uuid.uuid4()
     goal_id = uuid.uuid4()
     repetition_id = uuid.uuid4()
@@ -456,7 +454,6 @@ def test_compute_deletion_impact_critical_chain_indirectly_reaches_template_subt
     task_a_id = uuid.uuid4()
     task_b_id = uuid.uuid4()
     clone_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
 
     master = _plan(master_id, plan_kind=PlanKind.GOAL, name="master", is_master=True)
     goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id, name="goal")
@@ -464,12 +461,12 @@ def test_compute_deletion_impact_critical_chain_indirectly_reaches_template_subt
     task_b = _plan(task_b_id, plan_kind=PlanKind.TASK, parent_id=goal_id, name="b")
     _attach_task(task_a)
     _attach_task(task_b)
-    _attach_goal_with_chain(
+    _attach_ordered_children(
         goal,
-        chain_id=chain_id,
-        is_critical=True,
-        sort_order=0,
-        members=((task_a_id, 0), (task_b_id, 1)),
+        members=(
+            (task_a, True, 0),
+            (task_b, True, 1),
+        ),
     )
 
     repetition = _plan(
