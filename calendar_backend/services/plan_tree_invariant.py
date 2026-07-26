@@ -12,9 +12,8 @@ from sqlalchemy.orm import Session, selectinload
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.invariant_validation import validate_master_tree_graph
 from calendar_backend.domain.results import ServiceResult, fail, ok
-from calendar_backend.models.chains import GoalChildChain
 from calendar_backend.models.constraints import TimeConstraintGroup
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
+from calendar_backend.models.plans import Plan, RepetitionPlan
 
 
 class PlanTreeInvariantService:
@@ -26,9 +25,7 @@ class PlanTreeInvariantService:
             plans = tuple(
                 txn.scalars(
                     select(Plan).options(
-                        selectinload(Plan.goal_plan)
-                        .selectinload(GoalPlan.chains)
-                        .selectinload(GoalChildChain.items),
+                        selectinload(Plan.goal_plan),
                         selectinload(Plan.task_plan),
                         selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
                         selectinload(Plan.constraint_groups).selectinload(

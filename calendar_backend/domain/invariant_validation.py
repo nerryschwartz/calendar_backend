@@ -13,7 +13,7 @@ child_plan_id, window start before end.
 from __future__ import annotations
 
 import uuid
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 from calendar_backend.domain.constraints import merge_or_windows
@@ -42,9 +42,8 @@ def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage,
         violations.extend(_check_reachability(plans, master))
     violations.extend(_check_subtype_pairing(plans))
     violations.extend(_check_task_completion_pairing(plans))
-    violations.extend(_check_master_chains_non_critical(plans))
-    violations.extend(_check_goal_chain_membership(plans))
-    violations.extend(_check_chains(plans))
+    violations.extend(_check_master_goal_children_non_critical(plans))
+    violations.extend(_check_goal_child_ordering(plans))
     violations.extend(_check_repetition_plans(plans))
     violations.extend(_check_template_clone_status(plans))
     violations.extend(_check_repetition_instances(plans))
@@ -183,59 +182,81 @@ def _check_task_completion_pairing(plans: tuple[Plan, ...]) -> list[ServiceMessa
     return violations
 
 
-def _chain_child_counts(plans: tuple[Plan, ...]) -> dict[uuid.UUID, int]:
-    counts: dict[uuid.UUID, int] = {}
-    for plan in plans:
-        if plan.goal_plan is None:
-            continue
-        for chain in plan.goal_plan.chains:
-            for item in chain.items:
-                counts[item.child_plan_id] = counts.get(item.child_plan_id, 0) + 1
-    return counts
-
-
-def _check_master_chains_non_critical(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+def _check_master_goal_children_non_critical(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
     violations: list[ServiceMessage] = []
     for plan in plans:
-        if not plan.is_master or plan.goal_plan is None:
+        if not plan.is_master:
             continue
-        for chain in plan.goal_plan.chains:
-            if chain.is_critical:
+        for child in plans:
+            if child.parent_id != plan.plan_id:
+                continue
+            if child.goal_is_critical:
                 violations.append(
                     ServiceMessage(
                         code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                        message="Master goal child chains must be non-critical",
+                        message="Master goal direct children must be non-critical",
                         details={
                             "parent_goal_id": str(plan.plan_id),
-                            "goal_child_chain_id": str(chain.goal_child_chain_id),
+                            "child_plan_id": str(child.plan_id),
                         },
                     )
                 )
     return violations
 
 
-def _check_goal_chain_membership(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+def _check_goal_child_ordering(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
     goal_ids = {plan.plan_id for plan in plans if plan.goal_plan is not None}
-    chain_counts = _chain_child_counts(plans)
     violations: list[ServiceMessage] = []
+    buckets: dict[tuple[uuid.UUID, bool], list[tuple[uuid.UUID, int]]] = defaultdict(list)
+
     for plan in plans:
         if plan.parent_id is None or plan.parent_id not in goal_ids:
             continue
         if plan.clone_status == CloneStatus.TEMPLATE:
             continue
-        count = chain_counts.get(plan.plan_id, 0)
-        if count != 1:
+
+        if plan.goal_is_critical is None or plan.goal_sort_order is None:
             violations.append(
                 ServiceMessage(
                     code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                    message="Direct goal child must appear in exactly one goal child chain item",
+                    message="Direct goal child must have goal ordering fields set",
                     details={
                         "child_plan_id": str(plan.plan_id),
                         "parent_goal_id": str(plan.parent_id),
-                        "chain_item_count": str(count),
                     },
                 )
             )
+            continue
+
+        buckets[(plan.parent_id, plan.goal_is_critical)].append(
+            (plan.plan_id, plan.goal_sort_order)
+        )
+
+    for (parent_goal_id, is_critical), entries in buckets.items():
+        sort_orders = [sort_order for _, sort_order in entries]
+        violations.extend(
+            _violations_for_non_dense_sequence(
+                sort_orders,
+                code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                message="Goal child sort_order must be dense from 0 per bucket",
+                details={
+                    "parent_goal_id": str(parent_goal_id),
+                    "is_critical": str(is_critical).lower(),
+                },
+            )
+        )
+        if len(sort_orders) != len(set(sort_orders)):
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
+                    message="Goal child sort_order must be unique within bucket",
+                    details={
+                        "parent_goal_id": str(parent_goal_id),
+                        "is_critical": str(is_critical).lower(),
+                    },
+                )
+            )
+
     return violations
 
 
@@ -317,13 +338,15 @@ def _check_repetition_plans(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                 )
             )
 
-    chain_counts = _chain_child_counts(plans)
     for template_root_id in template_root_ids:
-        if chain_counts.get(template_root_id, 0) > 0:
+        template = plan_by_id.get(template_root_id)
+        if template is None:
+            continue
+        if template.goal_is_critical is not None or template.goal_sort_order is not None:
             violations.append(
                 ServiceMessage(
                     code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                    message="Repetition template root must not appear in a goal child chain",
+                    message="Repetition template root must not have goal-child ordering fields",
                     details={"template_root_id": str(template_root_id)},
                 )
             )
@@ -367,67 +390,6 @@ def _violations_for_non_dense_sequence(
     if frozenset(values) == frozenset(range(len(values))):
         return []
     return [ServiceMessage(code=code, message=message, details=details)]
-
-
-def _check_chains(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
-    violations: list[ServiceMessage] = []
-    plan_by_id = {plan.plan_id: plan for plan in plans}
-
-    for plan in plans:
-        if plan.goal_plan is None:
-            continue
-
-        chain_sort_orders_by_bucket: dict[bool, list[int]] = {}
-
-        parent_goal_id = plan.plan_id
-        for chain in plan.goal_plan.chains:
-            chain_sort_orders_by_bucket.setdefault(chain.is_critical, []).append(chain.sort_order)
-
-            positions: list[int] = []
-            for item in chain.items:
-                positions.append(item.position)
-
-                child_plan = plan_by_id[item.child_plan_id]
-                if child_plan.parent_id != parent_goal_id:
-                    violations.append(
-                        ServiceMessage(
-                            code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                            message="Chain item child must be a direct child of the parent goal",
-                            details={
-                                "child_plan_id": str(item.child_plan_id),
-                                "goal_child_chain_id": str(chain.goal_child_chain_id),
-                                "parent_goal_id": str(parent_goal_id),
-                                "actual_parent_id": str(child_plan.parent_id),
-                            },
-                        )
-                    )
-
-            violations.extend(
-                _violations_for_non_dense_sequence(
-                    positions,
-                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                    message="Goal child chain item positions must be dense starting at 0",
-                    details={
-                        "goal_child_chain_id": str(chain.goal_child_chain_id),
-                        "parent_goal_id": str(parent_goal_id),
-                    },
-                )
-            )
-
-        for is_critical, sort_orders in chain_sort_orders_by_bucket.items():
-            violations.extend(
-                _violations_for_non_dense_sequence(
-                    sort_orders,
-                    code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                    message="Goal child chain sort_order must be dense from 0 per bucket",
-                    details={
-                        "parent_goal_id": str(parent_goal_id),
-                        "is_critical": str(is_critical).lower(),
-                    },
-                )
-            )
-
-    return violations
 
 
 def _check_repetition_instances(plans: tuple[Plan, ...]) -> list[ServiceMessage]:

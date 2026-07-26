@@ -21,6 +21,7 @@ from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
+from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -63,8 +64,8 @@ def _repetition_payload() -> RepetitionCreatePayload:
 
 
 def _assert_tree_invariant(session: Session) -> None:
-    """Deferred until slice 7 replaces chain invariants with flat INV-GCH-1."""
-    del session
+    result = PlanTreeInvariantService(session).validate_master_tree()
+    assert result.success, result.errors
 
 
 def _goal_sort_orders(
