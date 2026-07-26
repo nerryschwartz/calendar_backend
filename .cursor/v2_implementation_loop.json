@@ -2,7 +2,7 @@
   "version": 1,
   "branch": "new-design-and-implementation-doc",
   "next_required_mode": "agent",
-  "next_step": "phase_1_slice_1_alembic_continue",
+  "next_step": "phase_1_slice_1_post_alembic",
   "current_phase": 1,
   "current_plan_path": "docs/plans/v2_flat_goal_children.md",
   "current_slice_id": "1",
@@ -15,12 +15,13 @@
     "phase_1_finalize_plan",
     "phase_1_slice_1_pre_alembic",
     "phase_1_slice_1_alembic_preview",
-    "phase_1_slice_1_migration_manual_edit"
+    "phase_1_slice_1_migration_manual_edit",
+    "phase_1_slice_1_alembic_continue"
   ],
   "alembic_group": {
     "slice_id": "1",
     "phase": 1,
-    "substep": "alembic_continue"
+    "substep": "post_alembic"
   },
   "plan_mode_escape_hatches": []
 }

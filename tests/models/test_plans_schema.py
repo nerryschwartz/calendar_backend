@@ -827,6 +827,67 @@ def test_alembic_upgrade_enforces_goal_ordering_fields_paired(
 
 
 @pytest.mark.integration
+def test_alembic_upgrade_copies_chain_ordering_to_flat_fields(
+    temp_sqlite_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_create_engine_for_url = create_engine_for_url
+
+    def _engine_for_migration(url: str = temp_sqlite_url) -> Engine:
+        del url
+        return real_create_engine_for_url(temp_sqlite_url)
+
+    monkeypatch.setattr(
+        "calendar_backend.db.session.create_engine_for_url",
+        _engine_for_migration,
+    )
+
+    command.upgrade(Config("alembic.ini"), "7111454550a7")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    session = create_session_factory(engine)()
+    plan = Base.metadata.tables["plan"]
+    goal_plan = Base.metadata.tables["goal_plan"]
+    chain = Base.metadata.tables["goal_child_chain"]
+    chain_item = Base.metadata.tables["goal_child_chain_item"]
+    master_id = uuid.uuid4()
+    child_id = uuid.uuid4()
+    chain_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(master_id, is_master=True)))
+            txn.execute(insert(goal_plan).values(_goal_plan_row(master_id)))
+            txn.execute(
+                insert(plan).values(
+                    _plan_row(child_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+                )
+            )
+            txn.execute(insert(chain).values(_goal_child_chain_row(chain_id, master_id)))
+            txn.execute(
+                insert(chain_item).values(
+                    _goal_child_chain_item_row(uuid.uuid4(), chain_id, child_id)
+                )
+            )
+    finally:
+        session.close()
+        engine.dispose()
+
+    command.upgrade(Config("alembic.ini"), "head")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    session = create_session_factory(engine)()
+    try:
+        loaded = session.get(Plan, child_id)
+        assert loaded is not None
+        assert loaded.goal_is_critical is False
+        assert loaded.goal_sort_order == 0
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.integration
 def test_check_repetition_plan_manual_count_mode_fields(plan_schema_engine: Engine) -> None:
     plan = Base.metadata.tables["plan"]
     repetition_plan = Base.metadata.tables["repetition_plan"]
