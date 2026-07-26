@@ -108,9 +108,9 @@ Use [`.cursor/commands/run-v2-implementation.md`](../.cursor/commands/run-v2-imp
 
 The agent runs all state updates, nested workflows, commits, checks, and migration edits internally. Do **not** run shell scripts or other slash commands during the loop.
 
-Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). **One invocation per mode stretch** — all steps listed above for that mode; no-op steps fast-forward automatically within the batch.
+Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). **One user invocation per mode stretch** — the agent runs all steps for that mode before any batch-exit message. Mid-batch “re-invoke” or false “batch complete” while `next_required_mode` still matches the current mode is a protocol violation.
 
-**Mode handoff:** if the loop reports a mode mismatch at the start, or after a batch completes, switch mode and invoke `/run-v2-implementation` once in the new mode.
+**Mode handoff:** switch mode and invoke `/run-v2-implementation` once **only** when the loop reports a mode mismatch at the start, or after a true batch end (`next_required_mode` ≠ the mode you just finished). Do **not** switch mode when the next step requires the same mode you are already in.
 
 **Slice ambiguity:** the agent uses `AskQuestion` when needed — not freeform chat and not phase-plan clarification on build slices.
 

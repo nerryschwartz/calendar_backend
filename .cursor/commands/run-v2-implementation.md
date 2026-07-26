@@ -4,13 +4,21 @@ Drive the V2 single-PR implementation loop using git-tracked state in [`.cursor/
 
 ## CRITICAL — mode-batched execution
 
-**Do not exit after one loop step.** After the mode gate passes, run every step whose `next_required_mode` equals `batch_mode` in **one invocation** (lifecycle step 6). Only exit when:
+**Do not exit after one loop step.** After the mode gate passes, run every step in `steps_in_batch` from `batch-steps` in **one invocation** (lifecycle step 7). Only exit when `batch-exit-check` reports `may_exit: true`.
 
-- `next_required_mode` ≠ `batch_mode` (batch complete — tell user to switch mode), or
-- a **hard failure** stops the batch (do not `complete`), or
-- `next_step` is `done`.
+**Mandatory at invocation start (after recording `batch_mode`):**
+```bash
+uv run python scripts/cursor/v2_loop_state.py batch-steps
+```
+Keep `steps_in_batch` for the invocation. Do **not** stop until every listed step is `complete`d (or a hard failure).
 
-Optional: list steps in the current batch with `uv run python scripts/cursor/v2_loop_state.py batch-steps`.
+**Forbidden before `batch-exit-check` says `may_exit: true`:**
+- Posting **“Loop batch complete”** when `next_required_mode` still equals `batch_mode`
+- Telling the user to **switch mode** when `next_required_mode` equals the current Cursor mode
+- Mid-batch slice summaries, progress tables, or **“re-invoke to continue”**
+- Any user-facing exit except mode-gate mismatch, `AskQuestion`, or hard failure
+
+**Between loop steps:** continue silently to step 7a — no chat output.
 
 **Mode assignment:** **Plan** = `plan_bootstrap`, `request_questions` only. **Agent** = `draft_plan`, `finalize_plan`, all slice substeps, `phase_checks`, `phase_0_verify`, `done`.
 
@@ -24,7 +32,7 @@ The user may **only**:
 2. Invoke **`/run-v2-implementation`** (no labeled fields in normal use)
 3. Answer **`AskQuestion`** prompts during phase plan clarification or unavoidable slice ambiguity
 
-**Never instruct the user to:** run shell commands, run other slash commands, edit migration files manually, type `Resume: true`, approve slices in chat, or override audit findings in chat.
+**Never instruct the user to:** run shell commands, run other slash commands, edit migration files manually, type `Resume: true`, approve slices in chat, override audit findings in chat, **re-invoke mid-batch**, or **switch mode when `next_required_mode` matches the current mode**.
 
 All state scripts, nested command workflows, commits, checks, and migration edits are **agent-internal**.
 
@@ -65,40 +73,58 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
 
 4. **Record starting mode** — read `next_required_mode` from state after validation; this is `batch_mode` for the rest of the invocation.
 
-5. **Fast-forward skip-if-done steps** (before substantive work; re-run at the start of each batch iteration):
+5. **Load batch checklist (mandatory):**
+   ```bash
+   uv run python scripts/cursor/v2_loop_state.py batch-steps
+   ```
+   Keep `steps_in_batch` and `remaining_count` for this invocation.
+
+6. **Fast-forward once**, then enter the mode-batched loop (step 7):
    ```bash
    uv run python scripts/cursor/v2_loop_state.py fast-forward
    ```
-   Re-read state after fast-forward. This auto-completes no-op steps (e.g. `phase_N_plan_bootstrap`) and other satisfied predicates per [Loop Design Spec](../../docs/plans/v2_implementation_loop_command.md#skip-if-done-predicates).
 
-6. **Mode-batched loop** — repeat until `next_required_mode` ≠ `batch_mode`, a hard failure stops the batch, or `next_step` is `done`:
+7. **Mode-batched loop** — repeat until `batch-exit-check` reports `may_exit: true`, a hard failure stops the batch, or `next_step` is `done` and handled:
 
    a. Re-read state. Run fast-forward, then re-read state:
       ```bash
       uv run python scripts/cursor/v2_loop_state.py fast-forward
       ```
-      If `next_required_mode` ≠ `batch_mode`, go to step 7.
+      Run exit check:
+      ```bash
+      uv run python scripts/cursor/v2_loop_state.py batch-exit-check --batch-mode <batch_mode>
+      ```
+      If `may_exit` is `false`, continue below. If `may_exit` is `true` and `exit_kind` is `mode_change` or `done`, go to step 8.
 
-   b. If `next_step` is `done`, run the [`done`](#done-agent) handler once, then go to step 7.
+   b. If `next_step` is `done`, run the [`done`](#done-agent) handler once, then go to step 8.
 
-   c. **Execute one substantive step** — see [Step handlers](#step-handlers). Inline nested command rules from `.cursor/commands/*.md`; do **not** tell the user to invoke those commands. Apply [Overrides](#overrides-when-running-under-this-loop) — they supersede nested “stop and wait” text.
+   c. **Execute one substantive step** — see [Step handlers](#step-handlers). Inline nested command rules from `.cursor/commands/*.md`; do **not** tell the user to invoke those commands. Apply [Overrides](#overrides-when-running-under-this-loop) — they supersede nested “stop and wait” text. **No user-visible slice summary** — continue silently to step 7d.
 
    d. **Advance state silently:**
       ```bash
       uv run python scripts/cursor/v2_loop_state.py complete <step_id>
       ```
-      Re-read state. If `next_required_mode` still equals `batch_mode`, return to step 6a.
+      Re-read state. Return to step 7a.
 
    **AskQuestion during a batch:** if a step uses `AskQuestion`, wait for the user's answer, finish that step, `complete` it, then continue the batch — do **not** exit the invocation early unless the turn ends (user re-invokes in same mode to resume).
 
    **Hard failure:** report the error, do **not** call `complete`, do **not** advance state; exit the invocation. User fixes and re-invokes in the same mode.
 
-7. **Exit** — one invocation per mode stretch (`batch_mode`). After a successful batch that changed mode, post briefly:
-   ```text
-   Loop batch complete (<plan|agent> steps done). next_step=<id> requires <plan|agent> mode.
-   Switch mode and re-invoke: /run-v2-implementation
+8. **Exit** — run exit check again, then post **only** the matching template:
+
+   ```bash
+   uv run python scripts/cursor/v2_loop_state.py batch-exit-check --batch-mode <batch_mode>
    ```
-   Omit the mode-switch line when `next_step` is `done` (post [completion notification](#done-agent) instead). Do **not** run `gh pr create`.
+
+   - If `may_exit` is `false`: **protocol violation** — return to step 7a immediately; do **not** post any exit message.
+   - If `exit_kind` is `mode_change` (and `next_required_mode` ≠ `batch_mode`):
+     ```text
+     Loop batch complete (<plan|agent> steps done). next_step=<id> requires <plan|agent> mode.
+     Switch mode and re-invoke: /run-v2-implementation
+     ```
+   - If `exit_kind` is `done`: post [completion notification](#done-agent) only — no mode-switch line.
+
+   Do **not** run `gh pr create`.
 
 ---
 
@@ -106,7 +132,8 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
 
 These override conflicting text in nested commands and [`.cursor/rules/30-planning-slices.mdc`](../rules/30-planning-slices.mdc):
 
-- **Mode-batched execution** — run every step whose `next_required_mode` matches `batch_mode` in one invocation; do not exit after a single substantive step.
+- **Mode-batched execution** — run every step in `steps_in_batch` in one invocation; do not exit after a single substantive step.
+- **Silent between steps** — no mid-batch slice reports, progress tables, or re-invoke instructions; continue to step 7a.
 - **No slice chat approval** — loop advances via state `complete`; ignore build-plan-slice “stop and wait for approval.”
 - **No nested slash commands for the user** — agent follows nested command docs internally.
 - **No migration-slice gate in loop build steps** — for `*_pre_alembic`, `*_post_alembic`, and `*_build`, follow [build-plan-slice loop context](build-plan-slice.md#when-called-from-run-v2-implementation-loop-context); Alembic substeps use dedicated loop handlers instead.

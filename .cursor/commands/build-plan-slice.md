@@ -11,7 +11,9 @@ Maps to `phase_N_slice_<id>_build`, `phase_N_slice_<id>_pre_alembic`, or `phase_
 - The **migration-slice gate** and [Migration slice manual workflow](#migration-slice-manual-workflow) below — Alembic preview, manual edit, and continue are separate loop step handlers.
 - **“Stop after this slice and wait for approval.”** — the loop advances via state `complete` after commit; no chat approval.
 
-**Still apply:** slice preflight, implementation, reviews, checks, and reporting. If the slice is ambiguous, use **`AskQuestion`**, finish the step after the user answers, and continue the Agent batch.
+**Still apply:** slice preflight, implementation, reviews, checks. If the slice is ambiguous, use **`AskQuestion`**, finish the step after the user answers, and continue the Agent batch.
+
+**Defer reporting under loop:** do not post the full slice report (files changed, test catalog, etc.) until the Agent batch ends or a hard failure stops the batch. After each step, at most one silent line in agent notes, then continue to the next loop step.
 
 Before editing:
 - Identify the active finalized plan file in docs/plans/.

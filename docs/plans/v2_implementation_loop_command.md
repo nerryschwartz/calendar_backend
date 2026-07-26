@@ -191,7 +191,7 @@ Build workflow: use `/build-plan-slice` per slice **of this plan**; stop after e
 2. Write `run-v2-implementation.md` with labeled parameters: `Resume`, `Reset`, optional `Phase` (if spec allows).
 3. Document step handlers: mode check → run all same-mode steps → advance state after each → exit when mode changes or notify done.
    - **Default:** `next_required_mode: agent` for all build/db-revision/commit steps within a phase plan.
-   - **Plan mode steps:** `phase_N_request_questions`, `phase_N_draft_plan`, `phase_N_finalize_plan` (names illustrative), plus any escape-hatch step IDs.
+   - **Plan mode steps:** `phase_N_plan_bootstrap`, `phase_N_request_questions`. **Agent mode plan steps:** `phase_N_draft_plan`, `phase_N_finalize_plan`. Plus any escape-hatch step IDs.
 4. Extend `commit_changes.py`:
    - `--non-interactive`: stage all changed files matching rubric OR explicit pathspec list; no `input()` prompts
    - `--message` for commit message; honor `--skip-tests` / `--skip-checks` as today
@@ -317,7 +317,7 @@ None.
 | C3 | Phase 0 + idempotency | **Include Phase 0** in the state machine. **Skip-if-done** runs before **every** phase and slice step when its completion predicate is already satisfied (covers mostly-done Phase 0). | SC-11 |
 | C4 | Check suite timing | Run **[`scripts/cursor/checks.sh`](../../scripts/cursor/checks.sh)** (ruff format, ruff check, pyright, pytest) at **end of each V2 phase** and again when `next_step` is `done`. Loop commits still pass `--skip-tests`. | SC-9, SC-12 |
 | C5 | Plan file mapping | **One finalized plan per phase 0–7** (split old V2-3 mega-plan). See [Phase → plan paths](#phase--plan-paths) below. | A2, guide §9 |
-| C6 | Human approval | **No chat approval** between slices. User re-invokes **`/run-v2-implementation`** once per **mode stretch** (Plan: bootstrap + request_questions; Agent: draft + finalize + slices + checks); command runs all same-mode steps before exit. | SC-13 |
+| C6 | Human approval | **No chat approval** between slices. User re-invokes **`/run-v2-implementation`** once per **mode stretch** (Plan: bootstrap + request_questions; Agent: draft + finalize + slices + checks); agent runs all same-mode steps before exit. **False “batch complete”** while `next_required_mode` still equals `batch_mode` is a protocol violation — use `batch-exit-check`. | SC-13 |
 | C7 | Non-interactive staging | **`commit_changes.py --non-interactive --message "…"`** stages **all working-tree changes** (tracked + untracked, non-ignored). No `input()` prompts. | SC-1, SC-10 |
 | C8 | Pre-commit reviews | Run audit-commit-readiness then review-abstractions before each loop commit step. **Auto-fix only in current step scope**; if still blocked, **stop** with error — user re-invokes `/run-v2-implementation` (no chat override). | SC-14 |
 

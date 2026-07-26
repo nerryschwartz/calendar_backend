@@ -498,6 +498,52 @@ def batch_step_ids(state: dict[str, Any]) -> tuple[str, list[str]]:
     return batch_mode, steps
 
 
+def batch_exit_check(state: dict[str, Any], batch_mode: str) -> dict[str, Any]:
+    step = state.get("next_step")
+    if not isinstance(step, str):
+        return {
+            "may_exit": True,
+            "exit_kind": "unknown",
+            "remaining_steps": [],
+            "remaining_count": 0,
+        }
+
+    next_mode = required_mode(step)
+    _, remaining = batch_step_ids(state)
+
+    if step == "done":
+        return {
+            "may_exit": True,
+            "exit_kind": "done",
+            "batch_mode": batch_mode,
+            "next_step": step,
+            "next_required_mode": next_mode,
+            "remaining_steps": [],
+            "remaining_count": 0,
+        }
+
+    if next_mode == batch_mode:
+        return {
+            "may_exit": False,
+            "exit_kind": "batch_incomplete",
+            "batch_mode": batch_mode,
+            "next_step": step,
+            "next_required_mode": next_mode,
+            "remaining_steps": remaining,
+            "remaining_count": len(remaining),
+        }
+
+    return {
+        "may_exit": True,
+        "exit_kind": "mode_change",
+        "batch_mode": batch_mode,
+        "next_step": step,
+        "next_required_mode": next_mode,
+        "remaining_steps": [],
+        "remaining_count": 0,
+    }
+
+
 def cmd_batch_steps(_: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         print(f"Missing state file: {STATE_PATH}")
@@ -510,10 +556,24 @@ def cmd_batch_steps(_: argparse.Namespace) -> int:
                 "batch_mode": batch_mode,
                 "next_step": state.get("next_step"),
                 "steps_in_batch": steps,
+                "remaining_count": len(steps),
             },
             indent=2,
         )
     )
+    return 0
+
+
+def cmd_batch_exit_check(args: argparse.Namespace) -> int:
+    if not STATE_PATH.is_file():
+        print(f"Missing state file: {STATE_PATH}")
+        return 1
+    state = load_state()
+    step = state.get("next_step")
+    batch_mode = args.batch_mode
+    if batch_mode is None:
+        batch_mode = required_mode(step) if isinstance(step, str) else "agent"
+    print(json.dumps(batch_exit_check(state, batch_mode), indent=2))
     return 0
 
 
@@ -547,6 +607,16 @@ def main() -> int:
         help="List step IDs in the current mode batch (simulated advance)",
     )
 
+    batch_exit_parser = subparsers.add_parser(
+        "batch-exit-check",
+        help="Return whether the agent may post a batch exit message",
+    )
+    batch_exit_parser.add_argument(
+        "--batch-mode",
+        choices=("plan", "agent"),
+        help="batch_mode recorded at invocation start (default: required_mode of next_step)",
+    )
+
     args = parser.parse_args()
     handlers = {
         "validate": cmd_validate,
@@ -555,6 +625,7 @@ def main() -> int:
         "show": cmd_show,
         "fast-forward": cmd_fast_forward,
         "batch-steps": cmd_batch_steps,
+        "batch-exit-check": cmd_batch_exit_check,
     }
     return handlers[args.command](args)
 
