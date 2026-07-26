@@ -49,22 +49,38 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
      Switch mode and re-invoke: /run-v2-implementation
      ```
 
-4. **Fast-forward skip-if-done steps** (same invocation, before substantive work):
+4. **Record starting mode** — read `next_required_mode` from state after validation; this is `batch_mode` for the rest of the invocation.
+
+5. **Fast-forward skip-if-done steps** (before substantive work; re-run at the start of each batch iteration):
    ```bash
    uv run python scripts/cursor/v2_loop_state.py fast-forward
    ```
    Re-read state after fast-forward. This auto-completes no-op steps (e.g. `phase_N_plan_bootstrap`) and other satisfied predicates per [Loop Design Spec](../../docs/plans/v2_implementation_loop_command.md#skip-if-done-predicates).
 
-5. **Execute one substantive step** — see [Step handlers](#step-handlers). Inline nested command rules from `.cursor/commands/*.md`; do **not** tell the user to invoke those commands.
+6. **Mode-batched loop** — repeat until `next_required_mode` ≠ `batch_mode`, a hard failure stops the batch, or `next_step` is `done`:
 
-6. **Advance state silently:**
-   ```bash
-   uv run python scripts/cursor/v2_loop_state.py complete <step_id>
+   a. Re-read state. If `next_required_mode` ≠ `batch_mode`, go to step 7.
+
+   b. If `next_step` is `done`, run the [`done`](#done-agent) handler once, then go to step 7.
+
+   c. **Execute one substantive step** — see [Step handlers](#step-handlers). Inline nested command rules from `.cursor/commands/*.md`; do **not** tell the user to invoke those commands. Apply [Overrides](#overrides-when-running-under-this-loop) — they supersede nested “stop and wait” text.
+
+   d. **Advance state silently:**
+      ```bash
+      uv run python scripts/cursor/v2_loop_state.py complete <step_id>
+      ```
+      Re-read state. If `next_required_mode` still equals `batch_mode`, return to step 6a.
+
+   **AskQuestion during a batch:** if a step uses `AskQuestion`, wait for the user's answer, finish that step, `complete` it, then continue the batch — do **not** exit the invocation early.
+
+   **Hard failure:** report the error, do **not** call `complete`, do **not** advance state; exit the invocation. User fixes and re-invokes in the same mode.
+
+7. **Exit** — one invocation per mode stretch (`batch_mode`). After a successful batch that changed mode, post briefly:
+   ```text
+   Loop batch complete (<plan|agent> steps done). next_step=<id> requires <plan|agent> mode.
+   Switch mode and re-invoke: /run-v2-implementation
    ```
-
-7. **Exit** — one substantive step per invocation (C6). Exception: fast-forward may complete multiple skip-if-done steps before substantive work.
-
-When `next_step` is `done`, run final checks and post the [completion notification](#done-agent). Do **not** run `gh pr create`.
+   Omit the mode-switch line when `next_step` is `done` (post [completion notification](#done-agent) instead). Do **not** run `gh pr create`.
 
 ---
 
@@ -72,10 +88,15 @@ When `next_step` is `done`, run final checks and post the [completion notificati
 
 These override conflicting text in nested commands and [`.cursor/rules/30-planning-slices.mdc`](../rules/30-planning-slices.mdc):
 
-- **No slice chat approval** — loop advances via state `complete`; user does not approve each slice in chat.
+- **Mode-batched execution** — run every step whose `next_required_mode` matches `batch_mode` in one invocation; do not exit after a single substantive step.
+- **No slice chat approval** — loop advances via state `complete`; ignore build-plan-slice “stop and wait for approval.”
 - **No nested slash commands for the user** — agent follows nested command docs internally.
-- **No manual migration edit by user** — agent applies preview-suggested edits in `migration_manual_edit` (see below).
-- **No audit chat override** — auto-fix blocking findings within current step scope; if still blocked, stop with an error report; user re-invokes `/run-v2-implementation` after agent fixes in a later turn (no override protocol).
+- **No migration-slice gate in loop build steps** — for `*_pre_alembic`, `*_post_alembic`, and `*_build`, follow [build-plan-slice loop context](build-plan-slice.md#when-called-from-run-v2-implementation-loop-context); Alembic substeps use dedicated loop handlers instead.
+- **No manual migration edit by user** — agent applies preview-suggested edits in `migration_manual_edit` (see below); ignore db-revision-preview “wait for manual migration approval.”
+- **No db-revision approval prompts** — in `alembic_continue`, follow [db-revision-continue loop context](db-revision-continue.md#when-called-from-run-v2-implementation-loop-context); no AskQuestion for migration approval.
+- **Non-interactive commits only** — ignore commit-changes interactive staging prompts; use loop commit flags from step handlers.
+- **No audit chat override** — auto-fix blocking findings within current step scope; if still blocked, stop the batch with an error (no override protocol); user re-invokes in the same mode after fixes.
+- **Ignore draft-plan “stop after each slice”** — that applies to manual plan building, not loop Plan batches.
 
 ---
 
@@ -130,7 +151,7 @@ Follow [`.cursor/commands/build-plan-slice.md`](build-plan-slice.md) for `Slice:
    python scripts/cursor/commit_changes.py --non-interactive --skip-tests --message "V2 phase N slice <id>: <short objective>"
    ```
 
-**Slice ambiguity:** use **`AskQuestion`** (max one per invocation) — not freeform chat; not phase-plan `/request-questions`.
+**Slice ambiguity:** use **`AskQuestion`** when unavoidable — not freeform chat; not phase-plan `/request-questions`. Finish the step and continue the batch after the user answers.
 
 ### `phase_N_slice_<id>_pre_alembic` (Agent)
 
@@ -157,7 +178,7 @@ Follow the prior step's preview report. **No AskQuestion.** **No user file edit.
 
 ### `phase_N_slice_<id>_alembic_continue` (Agent)
 
-Follow [`.cursor/commands/db-revision-continue.md`](db-revision-continue.md) apply steps (`alembic upgrade head`, unmark `failure_expected`, pytest).
+Follow [`.cursor/commands/db-revision-continue.md`](db-revision-continue.md) **loop context** apply steps (`alembic upgrade head`, unmark `failure_expected`, pytest).
 
 Commit once with non-interactive staging (SC-7):
 
@@ -224,22 +245,13 @@ Slice order and Alembic five-step expansion: `v2_loop_state.py` parses `## Slice
 
 ## Phase 1 dry-run — user interaction table
 
-Verify every step allows **only** mode switch, `/run-v2-implementation`, and AskQuestion (where marked).
+Verify every **mode stretch** allows **only** mode switch, one `/run-v2-implementation`, and AskQuestion (where marked). Individual step IDs run agent-internally within the batch — the user does not re-invoke per step.
 
-| Step ID | Mode | User: switch mode? | User: `/run-v2-implementation` | User: AskQuestion? |
+| Mode stretch | Steps run in one invocation | User: switch mode after batch? | User: `/run-v2-implementation` | User: AskQuestion? |
 |---|---|---|---|---|
-| `phase_1_plan_bootstrap` | plan | maybe | yes | no (fast-forward) |
-| `phase_1_request_questions` | plan | maybe | yes | **yes** |
-| `phase_1_draft_plan` | plan | maybe | yes | no |
-| `phase_1_finalize_plan` | plan | maybe | yes | no |
-| `phase_1_slice_*_pre_alembic` | agent | maybe | yes | only if ambiguous |
-| `phase_1_slice_*_alembic_preview` | agent | maybe | yes | no |
-| `phase_1_slice_*_migration_manual_edit` | agent | maybe | yes | no |
-| `phase_1_slice_*_alembic_continue` | agent | maybe | yes | no |
-| `phase_1_slice_*_post_alembic` | agent | maybe | yes | only if ambiguous |
-| `phase_1_slice_*_build` | agent | maybe | yes | only if ambiguous |
-| `phase_1_phase_checks` | agent | maybe | yes | no |
-| `phase_2_plan_bootstrap` | plan | yes | yes | no (fast-forward) |
+| Plan — phase 1 plan block | `plan_bootstrap` → `request_questions` → `draft_plan` → `finalize_plan` | yes → Agent | once per Plan stretch | **yes** (during `request_questions` only) |
+| Agent — phase 1 slices + checks | all `phase_1_slice_*` substeps → `phase_1_phase_checks` | yes → Plan (phase 2) | once per Agent stretch | only if slice ambiguous |
+| Plan — phase 2 plan block | `phase_2_plan_bootstrap` → … → `finalize_plan` | yes → Agent | once per Plan stretch | **yes** (during `request_questions` only) |
 
 ---
 

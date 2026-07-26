@@ -66,6 +66,17 @@ Consistency pass rules:
 
 Stop after this slice and wait for approval.
 
+## When called from `/run-v2-implementation` (loop context)
+
+Maps to `phase_N_slice_<id>_build`, `phase_N_slice_<id>_pre_alembic`, or `phase_N_slice_<id>_post_alembic`.
+
+**Ignore for loop steps:**
+
+- The **migration-slice gate** and [Migration slice manual workflow](#migration-slice-manual-workflow) below — Alembic preview, manual edit, and continue are separate loop step handlers.
+- **“Stop after this slice and wait for approval.”** — the loop advances via state `complete` after commit; no chat approval.
+
+**Still apply:** slice preflight, implementation, reviews, checks, and reporting. If the slice is ambiguous, use **`AskQuestion`**, finish the step after the user answers, and let the loop continue the batch.
+
 ## Migration slice manual workflow
 
 Use when the **migration-slice gate** applies. **Do not implement this slice via `/build-plan-slice`.** The db-revision commands own autogenerate, manual migration edit, apply, and commit.

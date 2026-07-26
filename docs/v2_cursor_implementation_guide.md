@@ -103,9 +103,9 @@ Use [`.cursor/commands/run-v2-implementation.md`](../.cursor/commands/run-v2-imp
 
 The agent runs all state updates, nested workflows, commits, checks, and migration edits internally. Do **not** run shell scripts or other slash commands during the loop.
 
-Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). One substantive step runs per invocation; no-op steps fast-forward automatically.
+Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). **One invocation per mode stretch** — all Plan steps (or all Agent steps) until `next_required_mode` changes; no-op steps fast-forward automatically within the batch.
 
-**Mode handoff:** if the loop reports a mode mismatch, switch mode and invoke `/run-v2-implementation` again.
+**Mode handoff:** if the loop reports a mode mismatch at the start, or after a batch completes, switch mode and invoke `/run-v2-implementation` once in the new mode.
 
 **Slice ambiguity:** the agent uses `AskQuestion` when needed — not freeform chat and not phase-plan clarification on build slices.
 

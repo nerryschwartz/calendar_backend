@@ -30,3 +30,20 @@ Do not re-run before commit:
 - pytest
 
 Do not run autogenerate again in this command.
+
+## When called from `/run-v2-implementation` (loop context)
+
+Maps to `phase_N_slice_<id>_alembic_continue`.
+
+**Ignore for loop steps:**
+
+- **“If approval is unclear, ask one focused question and stop.”** — preview and `migration_manual_edit` already applied edits; proceed with apply and verify.
+- Interactive **`/commit-changes`** staging prompts — the loop handler commits with:
+  ```bash
+  python scripts/cursor/commit_changes.py --non-interactive --skip-checks --message "Apply V2 phase N migration: <revision-summary>"
+  ```
+- **`/review-abstractions`** before commit — run audit-commit-readiness and review-abstractions per [run-v2-implementation.md](run-v2-implementation.md) commit policy instead.
+
+**Still apply:** `alembic upgrade head`, remove `failure_expected` markers, pytest, and the single non-interactive commit. If checks fail, stop the batch without advancing state.
+
+Standalone `/db-revision-continue` (outside the loop) keeps approval prompts and interactive commit behavior.
