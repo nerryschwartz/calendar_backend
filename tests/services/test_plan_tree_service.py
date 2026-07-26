@@ -239,7 +239,7 @@ def _two_tasks_same_chain(session: Session, master_plan_id: PlanID) -> tuple[Pla
     )
     assert first.success and first.value is not None
     assert second.success and second.value is not None
-    assert goal.move_plan(second.value.plan_id, 0, 0).success
+    assert goal.move_plan(second.value.plan_id, 0).success
     return first.value.plan_id, second.value.plan_id
 
 
@@ -352,7 +352,7 @@ def test_preview_delete_critical_chain_includes_parent_goal(
     )
     assert first.success and first.value is not None
     assert second.success and second.value is not None
-    assert goal.move_plan(second.value.plan_id, 0, 0).success
+    assert goal.move_plan(second.value.plan_id, 0).success
 
     preview = _plan_tree_service(service_db_session).preview_delete(first.value.plan_id)
     assert preview.success and preview.value is not None
@@ -533,7 +533,7 @@ def test_delete_plan_parity_critical_chain(
     )
     assert first.success and first.value is not None
     assert second.success and second.value is not None
-    assert goal.move_plan(second.value.plan_id, 0, 0).success
+    assert goal.move_plan(second.value.plan_id, 0).success
 
     _assert_delete_matches_preview(
         service_db_session,

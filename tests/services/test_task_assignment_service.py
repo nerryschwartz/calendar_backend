@@ -192,7 +192,7 @@ def _create_goal_template_repetition_with_chained_tasks(
     assert second_result.success and second_result.value is not None
     first_task_id = first_result.value.plan_id
     second_task_id = second_result.value.plan_id
-    assert goal_service.move_plan(second_task_id, 0, 1).success
+    assert goal_service.move_plan(second_task_id, 0).success
     return (
         repetition_result.value.plan_id,
         template_goal_id,

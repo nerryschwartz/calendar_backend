@@ -153,8 +153,8 @@ def _three_tasks_in_master_chain(
     second_id = _create_task(session, master_plan_id, name="second")
     third_id = _create_task(session, master_plan_id, name="third")
     goal_service = _goal_service(session)
-    assert goal_service.move_plan(second_id, 0, 1).success
-    assert goal_service.move_plan(third_id, 0, 2).success
+    assert goal_service.move_plan(second_id, 1).success
+    assert goal_service.move_plan(third_id, 2).success
     return first_id, second_id, third_id
 
 
@@ -389,7 +389,7 @@ def test_resolve_tasks_emits_precedence_for_chain_order(service_db_session: Sess
     first_id = _create_task(service_db_session, master_id, name="first")
     second_id = _create_task(service_db_session, master_id, name="second")
     goal_service = _goal_service(service_db_session)
-    assert goal_service.move_plan(second_id, 0, 0).success
+    assert goal_service.move_plan(second_id, 0).success
     assert goal_service.move_plan(second_id, 1).success
 
     result = _resolve_seam(service_db_session)

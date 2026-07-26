@@ -234,7 +234,7 @@ def _setup_goal_repetition_with_two_task_children(
     assert second_result.success and second_result.value is not None
     first_task_id = first_result.value.plan_id
     second_task_id = second_result.value.plan_id
-    assert goal_service.move_plan(second_task_id, 0, 0).success
+    assert goal_service.move_plan(second_task_id, 0).success
     return (
         repetition_id,
         template_goal_id,
