@@ -26,7 +26,6 @@ from calendar_backend.domain.plan_create import (
 from calendar_backend.domain.resolution import ResolvedTask
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
@@ -642,11 +641,6 @@ def assert_linked_clone_child_exists(
     assert clone_child is not None
     assert clone_child.clone_status == CloneStatus.LINKED
     assert session.get(TaskPlan, clone_child.plan_id) is not None
-    chain_item = session.scalar(
-        select(GoalChildChainItem).where(GoalChildChainItem.child_plan_id == clone_child.plan_id)
-    )
-    assert chain_item is not None
-    chain = session.get(GoalChildChain, chain_item.chain_id)
-    assert chain is not None
-    assert chain.parent_goal_id == root_clone_id
+    assert clone_child.goal_is_critical is not None
+    assert clone_child.goal_sort_order is not None
     return PlanID(clone_child.plan_id)

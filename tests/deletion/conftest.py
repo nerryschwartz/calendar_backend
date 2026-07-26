@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 import calendar_backend.models.calendar  # pyright: ignore[reportUnusedImport]
-import calendar_backend.models.chains  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.constraints  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.free_time  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.plans  # pyright: ignore[reportUnusedImport]

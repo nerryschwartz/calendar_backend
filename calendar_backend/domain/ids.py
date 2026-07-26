@@ -5,8 +5,6 @@ from typing import NewType
 from uuid import UUID, uuid4
 
 PlanID = NewType("PlanID", UUID)
-GoalChildChainID = NewType("GoalChildChainID", UUID)
-GoalChildChainItemID = NewType("GoalChildChainItemID", UUID)
 TimeConstraintGroupID = NewType("TimeConstraintGroupID", UUID)
 TimeWindowID = NewType("TimeWindowID", UUID)
 RepetitionInstanceID = NewType("RepetitionInstanceID", UUID)

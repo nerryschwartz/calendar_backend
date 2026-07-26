@@ -20,8 +20,6 @@ APPLICATION_TABLES = (
     "goal_plan",
     "task_plan",
     "repetition_plan",
-    "goal_child_chain",
-    "goal_child_chain_item",
     "time_constraint_group",
     "time_window",
     "repetition_instance",

@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import calendar_backend.models.calendar  # pyright: ignore[reportUnusedImport]
-import calendar_backend.models.chains  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.constraints  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.free_time  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.plans  # pyright: ignore[reportUnusedImport]
@@ -28,8 +27,6 @@ SERVICE_SCHEMA_TABLE_NAMES = frozenset(
         "goal_plan",
         "task_plan",
         "repetition_plan",
-        "goal_child_chain",
-        "goal_child_chain_item",
         "time_constraint_group",
         "time_window",
         "repetition_instance",

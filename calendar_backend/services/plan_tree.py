@@ -29,7 +29,6 @@ from calendar_backend.domain.plan_create import (
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
 from calendar_backend.models.free_time import FreeTimeActivityPrerequisite
@@ -397,11 +396,6 @@ def _execute_plan_deletes(
                 TimeConstraintGroup.time_constraint_group_id.in_(group_ids)
             )
         )
-
-    txn.execute(
-        delete(GoalChildChainItem).where(GoalChildChainItem.child_plan_id.in_(affected_plan_ids))
-    )
-    txn.execute(delete(GoalChildChain).where(GoalChildChain.parent_goal_id.in_(affected_plan_ids)))
 
     txn.execute(
         delete(RepetitionInstance).where(

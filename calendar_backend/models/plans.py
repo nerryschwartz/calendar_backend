@@ -2,7 +2,7 @@
 
 Subtype pairing (plan_kind vs detail rows) and tree reachability are enforced
 by services and PlanTreeInvariantService, not by database triggers or ORM.
-Goal child chains live in ``calendar_backend.models.chains``.
+Direct goal-child ordering uses ``plan.goal_is_critical`` and ``plan.goal_sort_order``.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from calendar_backend.db.base import Base
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 
 if TYPE_CHECKING:
-    from calendar_backend.models.chains import GoalChildChain
     from calendar_backend.models.constraints import TimeConstraintGroup
     from calendar_backend.models.repetitions import RepetitionInstance
 
@@ -122,7 +121,6 @@ class GoalPlan(Base):
     )
 
     plan: Mapped[Plan] = relationship(back_populates="goal_plan")
-    chains: Mapped[list[GoalChildChain]] = relationship(back_populates="parent_goal")
 
 
 class TaskPlan(Base):
