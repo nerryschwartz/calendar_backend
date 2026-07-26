@@ -15,8 +15,6 @@ from calendar_backend.domain.dtos import RepetitionPlanDTO, repetition_plan_dto_
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import (
-    GoalChildChainID,
-    GoalChildChainItemID,
     PlanID,
     RepetitionInstanceID,
     TimeConstraintGroupID,
@@ -31,7 +29,6 @@ from calendar_backend.domain.repetitions import (
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
@@ -404,7 +401,7 @@ def _refresh_instance_clone_subtree(
             now=now,
         )
         if txn.get(GoalPlan, template_plan_id) is not None:
-            _sync_clone_goal_chains(
+            _sync_clone_goal_child_order(
                 txn,
                 template_goal_id=template_plan_id,
                 clone_goal_id=PlanID(clone_plan_id),
@@ -565,6 +562,8 @@ def _insert_linked_clone_plan(
             is_master=False,
             cloned_from_id=template_plan.plan_id,
             clone_status=CloneStatus.LINKED,
+            goal_is_critical=template_plan.goal_is_critical,
+            goal_sort_order=template_plan.goal_sort_order,
             created_at=now,
             updated_at=now,
         )
@@ -606,7 +605,7 @@ def _insert_linked_clone_plan(
     return clone_plan_id
 
 
-def _sync_clone_goal_chains(
+def _sync_clone_goal_child_order(
     txn: Session,
     *,
     template_goal_id: PlanID,
@@ -617,68 +616,21 @@ def _sync_clone_goal_chains(
     if not _is_linked_for_refresh(txn, clone_goal_id):
         return
 
-    template_chains = txn.scalars(
-        select(GoalChildChain)
-        .where(GoalChildChain.parent_goal_id == template_goal_id)
-        .order_by(GoalChildChain.sort_order)
-    ).all()
-    clone_chains = txn.scalars(
-        select(GoalChildChain)
-        .where(GoalChildChain.parent_goal_id == clone_goal_id)
-        .order_by(GoalChildChain.sort_order)
-    ).all()
-    clone_chain_by_bucket = {(chain.is_critical, chain.sort_order): chain for chain in clone_chains}
-
-    for template_chain in template_chains:
-        bucket = (template_chain.is_critical, template_chain.sort_order)
-        clone_chain = clone_chain_by_bucket.get(bucket)
-        if clone_chain is None:
-            clone_chain_id = new_id(GoalChildChainID)
-            clone_chain = GoalChildChain(
-                goal_child_chain_id=clone_chain_id,
-                parent_goal_id=clone_goal_id,
-                is_critical=template_chain.is_critical,
-                sort_order=template_chain.sort_order,
-                created_at=now,
-                updated_at=now,
-            )
-            txn.add(clone_chain)
-            clone_chain_by_bucket[bucket] = clone_chain
-        else:
-            clone_chain.is_critical = template_chain.is_critical
-            clone_chain.sort_order = template_chain.sort_order
-            clone_chain.updated_at = now
-
-        template_items = txn.scalars(
-            select(GoalChildChainItem)
-            .where(GoalChildChainItem.chain_id == template_chain.goal_child_chain_id)
-            .order_by(GoalChildChainItem.position)
-        ).all()
-        for template_item in template_items:
-            clone_child_id = clone_by_template.get(template_item.child_plan_id)
-            if clone_child_id is None:
-                continue
-            if not _is_linked_for_refresh(txn, PlanID(clone_child_id)):
-                continue
-
-            clone_item = txn.scalar(
-                select(GoalChildChainItem).where(GoalChildChainItem.child_plan_id == clone_child_id)
-            )
-            if clone_item is None:
-                txn.add(
-                    GoalChildChainItem(
-                        goal_child_chain_item_id=new_id(GoalChildChainItemID),
-                        chain_id=clone_chain.goal_child_chain_id,
-                        child_plan_id=clone_child_id,
-                        position=template_item.position,
-                    )
-                )
-                continue
-
-            if clone_item.chain_id != clone_chain.goal_child_chain_id:
-                clone_item.chain_id = clone_chain.goal_child_chain_id
-            if clone_item.position != template_item.position:
-                clone_item.position = template_item.position
+    template_children = txn.scalars(select(Plan).where(Plan.parent_id == template_goal_id)).all()
+    for template_child in template_children:
+        if template_child.goal_is_critical is None or template_child.goal_sort_order is None:
+            continue
+        clone_child_id = clone_by_template.get(template_child.plan_id)
+        if clone_child_id is None:
+            continue
+        if not _is_linked_for_refresh(txn, PlanID(clone_child_id)):
+            continue
+        clone_child = txn.get(Plan, clone_child_id)
+        if clone_child is None:
+            continue
+        clone_child.goal_is_critical = template_child.goal_is_critical
+        clone_child.goal_sort_order = template_child.goal_sort_order
+        clone_child.updated_at = now
 
 
 def _upsert_repetition_instance_window(
@@ -752,41 +704,13 @@ def _clone_template_subtree(
         if txn.get(GoalPlan, template_plan_id) is None:
             continue
 
-        clone_goal_id = PlanID(clone_plan_id)
-        chains = txn.scalars(
-            select(GoalChildChain)
-            .where(GoalChildChain.parent_goal_id == template_plan_id)
-            .order_by(GoalChildChain.sort_order)
-        ).all()
-        for chain in chains:
-            clone_chain_id = new_id(GoalChildChainID)
-            txn.add(
-                GoalChildChain(
-                    goal_child_chain_id=clone_chain_id,
-                    parent_goal_id=clone_goal_id,
-                    is_critical=chain.is_critical,
-                    sort_order=chain.sort_order,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            items = txn.scalars(
-                select(GoalChildChainItem)
-                .where(GoalChildChainItem.chain_id == chain.goal_child_chain_id)
-                .order_by(GoalChildChainItem.position)
-            ).all()
-            for item in items:
-                clone_child_id = clone_by_template_id.get(item.child_plan_id)
-                if clone_child_id is None:
-                    continue
-                txn.add(
-                    GoalChildChainItem(
-                        goal_child_chain_item_id=new_id(GoalChildChainItemID),
-                        chain_id=clone_chain_id,
-                        child_plan_id=clone_child_id,
-                        position=item.position,
-                    )
-                )
+        _sync_clone_goal_child_order(
+            txn,
+            template_goal_id=template_plan_id,
+            clone_goal_id=PlanID(clone_plan_id),
+            clone_by_template=clone_by_template_id,
+            now=now,
+        )
 
     return clone_by_template_id[template_root_id]
 
