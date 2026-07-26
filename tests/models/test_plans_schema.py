@@ -766,7 +766,6 @@ def test_check_goal_sort_order_non_negative(plan_schema_engine: Engine) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_alembic_upgrade_plan_has_goal_ordering_columns(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -795,7 +794,6 @@ def test_alembic_upgrade_plan_has_goal_ordering_columns(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_alembic_upgrade_enforces_goal_ordering_fields_paired(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
