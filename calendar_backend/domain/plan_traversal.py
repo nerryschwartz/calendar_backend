@@ -6,7 +6,7 @@ import uuid
 from collections import deque
 
 from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
-from calendar_backend.models.plans import GoalPlan, RepetitionPlan
+from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 
 
@@ -27,6 +27,34 @@ def collect_descendant_ids(
     if not include_root:
         collected.discard(root_id)
     return collected
+
+
+def _goal_child_sort_key(plan: Plan) -> tuple[bool, int, str]:
+    assert plan.goal_is_critical is not None
+    assert plan.goal_sort_order is not None
+    return (not plan.goal_is_critical, plan.goal_sort_order, str(plan.plan_id))
+
+
+def direct_goal_children(parent: Plan) -> tuple[Plan, ...]:
+    return tuple(
+        child
+        for child in parent.children
+        if child.goal_is_critical is not None and child.goal_sort_order is not None
+    )
+
+
+def ordered_goal_children(
+    parent: Plan,
+    *,
+    children: tuple[Plan, ...] | None = None,
+) -> tuple[Plan, ...]:
+    candidates = direct_goal_children(parent) if children is None else children
+    ordered = [
+        child
+        for child in candidates
+        if child.goal_is_critical is not None and child.goal_sort_order is not None
+    ]
+    return tuple(sorted(ordered, key=_goal_child_sort_key))
 
 
 def ordered_chains(goal_plan: GoalPlan) -> tuple[GoalChildChain, ...]:
