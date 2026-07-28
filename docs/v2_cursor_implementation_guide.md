@@ -103,12 +103,12 @@ Use [`.cursor/commands/run-v2-implementation.md`](../.cursor/commands/run-v2-imp
 
 **Mode stretches per phase:**
 
-- **Plan (once):** `plan_bootstrap` → `request_questions` — then switch to Agent
-- **Agent (once):** `draft_plan` → `finalize_plan` → all slice substeps → `phase_checks` — then switch to Plan for the next phase (or finish at `done`)
+- **Plan (once):** macro block `phase_N_plan_block` (`plan_bootstrap` → `request_questions` internally) — then switch to Agent
+- **Agent (once):** macro block `phase_N_agent_block` (`draft_plan` → `finalize_plan` → all slice substeps → `phase_checks` internally) — then switch to Plan for the next phase (or finish at `done`)
 
 The agent runs all state updates, nested workflows, commits, checks, and migration edits internally. Do **not** run shell scripts or other slash commands during the loop.
 
-Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). **One user invocation per mode stretch** — the agent runs all steps for that mode before any batch-exit message. Mid-batch “re-invoke” or false “batch complete” while `next_required_mode` still matches the current mode is a protocol violation.
+Progress lives in git-tracked [`.cursor/v2_implementation_loop.json`](../.cursor/v2_implementation_loop.json). **One user `/run-v2-implementation` per mode stretch.** If a turn ends before the macro block finishes, [`.cursor/hooks/v2-loop-auto-resume.sh`](../.cursor/hooks/v2-loop-auto-resume.sh) auto-submits the command again — you do not re-invoke manually. Mid-batch false “batch complete” while `next_required_mode` still matches the current mode is a protocol violation.
 
 **Mode handoff:** switch mode and invoke `/run-v2-implementation` once **only** when the loop reports a mode mismatch at the start, or after a true batch end (`next_required_mode` ≠ the mode you just finished). Do **not** switch mode when the next step requires the same mode you are already in.
 

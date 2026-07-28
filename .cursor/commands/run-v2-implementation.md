@@ -4,25 +4,35 @@ Drive the V2 single-PR implementation loop using git-tracked state in [`.cursor/
 
 ## CRITICAL — mode-batched execution
 
-**Do not exit after one loop step.** After the mode gate passes, run every step in `steps_in_batch` from `batch-steps` in **one invocation** (lifecycle step 7). Only exit when `batch-exit-check` reports `may_exit: true`.
+**Do not exit after one substep.** After the mode gate passes, finish the single macro block in `steps_in_batch` from `batch-steps` in **one user invocation** (lifecycle step 7). Only exit when `batch-exit-check` reports `may_exit: true`.
+
+**Macro blocks:** `phase_N_plan_block` (Plan) and `phase_N_agent_block` (Agent) are the only user-facing batch units. Granular substeps (`phase_N_slice_*`, etc.) are agent-internal — tracked via `substep-complete`, not separate invocations.
 
 **Mandatory at invocation start (after recording `batch_mode`):**
 ```bash
 uv run python scripts/cursor/v2_loop_state.py batch-steps
+uv run python scripts/cursor/v2_loop_state.py current-substep
 ```
-Keep `steps_in_batch` for the invocation. Do **not** stop until every listed step is `complete`d (or a hard failure).
+Keep `steps_in_batch` (one macro ID) and `current_substep` for the invocation. Do **not** stop until the macro block is complete (or a hard failure).
+
+**Turn-boundary auto-resume:** [`.cursor/hooks/v2-loop-auto-resume.sh`](../hooks/v2-loop-auto-resume.sh) submits `/run-v2-implementation` when a turn ends with `may_exit: false`. The user does **not** manually re-invoke mid-batch. Set `pause_auto_resume` before `AskQuestion` or hard failure (see below).
 
 **Forbidden before `batch-exit-check` says `may_exit: true`:**
 - Posting **“Loop batch complete”** when `next_required_mode` still equals `batch_mode`
 - Telling the user to **switch mode** when `next_required_mode` equals the current Cursor mode
-- Mid-batch slice summaries, progress tables, or **“re-invoke to continue”**
+- Telling the user to **re-invoke** mid-batch (the stop hook continues automatically)
+- Mid-batch slice summaries, progress tables, or partial batch reports
 - Any user-facing exit except mode-gate mismatch, `AskQuestion`, or hard failure
 
-**Between loop steps:** continue silently to step 7a — no chat output.
+**Between substeps:** continue silently to step 7a — no chat output.
 
-**Mode assignment:** **Plan** = `plan_bootstrap`, `request_questions` only. **Agent** = `draft_plan`, `finalize_plan`, all slice substeps, `phase_checks`, `phase_0_verify`, `done`.
+**Mode assignment:** **Plan** = `phase_N_plan_block` only. **Agent** = `phase_0_verify`, `phase_N_agent_block`, `done`.
 
-If a turn ends on **`AskQuestion`**, the user answers and re-invokes `/run-v2-implementation` **once in the same mode** to resume the batch (state unchanged).
+**AskQuestion / hard failure:** before ending the turn, run:
+```bash
+uv run python scripts/cursor/v2_loop_state.py set-pause-auto-resume true
+```
+Clear at invocation start: `set-pause-auto-resume false`. After the user answers `AskQuestion`, finish the substep, `substep-complete` it, and continue the batch in the same invocation when possible.
 
 ## User interaction model (locked)
 
@@ -57,9 +67,10 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
    ```
    If agent recovery needs reset: `init --reset` (never ask the user to run this).
 
-2. **Validate:**
+2. **Validate and normalize:**
    ```bash
    uv run python scripts/cursor/v2_loop_state.py validate
+   uv run python scripts/cursor/v2_loop_state.py set-pause-auto-resume false
    ```
 
 3. **Mode gate** — compare Cursor mode to `next_required_mode` from state:
@@ -98,17 +109,21 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
 
    b. If `next_step` is `done`, run the [`done`](#done-agent) handler once, then go to step 8.
 
-   c. **Execute one substantive step** — see [Step handlers](#step-handlers). Inline nested command rules from `.cursor/commands/*.md`; do **not** tell the user to invoke those commands. Apply [Overrides](#overrides-when-running-under-this-loop) — they supersede nested “stop and wait” text. **No user-visible slice summary** — continue silently to step 7d.
-
-   d. **Advance state silently:**
+   c. **Resolve current substep:**
       ```bash
-      uv run python scripts/cursor/v2_loop_state.py complete <step_id>
+      uv run python scripts/cursor/v2_loop_state.py current-substep
+      ```
+      Execute that granular substep — see [Step handlers](#step-handlers). Inline nested command rules from `.cursor/commands/*.md`; do **not** tell the user to invoke those commands. Apply [Overrides](#overrides-when-running-under-this-loop) — they supersede nested “stop and wait” text. **No user-visible slice summary** — continue silently to step 7d.
+
+   d. **Advance substep silently:**
+      ```bash
+      uv run python scripts/cursor/v2_loop_state.py substep-complete <granular_substep_id>
       ```
       Re-read state. Return to step 7a.
 
-   **AskQuestion during a batch:** if a step uses `AskQuestion`, wait for the user's answer, finish that step, `complete` it, then continue the batch — do **not** exit the invocation early unless the turn ends (user re-invokes in same mode to resume).
+   **AskQuestion during a batch:** set `pause_auto_resume true` before ending the turn on `AskQuestion`. After the user answers, finish that substep, `substep-complete` it, then continue the batch.
 
-   **Hard failure:** report the error, do **not** call `complete`, do **not** advance state; exit the invocation. User fixes and re-invokes in the same mode.
+   **Hard failure:** set `pause_auto_resume true`, report the error, do **not** call `substep-complete`, do **not** advance state; exit the invocation. User fixes; invoke `/run-v2-implementation` once in the same mode (hook stays paused until you clear it at step 2).
 
 8. **Exit** — run exit check again, then post **only** the matching template:
 
@@ -132,15 +147,15 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
 
 These override conflicting text in nested commands and [`.cursor/rules/30-planning-slices.mdc`](../rules/30-planning-slices.mdc):
 
-- **Mode-batched execution** — run every step in `steps_in_batch` in one invocation; do not exit after a single substantive step.
-- **Silent between steps** — no mid-batch slice reports, progress tables, or re-invoke instructions; continue to step 7a.
+- **Mode-batched execution** — finish the macro block (`phase_N_plan_block` or `phase_N_agent_block`) in one user invocation; run all `substeps_remaining` via `current-substep` / `substep-complete`.
+- **Silent between substeps** — no mid-batch slice reports, progress tables, or re-invoke instructions; continue to step 7a.
 - **No slice chat approval** — loop advances via state `complete`; ignore build-plan-slice “stop and wait for approval.”
 - **No nested slash commands for the user** — agent follows nested command docs internally.
 - **No migration-slice gate in loop build steps** — for `*_pre_alembic`, `*_post_alembic`, and `*_build`, follow [build-plan-slice loop context](build-plan-slice.md#when-called-from-run-v2-implementation-loop-context); Alembic substeps use dedicated loop handlers instead.
 - **No manual migration edit by user** — agent applies preview-suggested edits in `migration_manual_edit` (see below); ignore db-revision-preview “wait for manual migration approval.”
 - **No db-revision approval prompts** — in `alembic_continue`, follow [db-revision-continue loop context](db-revision-continue.md#when-called-from-run-v2-implementation-loop-context); no AskQuestion for migration approval.
 - **Non-interactive commits only** — ignore commit-changes interactive staging prompts; use loop commit flags from step handlers.
-- **No audit chat override** — auto-fix blocking findings within current step scope; if still blocked, stop the batch with an error (no override protocol); user re-invokes in the same mode after fixes.
+- **No audit chat override** — auto-fix blocking findings within current substep scope; if still blocked, set `pause_auto_resume true` and stop the batch with an error (no override protocol).
 - **Ignore draft-plan “stop after each slice”** — that applies to manual plan building, not loop Plan batches.
 
 ---
@@ -292,10 +307,11 @@ Slice order and Alembic five-step expansion: `v2_loop_state.py` parses `## Slice
 
 Verify every **mode stretch** allows **only** mode switch, one `/run-v2-implementation`, and AskQuestion (where marked). Individual step IDs run agent-internally within the batch — the user does not re-invoke per step.
 
-| Mode stretch | Steps run in one invocation | User: switch mode after batch? | User: `/run-v2-implementation` | User: AskQuestion? |
-|---|---|---|---|---|
-| Plan — phase N clarification | `plan_bootstrap` → `request_questions` | yes → Agent | once per Plan stretch | **yes** (during `request_questions` only) |
-| Agent — phase N plan + slices + checks | `draft_plan` → `finalize_plan` → all `phase_N_slice_*` substeps → `phase_N_phase_checks` | yes → Plan (next phase) or done | once per Agent stretch | only if slice ambiguous |
+| Mode stretch | Macro block | Internal substeps (agent-only) | User: switch mode after batch? | User: `/run-v2-implementation` | User: AskQuestion? |
+|---|---|---|---|---|---|
+| Plan — phase N clarification | `phase_N_plan_block` | `plan_bootstrap` → `request_questions` | yes → Agent | once per Plan stretch | **yes** (during `request_questions` only) |
+| Agent — phase N plan + slices + checks | `phase_N_agent_block` | `draft_plan` → `finalize_plan` → all `phase_N_slice_*` → `phase_N_phase_checks` | yes → Plan (next phase) or done | once per Agent stretch (hook auto-continues if turn ends early) | only if slice ambiguous |
+| Agent — phase 0 | `phase_0_verify` | *(single substep)* | yes → Plan (phase 1) | once | no |
 
 ---
 
