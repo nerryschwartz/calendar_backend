@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, overload
 
-from sqlalchemy import delete, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, or_, select, update
+from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
 from calendar_backend.deletion.preview_service import (
@@ -26,6 +26,10 @@ from calendar_backend.domain.plan_create import (
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
+from calendar_backend.domain.prerequisites import (
+    plan_prerequisite_edges_from_plans,
+    validate_plan_prerequisite_link,
+)
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.calendar import CalendarEntry
@@ -33,6 +37,7 @@ from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
 from calendar_backend.models.free_time import FreeTimeActivityPrerequisite
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.free_time_activity import (
     cleanup_orphaned_activities_after_plan_delete,
@@ -124,6 +129,68 @@ class PlanTreeService:
 
             plans, _calendar_entries = _load_deletion_graph(txn)
             _execute_plan_deletes(txn, preview, plans, updated_at=self._clock.now_utc())
+            txn.flush()
+            return ok(None)
+
+    def add_plan_prerequisite(
+        self,
+        dependent_id: PlanID,
+        prerequisite_id: PlanID,
+    ) -> ServiceResult[None]:
+        with transaction(self._session) as txn:
+            plans = tuple(
+                txn.scalars(
+                    select(Plan).options(
+                        selectinload(Plan.prerequisite_edges),
+                        selectinload(Plan.task_plan),
+                        selectinload(Plan.repetition_plan),
+                    )
+                ).all()
+            )
+            plans_by_id = {plan.plan_id: plan for plan in plans}
+            existing_edges = plan_prerequisite_edges_from_plans(plans)
+            validation_error = validate_plan_prerequisite_link(
+                dependent_id=dependent_id,
+                prerequisite_id=prerequisite_id,
+                existing_edges=existing_edges,
+                plans_by_id=plans_by_id,
+            )
+            if validation_error is not None:
+                return fail(validation_error)
+
+            dependent = txn.get(Plan, dependent_id)
+            now = self._clock.now_utc()
+            txn.add(
+                PlanPrerequisite(
+                    plan_id=dependent_id,
+                    prerequisite_plan_id=prerequisite_id,
+                )
+            )
+            if dependent is not None:
+                dependent.updated_at = now
+            txn.flush()
+            return ok(None)
+
+    def remove_plan_prerequisite(
+        self,
+        dependent_id: PlanID,
+        prerequisite_id: PlanID,
+    ) -> ServiceResult[None]:
+        with transaction(self._session) as txn:
+            row = txn.scalar(
+                select(PlanPrerequisite).where(
+                    PlanPrerequisite.plan_id == dependent_id,
+                    PlanPrerequisite.prerequisite_plan_id == prerequisite_id,
+                )
+            )
+            if row is None:
+                return ok(None)
+
+            dependent = txn.get(Plan, dependent_id)
+            now = self._clock.now_utc()
+            txn.delete(row)
+            if dependent is not None:
+                dependent.updated_at = now
             txn.flush()
             return ok(None)
 
@@ -404,6 +471,20 @@ def _execute_plan_deletes(
                 RepetitionInstance.root_clone_id.in_(affected_plan_ids),
             )
         )
+    )
+
+    txn.execute(
+        delete(PlanPrerequisite).where(
+            or_(
+                PlanPrerequisite.plan_id.in_(affected_plan_ids),
+                PlanPrerequisite.prerequisite_plan_id.in_(affected_plan_ids),
+            )
+        )
+    )
+    txn.execute(
+        update(TaskPlan)
+        .where(TaskPlan.immediate_prerequisite_plan_id.in_(affected_plan_ids))
+        .values(immediate_prerequisite_plan_id=None)
     )
 
     txn.execute(delete(TaskPlan).where(TaskPlan.plan_id.in_(affected_plan_ids)))

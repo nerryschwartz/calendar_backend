@@ -17,6 +17,7 @@ from calendar_backend.domain.plan_create import (
 )
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.plans import Plan, RepetitionPlan
+from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
@@ -753,3 +754,139 @@ def test_delete_plan_parity_detached_clone(
     assert service_db_session.get(Plan, linked_task_id) is not None
     assert service_db_session.get(Plan, repetition_id) is not None
     assert service_db_session.get(Plan, template_goal_id) is not None
+
+
+def _create_goal_under_master(
+    session: Session,
+    master_plan_id: PlanID,
+    *,
+    name: str,
+) -> PlanID:
+    result = _goal_service(session).create_child(
+        master_plan_id,
+        PlanKind.GOAL,
+        GoalCreatePayload(name=name),
+        is_critical=False,
+    )
+    assert result.success and result.value is not None
+    return result.value.plan_id
+
+
+def test_add_plan_prerequisite_master_goals_happy_path(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    prerequisite_id = _create_goal_under_master(
+        service_db_session, master_plan_id, name="prerequisite"
+    )
+    dependent_id = _create_goal_under_master(service_db_session, master_plan_id, name="dependent")
+    plan_tree = _plan_tree_service(service_db_session)
+
+    result = plan_tree.add_plan_prerequisite(dependent_id, prerequisite_id)
+    assert result.success
+
+    row = service_db_session.scalar(
+        select(PlanPrerequisite).where(
+            PlanPrerequisite.plan_id == dependent_id,
+            PlanPrerequisite.prerequisite_plan_id == prerequisite_id,
+        )
+    )
+    assert row is not None
+    _assert_tree_invariant(service_db_session)
+
+
+def test_add_plan_prerequisite_matching_template_traces(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id, _, template_task_id = _setup_goal_repetition_with_task_child(
+        service_db_session,
+        master_plan_id,
+    )
+    _generate_instances(service_db_session, repetition_id)
+    root_clone_0 = _instance_root_clone_id(service_db_session, repetition_id, 0)
+    root_clone_1 = _instance_root_clone_id(service_db_session, repetition_id, 1)
+    prerequisite_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_0,
+        template_plan_id=template_task_id,
+    )
+    dependent_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_1,
+        template_plan_id=template_task_id,
+    )
+
+    result = _plan_tree_service(service_db_session).add_plan_prerequisite(
+        dependent_id,
+        prerequisite_id,
+    )
+    assert result.success
+    _assert_tree_invariant(service_db_session)
+
+
+def test_add_plan_prerequisite_rejects_trace_mismatch(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    master_goal_id = _create_goal_under_master(
+        service_db_session, master_plan_id, name="master goal"
+    )
+    repetition_id, _, template_task_id = _setup_goal_repetition_with_task_child(
+        service_db_session,
+        master_plan_id,
+    )
+    _generate_instances(service_db_session, repetition_id)
+    root_clone_id = _instance_root_clone_id(service_db_session, repetition_id, 0)
+    task_clone_id = _clone_for_template(
+        service_db_session,
+        parent_clone_id=root_clone_id,
+        template_plan_id=template_task_id,
+    )
+
+    result = _plan_tree_service(service_db_session).add_plan_prerequisite(
+        task_clone_id,
+        master_goal_id,
+    )
+    assert not result.success
+    assert result.errors[0].code == MessageCode.PLAN_PREREQUISITE_TRACE_MISMATCH
+
+
+def test_add_plan_prerequisite_rejects_three_cycle(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    plan_a = _create_goal_under_master(service_db_session, master_plan_id, name="a")
+    plan_b = _create_goal_under_master(service_db_session, master_plan_id, name="b")
+    plan_c = _create_goal_under_master(service_db_session, master_plan_id, name="c")
+    plan_tree = _plan_tree_service(service_db_session)
+
+    assert plan_tree.add_plan_prerequisite(plan_a, plan_b).success
+    assert plan_tree.add_plan_prerequisite(plan_b, plan_c).success
+
+    result = plan_tree.add_plan_prerequisite(plan_c, plan_a)
+    assert not result.success
+    assert result.errors[0].code == MessageCode.PLAN_PREREQUISITE_CYCLE
+
+
+def test_remove_plan_prerequisite_is_idempotent(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    prerequisite_id = _create_goal_under_master(
+        service_db_session, master_plan_id, name="prerequisite"
+    )
+    dependent_id = _create_goal_under_master(service_db_session, master_plan_id, name="dependent")
+    plan_tree = _plan_tree_service(service_db_session)
+    assert plan_tree.add_plan_prerequisite(dependent_id, prerequisite_id).success
+
+    assert plan_tree.remove_plan_prerequisite(dependent_id, prerequisite_id).success
+    assert plan_tree.remove_plan_prerequisite(dependent_id, prerequisite_id).success
+
+    row = service_db_session.scalar(
+        select(PlanPrerequisite).where(
+            PlanPrerequisite.plan_id == dependent_id,
+            PlanPrerequisite.prerequisite_plan_id == prerequisite_id,
+        )
+    )
+    assert row is None
