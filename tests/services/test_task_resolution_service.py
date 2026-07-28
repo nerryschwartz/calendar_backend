@@ -15,6 +15,7 @@ from calendar_backend.domain.plan_create import (
     TaskCreatePayload,
 )
 from calendar_backend.domain.resolution import (
+    ResolvedPrecedenceConstraint,
     ResolvedTask,
     ResolveTasksResult,
     is_invalid_incomplete_task,
@@ -27,6 +28,7 @@ from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_plan import MasterPlanService
+from calendar_backend.services.plan_tree import PlanTreeService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
 from calendar_backend.services.task_resolution import (
@@ -66,6 +68,10 @@ def _repetition_service(session: Session) -> RepetitionService:
 
 def _resolution_service(session: Session) -> TaskResolutionService:
     return TaskResolutionService(session, FakeClock(RUN_AT))
+
+
+def _plan_tree_service(session: Session) -> PlanTreeService:
+    return PlanTreeService(session, FakeClock(RUN_AT))
 
 
 def _create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> PlanID:
@@ -399,6 +405,60 @@ def test_resolve_tasks_flat_goal_order_emits_no_chain_precedence(
     assert result.precedence_constraints == ()
     ordered_ids = [task.plan_id for task in result.valid_incomplete]
     assert ordered_ids.index(first_id) < ordered_ids.index(second_id)
+
+
+@pytest.mark.integration
+def test_resolve_tasks_emits_plan_prerequisite_precedence(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    prereq_id = _create_task(service_db_session, master_id, name="prereq")
+    dependent_id = _create_task(service_db_session, master_id, name="dependent")
+    assert (
+        _plan_tree_service(service_db_session)
+        .add_plan_prerequisite(
+            dependent_id,
+            prereq_id,
+        )
+        .success
+    )
+
+    result = _resolve_seam(service_db_session)
+
+    assert result.precedence_constraints == (
+        ResolvedPrecedenceConstraint(
+            predecessor_task_id=prereq_id,
+            successor_task_id=dependent_id,
+            reason="plan_prerequisite",
+        ),
+    )
+
+
+@pytest.mark.integration
+def test_resolve_tasks_emits_immediate_prerequisite_precedence(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    predecessor_id = _create_task(service_db_session, master_id, name="predecessor")
+    successor_id = _create_task(service_db_session, master_id, name="successor")
+    assert (
+        _task_service(service_db_session)
+        .set_immediate_prerequisite(
+            successor_id,
+            predecessor_id,
+        )
+        .success
+    )
+
+    result = _resolve_seam(service_db_session)
+
+    assert result.precedence_constraints == (
+        ResolvedPrecedenceConstraint(
+            predecessor_task_id=predecessor_id,
+            successor_task_id=successor_id,
+            reason="immediate_prerequisite",
+        ),
+    )
 
 
 @pytest.mark.integration

@@ -11,6 +11,7 @@ from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind,
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.resolution import (
+    ResolvedPrecedenceConstraint,
     ResolvedTask,
     ResolveTasksResult,
     build_resolution_indexes,
@@ -25,6 +26,7 @@ from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as OrmTimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 
 _NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
@@ -682,7 +684,7 @@ def test_validate_resolve_tasks_result_rejects_mismatched_bucket_membership() ->
         validate_resolve_tasks_result(result)
 
 
-def test_collect_precedence_constraints_returns_empty_until_plan_prerequisites() -> None:
+def test_collect_precedence_constraints_returns_empty_without_plan_prerequisites() -> None:
     plans = _precedence_chain_graph()
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
@@ -690,16 +692,150 @@ def test_collect_precedence_constraints_returns_empty_until_plan_prerequisites()
     edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
 
     assert edges == ()
+
+
+def test_collect_precedence_constraints_emits_plan_prerequisite_leaf_edges() -> None:
+    master_id = uuid.uuid4()
+    prereq_task_id = uuid.uuid4()
+    dependent_task_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id, _utc(8, 0), _utc(18, 0))]
+
+    prereq_task = _plan(
+        prereq_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="prereq",
+    )
+    _attach_task(prereq_task, user_completed=False)
+    dependent_task = _plan(
+        dependent_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="dependent",
+    )
+    _attach_task(dependent_task, user_completed=False)
+
+    _attach_ordered_children(
+        master,
+        (
+            (prereq_task, False, 0),
+            (dependent_task, False, 1),
+        ),
+    )
+
+    dependent_task.prerequisite_edges = [
+        PlanPrerequisite(plan_id=dependent_task_id, prerequisite_plan_id=prereq_task_id)
+    ]
+
+    plans = (master, prereq_task, dependent_task)
+    tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
+    indexes = build_resolution_indexes(plans)
+
+    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+
+    assert edges == (
+        ResolvedPrecedenceConstraint(
+            predecessor_task_id=PlanID(prereq_task_id),
+            successor_task_id=PlanID(dependent_task_id),
+            reason="plan_prerequisite",
+        ),
+    )
 
 
 def test_collect_precedence_constraints_skips_completed_predecessor() -> None:
-    plans = _precedence_chain_graph()
+    master_id = uuid.uuid4()
+    prereq_task_id = uuid.uuid4()
+    dependent_task_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id, _utc(8, 0), _utc(18, 0))]
+
+    prereq_task = _plan(
+        prereq_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="prereq",
+    )
+    _attach_task(prereq_task, user_completed=True)
+    dependent_task = _plan(
+        dependent_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="dependent",
+    )
+    _attach_task(dependent_task, user_completed=False)
+
+    _attach_ordered_children(
+        master,
+        (
+            (prereq_task, False, 0),
+            (dependent_task, False, 1),
+        ),
+    )
+    dependent_task.prerequisite_edges = [
+        PlanPrerequisite(plan_id=dependent_task_id, prerequisite_plan_id=prereq_task_id)
+    ]
+
+    plans = (master, prereq_task, dependent_task)
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
 
     edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
 
     assert edges == ()
+
+
+def test_collect_precedence_constraints_emits_immediate_precedence_edge() -> None:
+    master_id = uuid.uuid4()
+    predecessor_task_id = uuid.uuid4()
+    successor_task_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id, _utc(8, 0), _utc(18, 0))]
+
+    predecessor_task = _plan(
+        predecessor_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="predecessor",
+    )
+    _attach_task(predecessor_task, user_completed=False)
+    successor_task = _plan(
+        successor_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="successor",
+    )
+    _attach_task(successor_task, user_completed=False)
+    assert successor_task.task_plan is not None
+    successor_task.task_plan.immediate_prerequisite_plan_id = predecessor_task_id
+
+    _attach_ordered_children(
+        master,
+        (
+            (predecessor_task, False, 0),
+            (successor_task, False, 1),
+        ),
+    )
+
+    plans = (master, predecessor_task, successor_task)
+    tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
+    indexes = build_resolution_indexes(plans)
+
+    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+
+    assert edges == (
+        ResolvedPrecedenceConstraint(
+            predecessor_task_id=PlanID(predecessor_task_id),
+            successor_task_id=PlanID(successor_task_id),
+            reason="immediate_prerequisite",
+        ),
+    )
 
 
 def test_collect_precedence_constraints_ignores_non_task_chain_items() -> None:

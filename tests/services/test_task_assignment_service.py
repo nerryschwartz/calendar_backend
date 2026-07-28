@@ -1146,13 +1146,19 @@ def test_assign_tasks_occupied_past_task_blocks_placement(
 
 
 @pytest.mark.integration
-def test_assign_tasks_repetition_clone_flat_order_assigns_both_tasks(
+def test_assign_tasks_repetition_clone_immediate_prerequisite_orders_calendar(
     service_db_session: Session,
 ) -> None:
-    """Phase 1: flat goal-child order affects priority only; no chain precedence edges."""
+    """Immediate prerequisite on repetition clone tasks constrains calendar ordering."""
     master_id = _bootstrap_master_with_horizon(service_db_session)
     repetition_id, _, first_template_id, second_template_id = (
         _create_goal_template_repetition_with_ordered_tasks(service_db_session, master_id)
+    )
+    clock = _clock()
+    assert (
+        TaskService(service_db_session, clock)
+        .set_immediate_prerequisite(second_template_id, first_template_id)
+        .success
     )
     _generate_instances(service_db_session, repetition_id)
     clone_goal_id = _instance_root_clone_goal_id(service_db_session, repetition_id)
@@ -1166,7 +1172,6 @@ def test_assign_tasks_repetition_clone_flat_order_assigns_both_tasks(
         parent_clone_id=clone_goal_id,
         template_plan_id=second_template_id,
     )
-    clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
         master_id,
         (_window(_utc(2026, 6, 7, 10, 0), _utc(2026, 6, 7, 12, 0)),),
@@ -1181,6 +1186,9 @@ def test_assign_tasks_repetition_clone_flat_order_assigns_both_tasks(
     entries_by_source = {entry.source_plan_id: entry for entry in result.value.calendar_entries}
     assert first_clone_id in entries_by_source
     assert second_clone_id in entries_by_source
+    assert (
+        entries_by_source[first_clone_id].start_time < entries_by_source[second_clone_id].start_time
+    )
 
 
 @pytest.mark.integration

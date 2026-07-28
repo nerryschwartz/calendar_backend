@@ -16,6 +16,10 @@ from calendar_backend.domain.plan_traversal import (
     ordered_goal_children,
     ordered_repetition_instances,
 )
+from calendar_backend.domain.prerequisites import (
+    expand_immediate_precedence,
+    expand_plan_prerequisite_precedence,
+)
 from calendar_backend.domain.time import TimeWindow, validate_time_window
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import Plan
@@ -214,8 +218,45 @@ def collect_precedence_constraints(
     plans: tuple[Plan, ...],
     indexes: ResolutionIndexes,
 ) -> tuple[ResolvedPrecedenceConstraint, ...]:
-    del tasks, plans, indexes
-    return ()
+    incomplete_task_ids = frozenset(
+        task.plan_id for task in tasks if not task.user_completed and not is_invalid_task(task)
+    )
+    completed_task_ids = frozenset(
+        task.plan_id for task in tasks if task.user_completed and not is_invalid_task(task)
+    )
+
+    plan_edges = expand_plan_prerequisite_precedence(
+        plans=plans,
+        plans_by_id=indexes.plans_by_id,
+        template_subtree_ids=indexes.template_subtree_ids,
+        incomplete_task_ids=incomplete_task_ids,
+        completed_task_ids=completed_task_ids,
+    )
+    immediate_edges = expand_immediate_precedence(
+        plans=plans,
+        incomplete_task_ids=incomplete_task_ids,
+        completed_task_ids=completed_task_ids,
+    )
+
+    combined: list[ResolvedPrecedenceConstraint] = []
+    for predecessor_task_id, successor_task_id, reason in plan_edges + immediate_edges:
+        combined.append(
+            ResolvedPrecedenceConstraint(
+                predecessor_task_id=predecessor_task_id,
+                successor_task_id=successor_task_id,
+                reason=reason,
+            )
+        )
+    return tuple(
+        sorted(
+            combined,
+            key=lambda edge: (
+                str(edge.predecessor_task_id),
+                str(edge.successor_task_id),
+                edge.reason,
+            ),
+        )
+    )
 
 
 def resolve_tasks_from_graph(
