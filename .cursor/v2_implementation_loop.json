@@ -2,9 +2,9 @@
   "version": 1,
   "branch": "new-design-and-implementation-doc",
   "next_required_mode": "agent",
-  "next_step": "phase_3_agent_block",
-  "current_phase": 3,
-  "current_plan_path": "docs/plans/v2_block_orm.md",
+  "next_step": "phase_4_agent_block",
+  "current_phase": 4,
+  "current_plan_path": "docs/plans/v2_block_assignment.md",
   "current_slice_id": null,
   "skip_tests_on_commit": true,
   "completed_steps": [
@@ -64,10 +64,14 @@
     "phase_3_slice_7_build",
     "phase_3_slice_8_build",
     "phase_3_slice_1_alembic_continue",
-    "phase_3_slice_1_post_alembic"
+    "phase_3_slice_1_post_alembic",
+    "phase_3_phase_checks",
+    "phase_4_request_questions",
+    "phase_4_plan_bootstrap",
+    "phase_4_draft_plan"
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": [],
   "pause_auto_resume": false,
-  "active_batch_mode": null
+  "active_batch_mode": "agent"
 }
