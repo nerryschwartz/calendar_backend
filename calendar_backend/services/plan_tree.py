@@ -21,6 +21,7 @@ from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import FreeTimeActivityID, PlanID, new_id
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     CreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
@@ -32,6 +33,7 @@ from calendar_backend.domain.prerequisites import (
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.models.blocks import BlockCalendarEntry, BlockPlan
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
@@ -48,6 +50,7 @@ from calendar_backend.services.free_time_activity import (
 class _PlanFromPayloadResult:
     plan: Plan
     task_plan: TaskPlan | None = None
+    block_plan: BlockPlan | None = None
     repetition_plan: RepetitionPlan | None = None
 
 
@@ -253,6 +256,44 @@ class PlanTreeService:
         txn.add(task_plan)
         return plan, task_plan
 
+    def make_block(
+        self,
+        txn: Session,
+        *,
+        name: str,
+        duration_minutes: int,
+        divisible: bool,
+        minimum_chunk_size_minutes: int | None,
+        block_family: str,
+        clone_status: CloneStatus = CloneStatus.NOT_CLONED,
+        now: datetime,
+    ) -> tuple[Plan, BlockPlan]:
+        plan_id = new_id(PlanID)
+        plan = Plan(
+            plan_id=plan_id,
+            plan_kind=PlanKind.BLOCK,
+            name=name,
+            parent_id=None,
+            is_master=False,
+            cloned_from_id=None,
+            clone_status=clone_status,
+            created_at=now,
+            updated_at=now,
+        )
+        txn.add(plan)
+        block_plan = BlockPlan(
+            plan_id=plan_id,
+            duration_minutes=duration_minutes,
+            divisible=divisible,
+            minimum_chunk_size_minutes=minimum_chunk_size_minutes,
+            user_completed=False,
+            completed_at=None,
+            block_family=block_family,
+            immediate_prerequisite_plan_id=None,
+        )
+        txn.add(block_plan)
+        return plan, block_plan
+
     def make_repetition(
         self,
         txn: Session,
@@ -377,6 +418,22 @@ class PlanTreeService:
             )
             return _PlanFromPayloadResult(plan=plan, task_plan=task_plan)
 
+        if kind == PlanKind.BLOCK:
+            assert isinstance(
+                payload, BlockCreatePayload
+            )  # type checker: validate_create_payload already enforced match
+            plan, block_plan = self.make_block(
+                txn,
+                name=payload.name,
+                duration_minutes=payload.duration_minutes,
+                divisible=payload.divisible,
+                minimum_chunk_size_minutes=payload.minimum_chunk_size_minutes,
+                block_family=payload.block_family,
+                clone_status=clone_status,
+                now=now,
+            )
+            return _PlanFromPayloadResult(plan=plan, block_plan=block_plan)
+
         assert isinstance(
             payload, RepetitionCreatePayload
         )  # type checker: validate_create_payload already enforced match
@@ -429,6 +486,10 @@ def _execute_plan_deletes(
                 CalendarEntry.calendar_entry_id.in_(preview.affected_calendar_entry_ids)
             )
         )
+
+    txn.execute(
+        delete(BlockCalendarEntry).where(BlockCalendarEntry.source_plan_id.in_(affected_plan_ids))
+    )
 
     orphan_candidate_activity_ids = tuple(
         FreeTimeActivityID(activity_id)
@@ -486,8 +547,14 @@ def _execute_plan_deletes(
         .where(TaskPlan.immediate_prerequisite_plan_id.in_(affected_plan_ids))
         .values(immediate_prerequisite_plan_id=None)
     )
+    txn.execute(
+        update(BlockPlan)
+        .where(BlockPlan.immediate_prerequisite_plan_id.in_(affected_plan_ids))
+        .values(immediate_prerequisite_plan_id=None)
+    )
 
     txn.execute(delete(TaskPlan).where(TaskPlan.plan_id.in_(affected_plan_ids)))
+    txn.execute(delete(BlockPlan).where(BlockPlan.plan_id.in_(affected_plan_ids)))
     txn.execute(delete(RepetitionPlan).where(RepetitionPlan.plan_id.in_(affected_plan_ids)))
     txn.execute(delete(GoalPlan).where(GoalPlan.plan_id.in_(affected_plan_ids)))
 
@@ -552,16 +619,25 @@ def load_plan_with_subtype(
     txn: Session,
     plan_id: PlanID,
     *,
-    expected_kind: Literal[PlanKind.REPETITION],
-) -> tuple[Plan, RepetitionPlan] | ServiceMessage: ...
+    expected_kind: Literal[PlanKind.BLOCK],
+) -> tuple[Plan, BlockPlan] | ServiceMessage: ...
 
 
+@overload
 def load_plan_with_subtype(
     txn: Session,
     plan_id: PlanID,
     *,
+    expected_kind: Literal[PlanKind.REPETITION],
+) -> tuple[Plan, RepetitionPlan] | ServiceMessage: ...
+
+
+def load_plan_with_subtype(  # noqa: PLR0911
+    txn: Session,
+    plan_id: PlanID,
+    *,
     expected_kind: PlanKind,
-) -> tuple[Plan, TaskPlan | RepetitionPlan] | ServiceMessage:
+) -> tuple[Plan, TaskPlan | BlockPlan | RepetitionPlan] | ServiceMessage:
     """Load a plan and its subtype detail row; sibling services only."""
     plan = txn.get(Plan, plan_id)
     if plan is None:
@@ -573,6 +649,8 @@ def load_plan_with_subtype(
     if plan.plan_kind != expected_kind:
         if expected_kind == PlanKind.TASK:
             kind_message = "Plan is not a task"
+        elif expected_kind == PlanKind.BLOCK:
+            kind_message = "Plan is not a block"
         else:
             kind_message = "Plan is not a repetition"
         return ServiceMessage(
@@ -592,6 +670,16 @@ def load_plan_with_subtype(
                 details={"plan_id": str(plan_id)},
             )
         return plan, task_plan
+
+    if expected_kind == PlanKind.BLOCK:
+        block_plan = plan.block_plan
+        if block_plan is None:
+            return ServiceMessage(
+                code=MessageCode.PLAN_SUBTYPE_MISMATCH,
+                message="Block plan is missing block_plan detail row",
+                details={"plan_id": str(plan_id)},
+            )
+        return plan, block_plan
 
     repetition_plan = plan.repetition_plan
     if repetition_plan is None:

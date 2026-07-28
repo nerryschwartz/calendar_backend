@@ -142,48 +142,52 @@ def would_create_prerequisite_cycle(
 
 def validate_immediate_prerequisite_link(
     *,
-    task_id: PlanID,
+    successor_id: PlanID,
     predecessor_id: PlanID,
     plans_by_id: dict[uuid.UUID, Plan],
 ) -> ServiceMessage | None:
-    if task_id == predecessor_id:
+    if successor_id == predecessor_id:
         return ServiceMessage(
             code=MessageCode.IMMEDIATE_PREREQUISITE_SELF_EDGE,
-            message="Task cannot be an immediate prerequisite of itself",
+            message="Plan cannot be an immediate prerequisite of itself",
             details={
-                "plan_id": str(task_id),
+                "plan_id": str(successor_id),
                 "predecessor_plan_id": str(predecessor_id),
             },
         )
 
-    task_plan_row = plans_by_id.get(task_id)
+    successor_plan = plans_by_id.get(successor_id)
     predecessor_plan = plans_by_id.get(predecessor_id)
-    if task_plan_row is None or predecessor_plan is None:
-        missing_id = task_id if task_plan_row is None else predecessor_id
+    if successor_plan is None or predecessor_plan is None:
+        missing_id = successor_id if successor_plan is None else predecessor_id
         return ServiceMessage(
             code=MessageCode.PLAN_NOT_FOUND,
             message="Plan not found",
             details={"plan_id": str(missing_id)},
         )
 
-    if task_plan_row.plan_kind != PlanKind.TASK or predecessor_plan.plan_kind != PlanKind.TASK:
+    allowed_kinds = {PlanKind.TASK, PlanKind.BLOCK}
+    if (
+        successor_plan.plan_kind not in allowed_kinds
+        or predecessor_plan.plan_kind not in allowed_kinds
+    ):
         return ServiceMessage(
             code=MessageCode.IMMEDIATE_PREREQUISITE_NOT_TASK,
-            message="Immediate prerequisite predecessor and successor must be task plans",
+            message="Immediate prerequisite predecessor and successor must be task or block plans",
             details={
-                "plan_id": str(task_id),
+                "plan_id": str(successor_id),
                 "predecessor_plan_id": str(predecessor_id),
             },
         )
 
-    task_trace = compute_template_trace(task_id, plans_by_id)
+    successor_trace = compute_template_trace(successor_id, plans_by_id)
     predecessor_trace = compute_template_trace(predecessor_id, plans_by_id)
-    if not traces_match(task_trace, predecessor_trace):
+    if not traces_match(successor_trace, predecessor_trace):
         return ServiceMessage(
             code=MessageCode.IMMEDIATE_PREREQUISITE_TRACE_MISMATCH,
             message="Immediate prerequisite requires matching template traces",
             details={
-                "plan_id": str(task_id),
+                "plan_id": str(successor_id),
                 "predecessor_plan_id": str(predecessor_id),
             },
         )
@@ -222,6 +226,11 @@ def leaf_task_ids_in_subtree(
                 collected.add(plan_id)
             return
 
+        if plan.plan_kind == PlanKind.BLOCK:
+            if plan.block_plan is not None:
+                collected.add(plan_id)
+            return
+
         if plan.plan_kind == PlanKind.GOAL:
             for child in _goal_children(plan.plan_id, plans_by_id):
                 walk(child)
@@ -257,7 +266,15 @@ def is_plan_subtree_complete(
         return True
     for leaf_id in leaf_ids:
         plan = plans_by_id.get(leaf_id)
-        if plan is None or plan.task_plan is None or not plan.task_plan.user_completed:
+        if plan is None:
+            return False
+        if plan.plan_kind == PlanKind.TASK:
+            if plan.task_plan is None or not plan.task_plan.user_completed:
+                return False
+        elif plan.plan_kind == PlanKind.BLOCK:
+            if plan.block_plan is None or not plan.block_plan.user_completed:
+                return False
+        else:
             return False
     return True
 

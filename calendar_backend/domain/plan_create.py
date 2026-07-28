@@ -23,6 +23,15 @@ class TaskCreatePayload:
 
 
 @dataclass(frozen=True)
+class BlockCreatePayload:
+    name: str
+    duration_minutes: int
+    divisible: bool
+    minimum_chunk_size_minutes: int | None
+    block_family: str
+
+
+@dataclass(frozen=True)
 class RepetitionCreatePayload:
     name: str
     repeat_mode: RepeatMode
@@ -35,14 +44,16 @@ class RepetitionCreatePayload:
     template_payload: CreatePayload
 
 
-CreatePayload = GoalCreatePayload | TaskCreatePayload | RepetitionCreatePayload
+CreatePayload = GoalCreatePayload | TaskCreatePayload | BlockCreatePayload | RepetitionCreatePayload
 
 _EXPECTED_PAYLOAD_TYPE: dict[PlanKind, type[CreatePayload]] = {
     PlanKind.GOAL: GoalCreatePayload,
     PlanKind.TASK: TaskCreatePayload,
+    PlanKind.BLOCK: BlockCreatePayload,
     PlanKind.REPETITION: RepetitionCreatePayload,
 }
 
+from calendar_backend.domain.blocks import validate_block_create  # noqa: E402
 from calendar_backend.domain.tasks import validate_task_create  # noqa: E402
 
 
@@ -69,6 +80,9 @@ def validate_create_payload(
     if kind == PlanKind.TASK:
         assert isinstance(payload, TaskCreatePayload)  # type checker: isinstance above
         return validate_task_create(payload)
+    if kind == PlanKind.BLOCK:
+        assert isinstance(payload, BlockCreatePayload)  # type checker: isinstance above
+        return validate_block_create(payload)
     if kind == PlanKind.REPETITION:
         from calendar_backend.domain.repetitions import validate_repetition_create  # noqa: PLC0415
 

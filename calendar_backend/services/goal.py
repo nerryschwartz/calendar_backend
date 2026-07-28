@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.dtos import (
+    BlockPlanDTO,
     GoalPlanDTO,
     RepetitionPlanDTO,
     TaskPlanDTO,
+    block_plan_dto_from_rows,
     goal_plan_dto_from_plan,
     repetition_plan_dto_from_rows,
     task_plan_dto_from_rows,
@@ -21,6 +23,7 @@ from calendar_backend.domain.enums import CloneStatus, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     CreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
@@ -64,6 +67,15 @@ class GoalService:
     def create_child(
         self,
         parent_id: PlanID,
+        kind: Literal[PlanKind.BLOCK],
+        payload: BlockCreatePayload,
+        is_critical: bool,
+    ) -> ServiceResult[BlockPlanDTO]: ...
+
+    @overload
+    def create_child(
+        self,
+        parent_id: PlanID,
         kind: Literal[PlanKind.REPETITION],
         payload: RepetitionCreatePayload,
         is_critical: bool,
@@ -75,7 +87,7 @@ class GoalService:
         kind: PlanKind,
         payload: CreatePayload,
         is_critical: bool,
-    ) -> ServiceResult[GoalPlanDTO | TaskPlanDTO | RepetitionPlanDTO]:
+    ) -> ServiceResult[GoalPlanDTO | TaskPlanDTO | BlockPlanDTO | RepetitionPlanDTO]:
         validation_error = validate_create_payload(kind, payload)
         if validation_error is not None:
             return fail(validation_error)
@@ -142,7 +154,7 @@ def _persist_create_child(
     payload: CreatePayload,
     is_critical: bool,
     now: datetime,
-) -> ServiceResult[GoalPlanDTO | TaskPlanDTO | RepetitionPlanDTO]:
+) -> ServiceResult[GoalPlanDTO | TaskPlanDTO | BlockPlanDTO | RepetitionPlanDTO]:
     created = plan_tree.make_from_create_payload(
         txn,
         kind=kind,
@@ -164,6 +176,9 @@ def _persist_create_child(
     if kind == PlanKind.TASK:
         assert created.task_plan is not None  # type checker: kind TASK implies task row
         return ok(task_plan_dto_from_rows(created.plan, created.task_plan))
+    if kind == PlanKind.BLOCK:
+        assert created.block_plan is not None  # type checker: kind BLOCK implies block row
+        return ok(block_plan_dto_from_rows(created.plan, created.block_plan))
     assert created.repetition_plan is not None  # type checker: kind REPETITION implies detail row
     return ok(repetition_plan_dto_from_rows(created.plan, created.repetition_plan))
 

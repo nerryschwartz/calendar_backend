@@ -13,6 +13,7 @@ from calendar_backend.domain.prerequisites import (
     transitive_plan_prerequisite_pairs,
     would_create_prerequisite_cycle,
 )
+from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.plans import GoalPlan, Plan, TaskPlan
 
 _NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
@@ -41,6 +42,31 @@ def _task_plan(plan_id: PlanID, *, user_completed: bool = False) -> Plan:
         minimum_chunk_size_minutes=None,
         user_completed=user_completed,
         completed_at=_NOW if user_completed else None,
+    )
+    return plan
+
+
+def _block_plan(plan_id: PlanID, *, user_completed: bool = False) -> Plan:
+    plan = Plan(
+        plan_id=plan_id,
+        plan_kind=PlanKind.BLOCK,
+        name=str(plan_id),
+        parent_id=None,
+        is_master=False,
+        cloned_from_id=None,
+        clone_status=CloneStatus.NOT_CLONED,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+    plan.block_plan = BlockPlan(
+        plan_id=plan_id,
+        duration_minutes=30,
+        divisible=False,
+        minimum_chunk_size_minutes=None,
+        user_completed=user_completed,
+        completed_at=_NOW if user_completed else None,
+        block_family="focus",
+        immediate_prerequisite_plan_id=None,
     )
     return plan
 
@@ -156,6 +182,36 @@ def test_leaf_task_ids_in_subtree_collects_nested_goal_tasks() -> None:
     )
 
     assert leaves == {_plan_id("root-task"), _plan_id("nested-task")}
+
+
+def test_is_plan_subtree_complete_false_when_block_leaf_incomplete() -> None:
+    task = _task_plan(_plan_id("task"), user_completed=True)
+    block = _block_plan(_plan_id("block"), user_completed=False)
+    goal = _goal_plan(_plan_id("goal"), children=(task, block))
+    plans_by_id = {plan.plan_id: plan for plan in (goal, task, block)}
+
+    assert (
+        is_plan_subtree_complete(
+            _plan_id("goal"),
+            plans_by_id=plans_by_id,
+            template_subtree_ids=frozenset(),
+        )
+        is False
+    )
+
+
+def test_leaf_task_ids_in_subtree_includes_block_leaves() -> None:
+    block = _block_plan(_plan_id("block"))
+    goal = _goal_plan(_plan_id("goal"), children=(block,))
+    plans_by_id = {plan.plan_id: plan for plan in (goal, block)}
+
+    leaves = leaf_task_ids_in_subtree(
+        _plan_id("goal"),
+        plans_by_id=plans_by_id,
+        template_subtree_ids=frozenset(),
+    )
+
+    assert leaves == {_plan_id("block")}
 
 
 def test_transitive_plan_prerequisite_pairs_includes_indirect_dependencies() -> None:

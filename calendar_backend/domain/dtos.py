@@ -7,6 +7,7 @@ from datetime import datetime
 
 from calendar_backend.domain.enums import ConstraintKind, FreeTimeWeekStartDay, RepeatMode
 from calendar_backend.domain.ids import CalendarEntryID, PlanID, TimeConstraintGroupID, TimeWindowID
+from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.settings import AppSettings
@@ -59,6 +60,39 @@ def task_plan_dto_from_rows(plan: Plan, task_plan: TaskPlan) -> TaskPlanDTO:
         minimum_chunk_size_minutes=task_plan.minimum_chunk_size_minutes,
         user_completed=task_plan.user_completed,
         completed_at=task_plan.completed_at,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+    )
+
+
+@dataclass(frozen=True)
+class BlockPlanDTO:
+    plan_id: PlanID
+    name: str
+    is_master: bool
+    parent_id: PlanID | None
+    duration_minutes: int
+    divisible: bool
+    minimum_chunk_size_minutes: int | None
+    user_completed: bool
+    completed_at: datetime | None
+    block_family: str
+    created_at: datetime
+    updated_at: datetime
+
+
+def block_plan_dto_from_rows(plan: Plan, block_plan: BlockPlan) -> BlockPlanDTO:
+    return BlockPlanDTO(
+        plan_id=PlanID(plan.plan_id),
+        name=plan.name,
+        is_master=plan.is_master,
+        parent_id=PlanID(plan.parent_id) if plan.parent_id is not None else None,
+        duration_minutes=block_plan.duration_minutes,
+        divisible=block_plan.divisible,
+        minimum_chunk_size_minutes=block_plan.minimum_chunk_size_minutes,
+        user_completed=block_plan.user_completed,
+        completed_at=block_plan.completed_at,
+        block_family=block_plan.block_family,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
     )

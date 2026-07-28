@@ -27,6 +27,7 @@ class PlanTreeInvariantService:
                     select(Plan).options(
                         selectinload(Plan.goal_plan),
                         selectinload(Plan.task_plan),
+                        selectinload(Plan.block_plan),
                         selectinload(Plan.prerequisite_edges),
                         selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
                         selectinload(Plan.constraint_groups).selectinload(

@@ -11,10 +11,12 @@ from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
+from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import AppSettingsService
@@ -244,6 +246,40 @@ def test_create_child_task_under_master(
     assert result.success and result.value is not None
     assert service_db_session.get(TaskPlan, result.value.plan_id) is not None
     _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_create_child_block_under_master(
+    service_db_session: Session, master_plan_id: PlanID
+) -> None:
+    service = _goal_service(service_db_session)
+    result = service.create_child(
+        master_plan_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload("focus block", 45, False, None, "focus"),
+        is_critical=False,
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.block_family == "focus"
+    assert service_db_session.get(BlockPlan, result.value.plan_id) is not None
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_create_child_block_rejects_empty_family(
+    service_db_session: Session, master_plan_id: PlanID
+) -> None:
+    service = _goal_service(service_db_session)
+    result = service.create_child(
+        master_plan_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload("focus block", 45, False, None, "   "),
+        is_critical=False,
+    )
+
+    assert not result.success
+    assert result.errors[0].code == MessageCode.INVALID_CREATE_PAYLOAD
 
 
 @pytest.mark.integration
