@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+input="$(cat)"
+status="$(echo "$input" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
+
+if [[ "$status" != "completed" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+state_file="$repo_root/.cursor/v2_implementation_loop.json"
+
+if [[ ! -f "$state_file" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+pause_auto_resume="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pause_auto_resume", False))' "$state_file")"
+if [[ "$pause_auto_resume" == "True" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+cd "$repo_root"
+batch_mode="$(python3 -c 'import json,sys; print(json.load(open(".cursor/v2_implementation_loop.json")).get("next_required_mode","agent"))')"
+exit_json="$(uv run python scripts/cursor/v2_loop_state.py batch-exit-check --batch-mode "$batch_mode")"
+may_exit="$(echo "$exit_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("may_exit", True))')"
+
+if [[ "$may_exit" == "True" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+python3 -c 'import json; print(json.dumps({"followup_message": "/run-v2-implementation"}))'

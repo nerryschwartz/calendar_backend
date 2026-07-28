@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": ".cursor/hooks/v2-loop-auto-resume.sh",
+        "loop_limit": 50
+      }
+    ]
+  }
+}
