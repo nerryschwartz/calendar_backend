@@ -38,6 +38,7 @@ from calendar_backend.scheduling.types import (
     AssignmentSolverResult,
     TaskAssignment,
     exact_optimal_result,
+    infeasible_result,
 )
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
@@ -1063,6 +1064,7 @@ def test_assign_tasks_failure_persists_failed_run_and_last_refresh_failed(
 @pytest.mark.integration
 def test_assign_tasks_failure_preserves_active_calendar_run_id(
     service_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     master_id = _bootstrap_master_with_horizon(service_db_session)
     _create_task(service_db_session, master_id, name="solo")
@@ -1075,13 +1077,30 @@ def test_assign_tasks_failure_preserves_active_calendar_run_id(
     assert state is not None
     prior_active_run_id = state.active_calendar_run_id
 
-    clock = _clock()
-    TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
-        (_window(RUN_AT, RUN_AT + timedelta(minutes=30)),),
+    _create_task(service_db_session, master_id, name="extra")
+
+    def _forced_infeasible_solve(
+        _assignment_input: AssignmentInput,
+        *,
+        heuristic_enabled: bool,
+    ) -> tuple[AssignmentSolverResult, int]:
+        del _assignment_input, heuristic_enabled
+        return (
+            infeasible_result(
+                ServiceMessage(
+                    code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+                    message="forced infeasible for test",
+                    details={},
+                )
+            ),
+            0,
+        )
+
+    monkeypatch.setattr(
+        "calendar_backend.services.task_assignment._solve_assignment",
+        _forced_infeasible_solve,
     )
-    second_id = _create_task(service_db_session, master_id, name="extra")
-    assert second_id
+
     failure = _assignment_service(service_db_session).assign_tasks(
         _resolve_seam(service_db_session),
         RUN_AT,

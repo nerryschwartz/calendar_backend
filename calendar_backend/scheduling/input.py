@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from calendar_backend.domain.block_resolution import ResolveBlocksResult, ResolvedBlock
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.resolution import (
     ResolvedPrecedenceConstraint,
@@ -54,6 +55,37 @@ class AssignmentInput:
     occupied_intervals: tuple[OccupiedInterval, ...]
     previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...] = ()
     solver_limits: SolverLimits | None = None
+
+
+def block_assignment_input_from_resolved(
+    resolved: ResolveBlocksResult,
+    *,
+    occupied_intervals: tuple[OccupiedInterval, ...] = (),
+    solver_limits: SolverLimits | None = None,
+) -> AssignmentInput:
+    """Build solver input from block resolution output."""
+    assignment_input = AssignmentInput(
+        run_started_at=resolved.run_started_at,
+        tasks=tuple(_schedulable_block_from_resolved(block) for block in resolved.valid_incomplete),
+        precedence_edges=tuple(
+            _precedence_edge_from_resolved(edge) for edge in resolved.precedence_constraints
+        ),
+        occupied_intervals=occupied_intervals,
+        solver_limits=solver_limits,
+    )
+    validate_assignment_input(assignment_input)
+    return assignment_input
+
+
+def _schedulable_block_from_resolved(block: ResolvedBlock) -> SchedulableTask:
+    return SchedulableTask(
+        plan_id=block.plan_id,
+        duration_minutes=block.duration_minutes,
+        divisible=block.divisible,
+        minimum_chunk_size_minutes=block.minimum_chunk_size_minutes,
+        effective_time_windows=block.effective_time_windows,
+        priority_path=block.priority_path,
+    )
 
 
 def assignment_input_from_resolved(

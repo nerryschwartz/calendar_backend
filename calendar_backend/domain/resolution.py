@@ -19,6 +19,7 @@ from calendar_backend.domain.plan_traversal import (
 from calendar_backend.domain.prerequisites import (
     expand_immediate_precedence,
     expand_plan_prerequisite_precedence,
+    leaf_task_ids_in_subtree,
 )
 from calendar_backend.domain.time import TimeWindow, validate_time_window
 from calendar_backend.models.constraints import TimeConstraintGroup
@@ -213,29 +214,66 @@ def _apply_effective_constraints(
     return enriched
 
 
-def collect_precedence_constraints(
-    tasks: tuple[ResolvedTask, ...],
+def graph_leaf_completion_sets(
+    *,
     plans: tuple[Plan, ...],
     indexes: ResolutionIndexes,
-) -> tuple[ResolvedPrecedenceConstraint, ...]:
-    incomplete_task_ids = frozenset(
-        task.plan_id for task in tasks if not task.user_completed and not is_invalid_task(task)
+    invalid_leaf_ids: frozenset[PlanID],
+) -> tuple[frozenset[PlanID], frozenset[PlanID]]:
+    """Incomplete and completed schedulable leaf IDs under the master tree."""
+    leaf_ids = leaf_task_ids_in_subtree(
+        indexes.master_plan_id,
+        plans_by_id=indexes.plans_by_id,
+        template_subtree_ids=indexes.template_subtree_ids,
     )
-    completed_task_ids = frozenset(
-        task.plan_id for task in tasks if task.user_completed and not is_invalid_task(task)
+    incomplete: set[PlanID] = set()
+    completed: set[PlanID] = set()
+    for leaf_id in leaf_ids:
+        if leaf_id in invalid_leaf_ids:
+            continue
+        plan = indexes.plans_by_id.get(leaf_id)
+        if plan is None:
+            continue
+        if plan.plan_kind == PlanKind.TASK:
+            if plan.task_plan is None:
+                continue
+            if plan.task_plan.user_completed:
+                completed.add(leaf_id)
+            else:
+                incomplete.add(leaf_id)
+        elif plan.plan_kind == PlanKind.BLOCK:
+            if plan.block_plan is None:
+                continue
+            if plan.block_plan.user_completed:
+                completed.add(leaf_id)
+            else:
+                incomplete.add(leaf_id)
+    return frozenset(incomplete), frozenset(completed)
+
+
+def collect_precedence_constraints(
+    plans: tuple[Plan, ...],
+    indexes: ResolutionIndexes,
+    *,
+    invalid_leaf_ids: frozenset[PlanID],
+) -> tuple[ResolvedPrecedenceConstraint, ...]:
+    incomplete_leaf_ids, completed_leaf_ids = graph_leaf_completion_sets(
+        plans=plans,
+        indexes=indexes,
+        invalid_leaf_ids=invalid_leaf_ids,
     )
 
     plan_edges = expand_plan_prerequisite_precedence(
         plans=plans,
         plans_by_id=indexes.plans_by_id,
         template_subtree_ids=indexes.template_subtree_ids,
-        incomplete_task_ids=incomplete_task_ids,
-        completed_task_ids=completed_task_ids,
+        incomplete_leaf_ids=incomplete_leaf_ids,
+        completed_leaf_ids=completed_leaf_ids,
     )
     immediate_edges = expand_immediate_precedence(
         plans=plans,
-        incomplete_task_ids=incomplete_task_ids,
-        completed_task_ids=completed_task_ids,
+        incomplete_leaf_ids=incomplete_leaf_ids,
+        completed_leaf_ids=completed_leaf_ids,
     )
 
     combined: list[ResolvedPrecedenceConstraint] = []
@@ -273,9 +311,11 @@ def resolve_tasks_from_graph(
     )
     enriched_tasks = _apply_effective_constraints(collector.tasks, indexes)
     precedence_constraints = collect_precedence_constraints(
-        tuple(enriched_tasks),
         plans,
         indexes,
+        invalid_leaf_ids=frozenset(
+            task.plan_id for task in enriched_tasks if is_invalid_task(task)
+        ),
     )
     (
         valid_incomplete,

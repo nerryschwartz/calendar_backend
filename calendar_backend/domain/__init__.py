@@ -17,6 +17,7 @@ from calendar_backend.domain.errors import (
     WrongPlanTypeError,
 )
 from calendar_backend.domain.ids import (
+    BlockCalendarEntryID,
     CalendarEntryID,
     CalendarRunID,
     FreeTimeActivityID,
@@ -39,6 +40,7 @@ from calendar_backend.domain.time import (
 )
 
 __all__ = [
+    "BlockCalendarEntryID",
     "CalendarEntryID",
     "CalendarEntryType",
     "CalendarRunID",

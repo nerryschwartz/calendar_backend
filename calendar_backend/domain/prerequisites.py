@@ -308,8 +308,8 @@ def expand_plan_prerequisite_precedence(
     plans: tuple[Plan, ...],
     plans_by_id: dict[uuid.UUID, Plan],
     template_subtree_ids: frozenset[uuid.UUID],
-    incomplete_task_ids: frozenset[PlanID],
-    completed_task_ids: frozenset[PlanID],
+    incomplete_leaf_ids: frozenset[PlanID],
+    completed_leaf_ids: frozenset[PlanID],
 ) -> tuple[PrecedenceEdgeTriple, ...]:
     transitive_pairs = transitive_plan_prerequisite_pairs(plan_prerequisite_edges_from_plans(plans))
     edges: list[PrecedenceEdgeTriple] = []
@@ -333,20 +333,20 @@ def expand_plan_prerequisite_precedence(
             template_subtree_ids=template_subtree_ids,
         )
 
-        for predecessor_task_id in sorted(prerequisite_leaves, key=str):
-            if predecessor_task_id in completed_task_ids:
+        for predecessor_leaf_id in sorted(prerequisite_leaves, key=str):
+            if predecessor_leaf_id in completed_leaf_ids:
                 continue
-            if predecessor_task_id not in incomplete_task_ids:
+            if predecessor_leaf_id not in incomplete_leaf_ids:
                 continue
-            for successor_task_id in sorted(dependent_leaves, key=str):
-                if successor_task_id not in incomplete_task_ids:
+            for successor_leaf_id in sorted(dependent_leaves, key=str):
+                if successor_leaf_id not in incomplete_leaf_ids:
                     continue
-                if predecessor_task_id == successor_task_id:
+                if predecessor_leaf_id == successor_leaf_id:
                     continue
                 edges.append(
                     (
-                        predecessor_task_id,
-                        successor_task_id,
+                        predecessor_leaf_id,
+                        successor_leaf_id,
                         "plan_prerequisite",
                     )
                 )
@@ -357,31 +357,44 @@ def expand_plan_prerequisite_precedence(
 def expand_immediate_precedence(
     *,
     plans: tuple[Plan, ...],
-    incomplete_task_ids: frozenset[PlanID],
-    completed_task_ids: frozenset[PlanID],
+    incomplete_leaf_ids: frozenset[PlanID],
+    completed_leaf_ids: frozenset[PlanID],
 ) -> tuple[PrecedenceEdgeTriple, ...]:
     edges: list[PrecedenceEdgeTriple] = []
     for plan in plans:
         task_plan = plan.task_plan
-        if task_plan is None or task_plan.immediate_prerequisite_plan_id is None:
-            continue
+        if task_plan is not None and task_plan.immediate_prerequisite_plan_id is not None:
+            successor_leaf_id = PlanID(plan.plan_id)
+            predecessor_leaf_id = PlanID(task_plan.immediate_prerequisite_plan_id)
+            if (
+                successor_leaf_id in incomplete_leaf_ids
+                and predecessor_leaf_id not in completed_leaf_ids
+                and predecessor_leaf_id in incomplete_leaf_ids
+            ):
+                edges.append(
+                    (
+                        predecessor_leaf_id,
+                        successor_leaf_id,
+                        "immediate_prerequisite",
+                    )
+                )
 
-        successor_task_id = PlanID(plan.plan_id)
-        predecessor_task_id = PlanID(task_plan.immediate_prerequisite_plan_id)
-        if successor_task_id not in incomplete_task_ids:
-            continue
-        if predecessor_task_id in completed_task_ids:
-            continue
-        if predecessor_task_id not in incomplete_task_ids:
-            continue
-
-        edges.append(
-            (
-                predecessor_task_id,
-                successor_task_id,
-                "immediate_prerequisite",
-            )
-        )
+        block_plan = plan.block_plan
+        if block_plan is not None and block_plan.immediate_prerequisite_plan_id is not None:
+            successor_leaf_id = PlanID(plan.plan_id)
+            predecessor_leaf_id = PlanID(block_plan.immediate_prerequisite_plan_id)
+            if (
+                successor_leaf_id in incomplete_leaf_ids
+                and predecessor_leaf_id not in completed_leaf_ids
+                and predecessor_leaf_id in incomplete_leaf_ids
+            ):
+                edges.append(
+                    (
+                        predecessor_leaf_id,
+                        successor_leaf_id,
+                        "immediate_prerequisite",
+                    )
+                )
 
     return tuple(edges)
 

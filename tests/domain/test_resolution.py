@@ -689,7 +689,11 @@ def test_collect_precedence_constraints_returns_empty_without_plan_prerequisites
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
 
-    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
 
     assert edges == ()
 
@@ -734,7 +738,11 @@ def test_collect_precedence_constraints_emits_plan_prerequisite_leaf_edges() -> 
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
 
-    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
 
     assert edges == (
         ResolvedPrecedenceConstraint(
@@ -784,7 +792,11 @@ def test_collect_precedence_constraints_skips_completed_predecessor() -> None:
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
 
-    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
 
     assert edges == ()
 
@@ -827,7 +839,11 @@ def test_collect_precedence_constraints_emits_immediate_precedence_edge() -> Non
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
 
-    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
 
     assert edges == (
         ResolvedPrecedenceConstraint(
@@ -843,7 +859,11 @@ def test_collect_precedence_constraints_ignores_non_task_chain_items() -> None:
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
 
-    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
 
     assert edges == ()
 

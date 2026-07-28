@@ -5,7 +5,7 @@
   "next_step": "phase_4_agent_block",
   "current_phase": 4,
   "current_plan_path": "docs/plans/v2_block_assignment.md",
-  "current_slice_id": null,
+  "current_slice_id": "1",
   "skip_tests_on_commit": true,
   "completed_steps": [
     "phase_0_verify",
@@ -68,7 +68,8 @@
     "phase_3_phase_checks",
     "phase_4_request_questions",
     "phase_4_plan_bootstrap",
-    "phase_4_draft_plan"
+    "phase_4_draft_plan",
+    "phase_4_finalize_plan"
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": [],
