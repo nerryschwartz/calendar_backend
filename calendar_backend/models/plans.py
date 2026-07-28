@@ -30,6 +30,7 @@ from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 
 if TYPE_CHECKING:
     from calendar_backend.models.constraints import TimeConstraintGroup
+    from calendar_backend.models.prerequisites import PlanPrerequisite
     from calendar_backend.models.repetitions import RepetitionInstance
 
 
@@ -100,6 +101,7 @@ class Plan(Base):
     task_plan: Mapped[TaskPlan | None] = relationship(
         back_populates="plan",
         uselist=False,
+        foreign_keys="TaskPlan.plan_id",
     )
     repetition_plan: Mapped[RepetitionPlan | None] = relationship(
         back_populates="plan",
@@ -108,6 +110,14 @@ class Plan(Base):
     )
     constraint_groups: Mapped[list[TimeConstraintGroup]] = relationship(
         back_populates="plan",
+    )
+    prerequisite_edges: Mapped[list[PlanPrerequisite]] = relationship(
+        foreign_keys="PlanPrerequisite.plan_id",
+        back_populates="dependent_plan",
+    )
+    dependent_edges: Mapped[list[PlanPrerequisite]] = relationship(
+        foreign_keys="PlanPrerequisite.prerequisite_plan_id",
+        back_populates="prerequisite_plan",
     )
 
 
@@ -158,8 +168,19 @@ class TaskPlan(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    immediate_prerequisite_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("plan.plan_id"),
+        nullable=True,
+    )
 
-    plan: Mapped[Plan] = relationship(back_populates="task_plan")
+    plan: Mapped[Plan] = relationship(
+        back_populates="task_plan",
+        foreign_keys=[plan_id],
+    )
+    immediate_prerequisite_plan: Mapped[Plan | None] = relationship(
+        foreign_keys=[immediate_prerequisite_plan_id],
+    )
 
 
 class RepetitionPlan(Base):

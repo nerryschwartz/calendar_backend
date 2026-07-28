@@ -11,6 +11,7 @@ from calendar_backend.models import (
     constraints,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     free_time,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     plans,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+    prerequisites,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     repetitions,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     runs,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     settings,  # noqa: F401  # pyright: ignore[reportUnusedImport]
