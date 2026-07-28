@@ -15,7 +15,7 @@ uv run python scripts/cursor/v2_loop_state.py current-substep
 ```
 Keep `steps_in_batch` (one macro ID) and `current_substep` for the invocation. Do **not** stop until the macro block is complete (or a hard failure).
 
-**Turn-boundary auto-resume:** [`.cursor/hooks/v2-loop-auto-resume.sh`](../hooks/v2-loop-auto-resume.sh) submits `/run-v2-implementation` when a turn ends with `may_exit: false` **for the recorded `active_batch_mode` stretch** (not `next_required_mode`). The user does **not** manually re-invoke mid-batch. Set `pause_auto_resume` before `AskQuestion` or hard failure (see below). When no batch is active (`active_batch_mode` is null), the hook does nothing.
+**Turn-boundary auto-resume:** [`.cursor/hooks/v2-loop-auto-resume.sh`](../hooks/v2-loop-auto-resume.sh) submits `/run-v2-implementation` when a turn ends with `may_exit: false` **for the recorded `active_batch_mode` stretch** (not `next_required_mode`). The user does **not** manually re-invoke mid-batch. Set `pause_auto_resume` before `AskQuestion` or hard failure (see below). When no batch is active (`active_batch_mode` is null), the hook does nothing. [`.cursor/hooks/v2-loop-clear-on-other-prompt.sh`](../hooks/v2-loop-clear-on-other-prompt.sh) clears `active_batch_mode` on any user prompt that is **not** `/run-v2-implementation`, so other commands never trigger auto-resume.
 
 **Forbidden before `batch-exit-check` says `may_exit: true`:**
 - Posting **“Loop batch complete”** when `next_required_mode` still equals `batch_mode`

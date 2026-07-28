@@ -1,6 +1,11 @@
 {
   "version": 1,
   "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": ".cursor/hooks/v2-loop-clear-on-other-prompt.sh"
+      }
+    ],
     "stop": [
       {
         "command": ".cursor/hooks/v2-loop-auto-resume.sh",

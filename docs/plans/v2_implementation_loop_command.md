@@ -12,7 +12,7 @@ Build a **single-PR, multi-plan** Cursor workflow for all V2 phases in [`docs/v2
 - Collapses Alembic five-step groups: no commit on preview / manual-edit middle steps; `db-revision-continue` owns its commit (no `/request-questions` on any build slice)
 - Uses **`--skip-tests` until the last slice of the entire PR**, then runs full checks once
 - Persists progress in a **git-tracked** [`.cursor/v2_implementation_loop.json`](../../.cursor/v2_implementation_loop.json) with `next_required_mode: plan|agent` and `active_batch_mode` while a mode stretch runs
-- **Pauses** when the current Cursor mode cannot run the next macro block; you switch mode and invoke `/run-v2-implementation` once (Plan mode at `phase_N_plan_block`; Agent at `phase_N_agent_block`). Mid-batch continuation uses the stop hook (`active_batch_mode`, not `next_required_mode`) — not manual re-invoke.
+- **Pauses** when the current Cursor mode cannot run the next macro block; you switch mode and invoke `/run-v2-implementation` once (Plan mode at `phase_N_plan_block`; Agent at `phase_N_agent_block`). Mid-batch continuation uses the stop hook (`active_batch_mode`, not `next_required_mode`) — not manual re-invoke. The `beforeSubmitPrompt` hook clears `active_batch_mode` for any prompt other than `/run-v2-implementation`.
 
 This plan covers **audit → design → command build** only. It does **not** implement V2 domain features (blocks, prerequisites, etc.).
 
@@ -385,7 +385,7 @@ Git-tracked [`.cursor/v2_implementation_loop.json`](../../.cursor/v2_implementat
 Field notes:
 
 - **`next_required_mode`:** `plan` only for `phase_N_plan_bootstrap` and `phase_N_request_questions`; `agent` for `draft_plan`, `finalize_plan`, all build, db-revision, commit, and check steps.
-- **`active_batch_mode`:** Set when a `/run-v2-implementation` invocation passes the mode gate; cleared when the stop hook sees `may_exit: true`. The stop hook uses this field (not `next_required_mode`) for `batch-exit-check`.
+- **`active_batch_mode`:** Set when a `/run-v2-implementation` invocation passes the mode gate; cleared when the stop hook sees `may_exit: true` or when the user submits any prompt other than `/run-v2-implementation` (`beforeSubmitPrompt` hook). The stop hook uses this field (not `next_required_mode`) for `batch-exit-check`.
 - **`pause_auto_resume`:** When `true`, the stop hook does not auto-submit `/run-v2-implementation` (AskQuestion, hard failure, or batch end awaiting mode switch).
 - **`alembic_group`:** When inside a five-step migration group, holds `{ "slice_id", "phase", "substep": "pre_alembic|preview|manual_edit|continue|post_alembic" }`; cleared after post-alembic commit.
 - **`skip_tests_on_commit`:** Always `true` during loop; phase-end and final steps run full `checks.sh` explicitly (C4).
