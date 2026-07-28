@@ -27,10 +27,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from calendar_backend.db.base import Base
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
+from calendar_backend.models.prerequisites import PlanPrerequisite
 
 if TYPE_CHECKING:
     from calendar_backend.models.constraints import TimeConstraintGroup
-    from calendar_backend.models.prerequisites import PlanPrerequisite
     from calendar_backend.models.repetitions import RepetitionInstance
 
 
@@ -112,11 +112,11 @@ class Plan(Base):
         back_populates="plan",
     )
     prerequisite_edges: Mapped[list[PlanPrerequisite]] = relationship(
-        foreign_keys="PlanPrerequisite.plan_id",
+        foreign_keys=[PlanPrerequisite.plan_id],
         back_populates="dependent_plan",
     )
     dependent_edges: Mapped[list[PlanPrerequisite]] = relationship(
-        foreign_keys="PlanPrerequisite.prerequisite_plan_id",
+        foreign_keys=[PlanPrerequisite.prerequisite_plan_id],
         back_populates="prerequisite_plan",
     )
 

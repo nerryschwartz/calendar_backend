@@ -2,10 +2,10 @@
   "version": 1,
   "branch": "new-design-and-implementation-doc",
   "next_required_mode": "agent",
-  "next_step": "phase_2_slice_1_alembic_continue",
+  "next_step": "phase_2_slice_2_build",
   "current_phase": 2,
   "current_plan_path": "docs/plans/v2_prerequisites.md",
-  "current_slice_id": "1",
+  "current_slice_id": "2",
   "skip_tests_on_commit": true,
   "completed_steps": [
     "phase_0_verify",
@@ -38,12 +38,10 @@
     "phase_2_finalize_plan",
     "phase_2_slice_1_pre_alembic",
     "phase_2_slice_1_alembic_preview",
-    "phase_2_slice_1_migration_manual_edit"
+    "phase_2_slice_1_migration_manual_edit",
+    "phase_2_slice_1_alembic_continue",
+    "phase_2_slice_1_post_alembic"
   ],
-  "alembic_group": {
-    "slice_id": "1",
-    "phase": 2,
-    "substep": "alembic_continue"
-  },
+  "alembic_group": null,
   "plan_mode_escape_hatches": []
 }
