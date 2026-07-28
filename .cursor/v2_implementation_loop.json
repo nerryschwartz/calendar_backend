@@ -5,7 +5,7 @@
   "next_step": "phase_2_agent_block",
   "current_phase": 2,
   "current_plan_path": "docs/plans/v2_prerequisites.md",
-  "current_slice_id": "6",
+  "current_slice_id": "7",
   "skip_tests_on_commit": true,
   "completed_steps": [
     "phase_0_verify",
@@ -44,7 +44,8 @@
     "phase_2_slice_2_build",
     "phase_2_slice_3_build",
     "phase_2_slice_4_build",
-    "phase_2_slice_5_build"
+    "phase_2_slice_5_build",
+    "phase_2_slice_6_build"
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": [],

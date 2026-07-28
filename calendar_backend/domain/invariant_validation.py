@@ -19,6 +19,12 @@ from datetime import datetime, timedelta
 from calendar_backend.domain.constraints import merge_or_windows
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
+from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.prerequisites import (
+    persisted_prerequisite_graph_has_cycle,
+    plan_prerequisite_edges_from_plans,
+)
+from calendar_backend.domain.template_trace import compute_template_trace, traces_match
 from calendar_backend.domain.time import (
     TimeWindow,
     is_minute_aligned,
@@ -49,6 +55,7 @@ def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage,
     violations.extend(_check_repetition_instances(plans))
     violations.extend(_check_repetition_instance_windows(plans))
     violations.extend(_check_constraints(plans))
+    violations.extend(_check_plan_prerequisites(plans))
     return tuple(violations)
 
 
@@ -704,5 +711,58 @@ def _check_constraints(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                     details={"plan_id": str(plan.plan_id)},
                 )
             )
+
+    return violations
+
+
+def _check_plan_prerequisites(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+    violations: list[ServiceMessage] = []
+    plans_by_id = {plan.plan_id: plan for plan in plans}
+    edges = plan_prerequisite_edges_from_plans(plans)
+
+    if persisted_prerequisite_graph_has_cycle(edges):
+        violations.append(
+            ServiceMessage(
+                code=MessageCode.PREREQUISITE_INVARIANT_VIOLATION,
+                message="Plan prerequisite graph must be acyclic",
+                details={"edge_count": str(len(edges))},
+            )
+        )
+
+    for dependent_id, prerequisite_id in edges:
+        dependent_trace = compute_template_trace(dependent_id, plans_by_id)
+        prerequisite_trace = compute_template_trace(prerequisite_id, plans_by_id)
+        if traces_match(dependent_trace, prerequisite_trace):
+            continue
+        violations.append(
+            ServiceMessage(
+                code=MessageCode.PREREQUISITE_INVARIANT_VIOLATION,
+                message="Plan prerequisite edge requires matching template traces",
+                details={
+                    "plan_id": str(dependent_id),
+                    "prerequisite_plan_id": str(prerequisite_id),
+                },
+            )
+        )
+
+    for plan in plans:
+        task_plan = plan.task_plan
+        if task_plan is None or task_plan.immediate_prerequisite_plan_id is None:
+            continue
+        predecessor_id = PlanID(task_plan.immediate_prerequisite_plan_id)
+        task_trace = compute_template_trace(PlanID(plan.plan_id), plans_by_id)
+        predecessor_trace = compute_template_trace(predecessor_id, plans_by_id)
+        if traces_match(task_trace, predecessor_trace):
+            continue
+        violations.append(
+            ServiceMessage(
+                code=MessageCode.PREREQUISITE_INVARIANT_VIOLATION,
+                message="Immediate prerequisite requires matching template traces",
+                details={
+                    "plan_id": str(plan.plan_id),
+                    "predecessor_plan_id": str(predecessor_id),
+                },
+            )
+        )
 
     return violations

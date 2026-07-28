@@ -10,6 +10,7 @@ from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.invariant_validation import validate_master_tree_graph
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 
 _NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
@@ -814,4 +815,68 @@ def test_validate_master_tree_graph_reports_incomplete_task_with_completed_at() 
         v.code == MessageCode.TASK_COMPLETION_INVARIANT_VIOLATION
         and "must not have completed_at" in v.message
         for v in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_plan_prerequisite_cycle() -> None:
+    master_id = uuid.uuid4()
+    plan_a_id = uuid.uuid4()
+    plan_b_id = uuid.uuid4()
+    plan_c_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id)]
+
+    plan_a = _plan(plan_a_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    plan_b = _plan(plan_b_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    plan_c = _plan(plan_c_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    _attach_task(plan_a)
+    _attach_task(plan_b)
+    _attach_task(plan_c)
+
+    plan_a.prerequisite_edges = [
+        PlanPrerequisite(plan_id=plan_a_id, prerequisite_plan_id=plan_b_id)
+    ]
+    plan_b.prerequisite_edges = [
+        PlanPrerequisite(plan_id=plan_b_id, prerequisite_plan_id=plan_c_id)
+    ]
+    plan_c.prerequisite_edges = [
+        PlanPrerequisite(plan_id=plan_c_id, prerequisite_plan_id=plan_a_id)
+    ]
+
+    violations = validate_master_tree_graph((master, plan_a, plan_b, plan_c))
+
+    assert any(
+        violation.code == MessageCode.PREREQUISITE_INVARIANT_VIOLATION
+        and "acyclic" in violation.message
+        for violation in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_plan_prerequisite_trace_mismatch() -> None:
+    graph = list(_valid_repetition_create_graph())
+    master = graph[0]
+    template_goal = next(plan for plan in graph if plan.clone_status == CloneStatus.TEMPLATE)
+    master_task_id = uuid.uuid4()
+    master_task = _plan(
+        master_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master.plan_id,
+    )
+    _attach_task(master_task)
+    graph.append(master_task)
+    master_task.prerequisite_edges = [
+        PlanPrerequisite(
+            plan_id=master_task_id,
+            prerequisite_plan_id=template_goal.plan_id,
+        )
+    ]
+
+    violations = validate_master_tree_graph(tuple(graph))
+
+    assert any(
+        violation.code == MessageCode.PREREQUISITE_INVARIANT_VIOLATION
+        and "Plan prerequisite edge requires matching template traces" in violation.message
+        for violation in violations
     )

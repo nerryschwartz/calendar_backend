@@ -367,3 +367,32 @@ def expand_immediate_precedence(
         )
 
     return tuple(edges)
+
+
+def persisted_prerequisite_graph_has_cycle(
+    edges: tuple[PlanPrerequisiteEdge, ...],
+) -> bool:
+    depends_on: dict[PlanID, set[PlanID]] = defaultdict(set)
+    nodes: set[PlanID] = set()
+    for dependent, prerequisite in edges:
+        depends_on[dependent].add(prerequisite)
+        nodes.add(dependent)
+        nodes.add(prerequisite)
+
+    visiting: set[PlanID] = set()
+    visited: set[PlanID] = set()
+
+    def dfs(node: PlanID) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        for prerequisite in depends_on.get(node, ()):
+            if dfs(prerequisite):
+                return True
+        visiting.remove(node)
+        visited.add(node)
+        return False
+
+    return any(dfs(node) for node in nodes)
