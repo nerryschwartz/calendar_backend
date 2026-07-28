@@ -6,6 +6,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterable
 
+from calendar_backend.domain.enums import PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.template_trace import compute_template_trace, traces_match
@@ -117,3 +118,54 @@ def would_create_prerequisite_cycle(
         return False
 
     return dfs(dependent_id)
+
+
+def validate_immediate_prerequisite_link(
+    *,
+    task_id: PlanID,
+    predecessor_id: PlanID,
+    plans_by_id: dict[uuid.UUID, Plan],
+) -> ServiceMessage | None:
+    if task_id == predecessor_id:
+        return ServiceMessage(
+            code=MessageCode.IMMEDIATE_PREREQUISITE_SELF_EDGE,
+            message="Task cannot be an immediate prerequisite of itself",
+            details={
+                "plan_id": str(task_id),
+                "predecessor_plan_id": str(predecessor_id),
+            },
+        )
+
+    task_plan_row = plans_by_id.get(task_id)
+    predecessor_plan = plans_by_id.get(predecessor_id)
+    if task_plan_row is None or predecessor_plan is None:
+        missing_id = task_id if task_plan_row is None else predecessor_id
+        return ServiceMessage(
+            code=MessageCode.PLAN_NOT_FOUND,
+            message="Plan not found",
+            details={"plan_id": str(missing_id)},
+        )
+
+    if task_plan_row.plan_kind != PlanKind.TASK or predecessor_plan.plan_kind != PlanKind.TASK:
+        return ServiceMessage(
+            code=MessageCode.IMMEDIATE_PREREQUISITE_NOT_TASK,
+            message="Immediate prerequisite predecessor and successor must be task plans",
+            details={
+                "plan_id": str(task_id),
+                "predecessor_plan_id": str(predecessor_id),
+            },
+        )
+
+    task_trace = compute_template_trace(task_id, plans_by_id)
+    predecessor_trace = compute_template_trace(predecessor_id, plans_by_id)
+    if not traces_match(task_trace, predecessor_trace):
+        return ServiceMessage(
+            code=MessageCode.IMMEDIATE_PREREQUISITE_TRACE_MISMATCH,
+            message="Immediate prerequisite requires matching template traces",
+            details={
+                "plan_id": str(task_id),
+                "predecessor_plan_id": str(predecessor_id),
+            },
+        )
+
+    return None

@@ -489,3 +489,108 @@ def test_mark_complete_on_detached_task_does_not_change_sibling_linked_clone(
     assert result.success
     assert _clone_status(service_db_session, target_task_id) == CloneStatus.DETACHED
     assert _clone_status(service_db_session, seeded["sibling_task_id"]) == CloneStatus.LINKED
+
+
+@pytest.mark.integration
+def test_set_immediate_prerequisite_persists_link(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    predecessor_id = _create_task(service_db_session, master_plan_id, name="first")
+    successor_id = _create_task(service_db_session, master_plan_id, name="second")
+
+    result = _task_service(service_db_session).set_immediate_prerequisite(
+        successor_id,
+        predecessor_id,
+    )
+    assert result.success
+
+    task_plan = service_db_session.get(TaskPlan, successor_id)
+    assert task_plan is not None
+    assert task_plan.immediate_prerequisite_plan_id == predecessor_id
+
+
+@pytest.mark.integration
+def test_set_immediate_prerequisite_rejects_non_task_predecessor(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    goal_result = _goal_service(service_db_session).create_child(
+        master_plan_id,
+        PlanKind.GOAL,
+        GoalCreatePayload("goal"),
+        is_critical=False,
+    )
+    assert goal_result.success and goal_result.value is not None
+    task_id = _create_task(service_db_session, master_plan_id)
+
+    result = _task_service(service_db_session).set_immediate_prerequisite(
+        task_id,
+        goal_result.value.plan_id,
+    )
+    assert not result.success
+    assert result.errors[0].code == MessageCode.IMMEDIATE_PREREQUISITE_NOT_TASK
+
+
+@pytest.mark.integration
+def test_clear_immediate_prerequisite(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    predecessor_id = _create_task(service_db_session, master_plan_id, name="first")
+    successor_id = _create_task(service_db_session, master_plan_id, name="second")
+    service = _task_service(service_db_session)
+    assert service.set_immediate_prerequisite(successor_id, predecessor_id).success
+
+    result = service.clear_immediate_prerequisite(successor_id)
+    assert result.success
+
+    task_plan = service_db_session.get(TaskPlan, successor_id)
+    assert task_plan is not None
+    assert task_plan.immediate_prerequisite_plan_id is None
+
+
+@pytest.mark.integration
+def test_set_immediate_prerequisite_rejects_self_edge(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    task_id = _create_task(service_db_session, master_plan_id)
+    result = _task_service(service_db_session).set_immediate_prerequisite(task_id, task_id)
+    assert not result.success
+    assert result.errors[0].code == MessageCode.IMMEDIATE_PREREQUISITE_SELF_EDGE
+
+
+@pytest.mark.integration
+def test_set_immediate_prerequisite_rejects_trace_mismatch(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    master_task_id = _create_task(service_db_session, master_plan_id, name="master task")
+    seeded = _seed_linked_task_detach_subtree(service_db_session, master_plan_id)
+    clone_task_id = seeded["target_task_id"]
+
+    result = _task_service(service_db_session).set_immediate_prerequisite(
+        clone_task_id,
+        master_task_id,
+    )
+    assert not result.success
+    assert result.errors[0].code == MessageCode.IMMEDIATE_PREREQUISITE_TRACE_MISMATCH
+
+
+@pytest.mark.integration
+def test_set_immediate_prerequisite_detaches_linked_clone(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    seeded = _seed_linked_task_detach_subtree(service_db_session, master_plan_id)
+    target_task_id = seeded["target_task_id"]
+    predecessor_id = seeded["sibling_task_id"]
+
+    result = _task_service(service_db_session).set_immediate_prerequisite(
+        target_task_id,
+        predecessor_id,
+    )
+    assert result.success
+    assert _clone_status(service_db_session, target_task_id) == CloneStatus.DETACHED
+    assert _clone_status(service_db_session, seeded["nested_task_id"]) == CloneStatus.DETACHED
