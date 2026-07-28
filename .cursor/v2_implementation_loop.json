@@ -5,7 +5,7 @@
   "next_step": "phase_3_agent_block",
   "current_phase": 3,
   "current_plan_path": "docs/plans/v2_block_orm.md",
-  "current_slice_id": "1",
+  "current_slice_id": null,
   "skip_tests_on_commit": true,
   "completed_steps": [
     "phase_0_verify",
@@ -55,14 +55,19 @@
     "phase_3_finalize_plan",
     "phase_3_slice_1_pre_alembic",
     "phase_3_slice_1_alembic_preview",
-    "phase_3_slice_1_migration_manual_edit"
+    "phase_3_slice_1_migration_manual_edit",
+    "phase_3_slice_2_build",
+    "phase_3_slice_3_build",
+    "phase_3_slice_4_build",
+    "phase_3_slice_5_build",
+    "phase_3_slice_6_build",
+    "phase_3_slice_7_build",
+    "phase_3_slice_8_build",
+    "phase_3_slice_1_alembic_continue",
+    "phase_3_slice_1_post_alembic"
   ],
-  "alembic_group": {
-    "slice_id": "1",
-    "phase": 3,
-    "substep": "alembic_continue"
-  },
+  "alembic_group": null,
   "plan_mode_escape_hatches": [],
   "pause_auto_resume": false,
-  "active_batch_mode": "agent"
+  "active_batch_mode": null
 }
