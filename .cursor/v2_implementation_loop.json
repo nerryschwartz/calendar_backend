@@ -50,10 +50,11 @@
     "phase_2_slice_8_build",
     "phase_2_phase_checks",
     "phase_3_plan_bootstrap",
-    "phase_3_request_questions"
+    "phase_3_request_questions",
+    "phase_3_draft_plan"
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": [],
   "pause_auto_resume": false,
-  "active_batch_mode": null
+  "active_batch_mode": "agent"
 }
