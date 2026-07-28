@@ -16,6 +16,7 @@ from calendar_backend.domain.plan_create import (
 )
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import (
     DEFAULT_MASTER_HORIZON_DURATION_MINUTES,
@@ -24,6 +25,7 @@ from calendar_backend.services.app_settings import (
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService, get_master_horizon_end
 from calendar_backend.services.master_plan import MasterPlanService
+from calendar_backend.services.plan_tree import PlanTreeService
 from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
@@ -1044,4 +1046,74 @@ def test_refresh_materializes_new_child_on_nested_repetition_template(
     assert clone_child is not None
     assert clone_child.clone_status == CloneStatus.LINKED
     assert service_db_session.get(TaskPlan, clone_child.plan_id) is not None
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_generate_instances_rewrites_template_prerequisite_refs_to_clone_ids(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    repetition_id = _create_repetition(
+        service_db_session, master_plan_id, _repetition_payload(manual_count=1)
+    )
+    repetition = service_db_session.get(RepetitionPlan, repetition_id)
+    assert repetition is not None
+    template_goal_id = PlanID(repetition.template_root_id)
+
+    prereq_result = _goal_service(service_db_session).create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("template prereq", 30, False, None),
+        is_critical=False,
+    )
+    dependent_result = _goal_service(service_db_session).create_child(
+        template_goal_id,
+        PlanKind.TASK,
+        TaskCreatePayload("template dependent", 30, False, None),
+        is_critical=False,
+    )
+    assert prereq_result.success and prereq_result.value is not None
+    assert dependent_result.success and dependent_result.value is not None
+    template_prereq_id = prereq_result.value.plan_id
+    template_dependent_id = dependent_result.value.plan_id
+
+    plan_tree = PlanTreeService(service_db_session, FakeClock(RUN_AT))
+    assert plan_tree.add_plan_prerequisite(template_dependent_id, template_prereq_id).success
+    assert (
+        _task_service(service_db_session)
+        .set_immediate_prerequisite(
+            template_dependent_id,
+            template_prereq_id,
+        )
+        .success
+    )
+
+    assert _repetition_service(service_db_session).generate_instances(repetition_id, RUN_AT).success
+
+    instance = service_db_session.scalar(
+        select(RepetitionInstance).where(RepetitionInstance.repetition_plan_id == repetition_id)
+    )
+    assert instance is not None
+    clone_prereq = service_db_session.scalar(
+        select(Plan).where(Plan.cloned_from_id == template_prereq_id)
+    )
+    clone_dependent = service_db_session.scalar(
+        select(Plan).where(Plan.cloned_from_id == template_dependent_id)
+    )
+    assert clone_prereq is not None
+    assert clone_dependent is not None
+
+    clone_edge = service_db_session.scalar(
+        select(PlanPrerequisite).where(PlanPrerequisite.plan_id == clone_dependent.plan_id)
+    )
+    assert clone_edge is not None
+    assert clone_edge.prerequisite_plan_id == clone_prereq.plan_id
+    assert clone_edge.prerequisite_plan_id != template_prereq_id
+
+    clone_dependent_task = service_db_session.get(TaskPlan, clone_dependent.plan_id)
+    assert clone_dependent_task is not None
+    assert clone_dependent_task.immediate_prerequisite_plan_id == clone_prereq.plan_id
+    assert clone_dependent_task.immediate_prerequisite_plan_id != template_prereq_id
+
     _assert_tree_invariant(service_db_session)

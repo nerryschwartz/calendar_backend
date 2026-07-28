@@ -31,6 +31,7 @@ from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.master_horizon import get_master_horizon_end, validate_run_started_at
 from calendar_backend.services.plan_tree import load_plan_with_subtype
@@ -119,7 +120,7 @@ class RepetitionService:
             txn.flush()
             return ok(repetition_plan_dto_from_rows(plan, repetition_plan))
 
-    def generate_instances(
+    def generate_instances(  # noqa: PLR0911
         self,
         repetition_plan_id: PlanID,
         run_started_at: datetime,
@@ -161,7 +162,7 @@ class RepetitionService:
                 return fail(indices_result)
 
             for sort_order, instance_index in enumerate(indices_result):
-                _add_repetition_instance(
+                add_error = _add_repetition_instance(
                     txn,
                     plan=plan,
                     repetition_plan=repetition_plan,
@@ -172,6 +173,8 @@ class RepetitionService:
                     is_critical=repetition_plan.default_instance_critical,
                     now=run_started_at,
                 )
+                if add_error is not None:
+                    return fail(add_error)
 
             repetition_plan.generated_at = run_started_at
             plan.updated_at = run_started_at
@@ -206,7 +209,7 @@ class RepetitionService:
             return ok(None)
 
 
-def _refresh_repetition_in_txn(
+def _refresh_repetition_in_txn(  # noqa: PLR0911
     txn: Session,
     repetition_plan_id: PlanID,
     run_started_at: datetime,
@@ -246,13 +249,15 @@ def _refresh_repetition_in_txn(
     ).all()
 
     for instance in instances:
-        _refresh_instance_clone_subtree(
+        refresh_error = _refresh_instance_clone_subtree(
             txn,
             template_root_id=template_root_id,
             template_plans=template_plans,
             root_clone_id=PlanID(instance.root_clone_id),
             now=run_started_at,
         )
+        if refresh_error is not None:
+            return fail(refresh_error)
 
     desired_indices = _desired_instance_indices(txn, repetition_plan)
     if isinstance(desired_indices, ServiceMessage):
@@ -267,7 +272,7 @@ def _refresh_repetition_in_txn(
         for instance_index in missing_indices:
             sort_order = sort_order_by_critical[is_critical]
             sort_order_by_critical[is_critical] += 1
-            _add_repetition_instance(
+            add_error = _add_repetition_instance(
                 txn,
                 plan=plan,
                 repetition_plan=repetition_plan,
@@ -278,6 +283,8 @@ def _refresh_repetition_in_txn(
                 is_critical=is_critical,
                 now=run_started_at,
             )
+            if add_error is not None:
+                return fail(add_error)
 
     plan.updated_at = run_started_at
     txn.flush()
@@ -333,13 +340,16 @@ def _add_repetition_instance(
     sort_order: int,
     is_critical: bool,
     now: datetime,
-) -> None:
-    root_clone_id = _clone_template_subtree(
+) -> ServiceMessage | None:
+    root_clone_result = _clone_template_subtree(
         txn,
         template_root_id=template_root_id,
         repetition_plan_id=repetition_plan_id,
         now=now,
     )
+    if isinstance(root_clone_result, ServiceMessage):
+        return root_clone_result
+    root_clone_id = root_clone_result
     instance_start = instance_start_time(
         repetition_plan.start_time,
         repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
@@ -362,6 +372,7 @@ def _add_repetition_instance(
         window_start=instance_start,
         window_end=instance_start + timedelta(minutes=repetition_plan.repeat_interval_minutes),
     )
+    return None
 
 
 def _refresh_instance_clone_subtree(
@@ -371,10 +382,10 @@ def _refresh_instance_clone_subtree(
     template_plans: tuple[Plan, ...],
     root_clone_id: PlanID,
     now: datetime,
-) -> None:
+) -> ServiceMessage | None:
     root_clone = txn.get(Plan, root_clone_id)
     if root_clone is None or not _is_linked_for_refresh(txn, root_clone_id):
-        return
+        return None
 
     clone_by_template = _build_clone_by_template_map(txn, root_clone_id)
     _materialize_missing_clone_nodes(
@@ -408,6 +419,12 @@ def _refresh_instance_clone_subtree(
                 clone_by_template=clone_by_template,
                 now=now,
             )
+
+    return _rewrite_clone_prerequisite_refs(
+        txn,
+        template_root_id=template_root_id,
+        clone_by_template=clone_by_template,
+    )
 
 
 def _build_clone_by_template_map(
@@ -671,7 +688,7 @@ def _clone_template_subtree(
     template_root_id: PlanID,
     repetition_plan_id: PlanID,
     now: datetime,
-) -> uuid.UUID:
+) -> uuid.UUID | ServiceMessage:
     template_plans = _collect_template_subtree(txn, template_root_id)
     clone_by_template_id: dict[uuid.UUID, uuid.UUID] = {}
 
@@ -712,7 +729,115 @@ def _clone_template_subtree(
             now=now,
         )
 
+    rewrite_error = _rewrite_clone_prerequisite_refs(
+        txn,
+        template_root_id=template_root_id,
+        clone_by_template=clone_by_template_id,
+    )
+    if rewrite_error is not None:
+        return rewrite_error
+
     return clone_by_template_id[template_root_id]
+
+
+def _rewrite_clone_prerequisite_refs(
+    txn: Session,
+    *,
+    template_root_id: PlanID,
+    clone_by_template: dict[uuid.UUID, uuid.UUID],
+) -> ServiceMessage | None:
+    template_subtree_ids = frozenset(
+        plan.plan_id for plan in _collect_template_subtree(txn, template_root_id)
+    )
+    for template_plan_id, clone_plan_id in clone_by_template.items():
+        sync_error = _sync_clone_prerequisite_refs_for_plan(
+            txn,
+            template_plan_id=template_plan_id,
+            clone_plan_id=clone_plan_id,
+            template_subtree_ids=template_subtree_ids,
+            clone_by_template=clone_by_template,
+        )
+        if sync_error is not None:
+            return sync_error
+    return None
+
+
+def _sync_clone_prerequisite_refs_for_plan(
+    txn: Session,
+    *,
+    template_plan_id: uuid.UUID,
+    clone_plan_id: uuid.UUID,
+    template_subtree_ids: frozenset[uuid.UUID],
+    clone_by_template: dict[uuid.UUID, uuid.UUID],
+) -> ServiceMessage | None:
+    template_edges = txn.scalars(
+        select(PlanPrerequisite).where(PlanPrerequisite.plan_id == template_plan_id)
+    ).all()
+    txn.execute(delete(PlanPrerequisite).where(PlanPrerequisite.plan_id == clone_plan_id))
+
+    for edge in template_edges:
+        rewritten_prerequisite_id = _rewrite_template_local_plan_reference(
+            edge.prerequisite_plan_id,
+            template_subtree_ids=template_subtree_ids,
+            clone_by_template=clone_by_template,
+            details={
+                "template_plan_id": str(template_plan_id),
+                "clone_plan_id": str(clone_plan_id),
+                "reference_kind": "plan_prerequisite",
+            },
+        )
+        if isinstance(rewritten_prerequisite_id, ServiceMessage):
+            return rewritten_prerequisite_id
+        txn.add(
+            PlanPrerequisite(
+                plan_id=clone_plan_id,
+                prerequisite_plan_id=rewritten_prerequisite_id,
+            )
+        )
+
+    template_task = txn.get(TaskPlan, template_plan_id)
+    clone_task = txn.get(TaskPlan, clone_plan_id)
+    if template_task is None or clone_task is None:
+        return None
+
+    if template_task.immediate_prerequisite_plan_id is None:
+        clone_task.immediate_prerequisite_plan_id = None
+        return None
+
+    rewritten_immediate_id = _rewrite_template_local_plan_reference(
+        template_task.immediate_prerequisite_plan_id,
+        template_subtree_ids=template_subtree_ids,
+        clone_by_template=clone_by_template,
+        details={
+            "template_plan_id": str(template_plan_id),
+            "clone_plan_id": str(clone_plan_id),
+            "reference_kind": "immediate_prerequisite",
+        },
+    )
+    if isinstance(rewritten_immediate_id, ServiceMessage):
+        return rewritten_immediate_id
+    clone_task.immediate_prerequisite_plan_id = rewritten_immediate_id
+    return None
+
+
+def _rewrite_template_local_plan_reference(
+    plan_id: uuid.UUID,
+    *,
+    template_subtree_ids: frozenset[uuid.UUID],
+    clone_by_template: dict[uuid.UUID, uuid.UUID],
+    details: dict[str, str],
+) -> uuid.UUID | ServiceMessage:
+    if plan_id not in template_subtree_ids:
+        return plan_id
+
+    clone_id = clone_by_template.get(plan_id)
+    if clone_id is None:
+        return ServiceMessage(
+            code=MessageCode.PREREQUISITE_CLONE_REWRITE_FAILED,
+            message="Template-local prerequisite reference missing from clone map",
+            details={**details, "referenced_plan_id": str(plan_id)},
+        )
+    return clone_id
 
 
 def _collect_template_subtree(txn: Session, template_root_id: PlanID) -> tuple[Plan, ...]:
