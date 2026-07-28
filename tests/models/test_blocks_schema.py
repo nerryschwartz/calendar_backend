@@ -411,7 +411,6 @@ def test_relationships_navigate_block_calendar_entry_source_plan(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_alembic_upgrade_creates_block_tables(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -444,7 +443,6 @@ def test_alembic_upgrade_creates_block_tables(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_alembic_upgrade_enforces_block_family_non_empty_check(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,

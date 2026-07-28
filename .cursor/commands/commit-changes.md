@@ -22,13 +22,12 @@ Default:
 python scripts/cursor/commit_changes.py
 ```
 
-If and only if my current message explicitly says to skip tests:
+If and only if my current message explicitly says to skip tests, or the invoking command specifies skip-tests (for example [`/db-revision-continue`](db-revision-continue.md) after its pytest step):
 ```bash
 python scripts/cursor/commit_changes.py --skip-tests
 ```
 
-If and only if my current message explicitly says that checks were already run
-(for example after `/db-revision-continue` pre-commit verification):
+If and only if my current message explicitly says that checks were already run:
 ```bash
 python scripts/cursor/commit_changes.py --skip-checks
 ```

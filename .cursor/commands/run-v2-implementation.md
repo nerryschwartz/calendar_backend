@@ -246,7 +246,7 @@ Follow [`.cursor/commands/db-revision-continue.md`](db-revision-continue.md) **l
 Commit once with non-interactive staging (SC-7):
 
 ```bash
-python scripts/cursor/commit_changes.py --non-interactive --skip-checks --message "Apply V2 phase N migration: <revision-summary>"
+python scripts/cursor/commit_changes.py --non-interactive --skip-tests --message "Apply V2 phase N migration: <revision-summary>"
 ```
 
 Do **not** run a second loop commit after this step.
@@ -282,7 +282,7 @@ On failure: report and stop without advancing.
 | ordinary / pre / post alembic build | Yes | `--non-interactive --skip-tests --message` |
 | alembic preview | No | — |
 | migration manual edit | No | agent edits only |
-| alembic continue | Yes (once) | `--non-interactive --skip-checks --message` |
+| alembic continue | Yes (once) | `--non-interactive --skip-tests --message` |
 | phase checks / done | No | runs `checks.sh` |
 
 Before every commit step: audit-commit-readiness + review-abstractions (auto-fix in scope; stop if still blocked).
