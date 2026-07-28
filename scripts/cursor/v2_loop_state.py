@@ -40,6 +40,15 @@ MIGRATION_SLICE_MARKERS = (
     "/db-revision-continue",
 )
 
+MACRO_BLOCK_RE = re.compile(r"phase_(\d+)_(plan_block|agent_block)$")
+PLAN_SUBSTEP_RE = re.compile(r"phase_(\d+)_(plan_bootstrap|request_questions)$")
+BOOTSTRAP_SUBSTEP_RE = re.compile(
+    r"phase_(\d+)_(plan_bootstrap|request_questions|draft_plan|finalize_plan)$"
+)
+SLICE_SUBSTEP_RE = re.compile(
+    r"phase_(\d+)_slice_(.+)_(pre_alembic|alembic_preview|migration_manual_edit|alembic_continue|post_alembic|build)$"
+)
+
 
 def git_branch() -> str:
     return subprocess.check_output(["git", "branch", "--show-current"], text=True).strip()
@@ -72,10 +81,60 @@ def phase0_complete(root: Path) -> bool:
     return "## 20. V2 design supersessions" in text
 
 
+def plan_block_id(phase: int) -> str:
+    return f"phase_{phase}_plan_block"
+
+
+def agent_block_id(phase: int) -> str:
+    return f"phase_{phase}_agent_block"
+
+
+def is_macro_block(step_id: str) -> bool:
+    return MACRO_BLOCK_RE.match(step_id) is not None
+
+
+def is_granular_step(step_id: str) -> bool:
+    if step_id in {"phase_0_verify", "done"}:
+        return True
+    if is_macro_block(step_id):
+        return False
+    return (
+        PLAN_SUBSTEP_RE.match(step_id) is not None
+        or BOOTSTRAP_SUBSTEP_RE.match(step_id) is not None
+        or SLICE_SUBSTEP_RE.match(step_id) is not None
+        or re.match(r"phase_\d+_phase_checks$", step_id) is not None
+    )
+
+
+def block_id_for_granular(step_id: str) -> str | None:
+    if step_id in {"phase_0_verify", "done"}:
+        return None
+    plan_match = PLAN_SUBSTEP_RE.match(step_id)
+    if plan_match:
+        return plan_block_id(int(plan_match.group(1)))
+    phase = phase_from_step(step_id)
+    if phase is None:
+        return None
+    if BOOTSTRAP_SUBSTEP_RE.match(step_id) or SLICE_SUBSTEP_RE.match(step_id):
+        return agent_block_id(phase)
+    if re.match(rf"phase_{phase}_phase_checks$", step_id):
+        return agent_block_id(phase)
+    return None
+
+
+def macro_step_for_next_step(step_id: str) -> str:
+    block = block_id_for_granular(step_id)
+    return block if block is not None else step_id
+
+
 def required_mode(step_id: str) -> str:
     if step_id == "done":
         return "agent"
-    if re.match(r"phase_\d+_(plan_bootstrap|request_questions)$", step_id):
+    if step_id == "phase_0_verify":
+        return "agent"
+    if re.match(r"phase_\d+_plan_block$", step_id):
+        return "plan"
+    if PLAN_SUBSTEP_RE.match(step_id):
         return "plan"
     return "agent"
 
@@ -147,10 +206,58 @@ def first_incomplete_slice_step(state: dict[str, Any], root: Path) -> str | None
     return None
 
 
+def plan_block_substeps(phase: int) -> list[str]:
+    return [f"phase_{phase}_plan_bootstrap", f"phase_{phase}_request_questions"]
+
+
+def agent_block_substeps(state: dict[str, Any], root: Path, phase: int) -> list[str]:
+    steps = [f"phase_{phase}_draft_plan", f"phase_{phase}_finalize_plan"]
+    plan_path = state.get("current_plan_path")
+    if plan_path:
+        plan_file = root / plan_path
+        for slice_id in parse_slice_ids(plan_file):
+            for substep in slice_substep_suffixes(plan_file, slice_id):
+                steps.append(slice_step_id(phase, slice_id, substep))
+    steps.append(f"phase_{phase}_phase_checks")
+    return steps
+
+
+def substeps_for_block(state: dict[str, Any], block_id: str, root: Path) -> list[str]:
+    match = MACRO_BLOCK_RE.match(block_id)
+    if not match:
+        return []
+    phase = int(match.group(1))
+    if match.group(2) == "plan_block":
+        return plan_block_substeps(phase)
+    return agent_block_substeps(state, root, phase)
+
+
+def block_substeps_remaining(state: dict[str, Any], block_id: str, root: Path) -> list[str]:
+    completed = set(state.get("completed_steps", []))
+    return [step for step in substeps_for_block(state, block_id, root) if step not in completed]
+
+
+def normalize_state(state: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
+    root = root or repo_root()
+    next_state = dict(state)
+    if "pause_auto_resume" not in next_state:
+        next_state["pause_auto_resume"] = False
+    step = next_state.get("next_step")
+    if not isinstance(step, str):
+        return next_state
+    if step in {"done", "phase_0_verify"} or is_macro_block(step):
+        next_state["next_required_mode"] = required_mode(step)
+        return next_state
+    macro = macro_step_for_next_step(step)
+    next_state["next_step"] = macro
+    next_state["next_required_mode"] = required_mode(macro)
+    return next_state
+
+
 def bootstrap_step(phase: int) -> str:
     if phase == 0:
         return "phase_0_verify"
-    return f"phase_{phase}_plan_bootstrap"
+    return plan_block_id(phase)
 
 
 def initial_state(*, phase: int | None = None) -> dict[str, Any]:
@@ -182,6 +289,7 @@ def initial_state(*, phase: int | None = None) -> dict[str, Any]:
         "completed_steps": completed,
         "alembic_group": None,
         "plan_mode_escape_hatches": [],
+        "pause_auto_resume": False,
     }
 
 
@@ -199,6 +307,7 @@ def validate_state(state: dict[str, Any], root: Path | None = None) -> list[str]
         "current_phase",
         "skip_tests_on_commit",
         "completed_steps",
+        "pause_auto_resume",
     ):
         if field not in state:
             errors.append(f"missing field: {field}")
@@ -213,6 +322,9 @@ def validate_state(state: dict[str, Any], root: Path | None = None) -> list[str]
     if state.get("plan_mode_escape_hatches") != []:
         errors.append("plan_mode_escape_hatches must be []")
 
+    if not isinstance(state.get("pause_auto_resume"), bool):
+        errors.append("pause_auto_resume must be a boolean")
+
     if not state.get("skip_tests_on_commit"):
         errors.append("skip_tests_on_commit must be true during loop")
 
@@ -224,6 +336,21 @@ def validate_state(state: dict[str, Any], root: Path | None = None) -> list[str]
             errors.append(
                 f"current_plan_path {plan_path!r} != expected {expected_path!r} for phase {phase}"
             )
+
+    next_step = state.get("next_step")
+    if (
+        isinstance(next_step, str)
+        and is_granular_step(next_step)
+        and next_step
+        not in {
+            "phase_0_verify",
+            "done",
+        }
+    ):
+        errors.append(
+            f"next_step {next_step!r} must be a macro block "
+            "(run validate to normalize legacy state)"
+        )
 
     return errors
 
@@ -278,7 +405,7 @@ def _set_next_step(state: dict[str, Any], next_step: str) -> dict[str, Any]:
 def _advance_from_phase0(state: dict[str, Any]) -> dict[str, Any]:
     state["current_phase"] = 1
     state["current_plan_path"] = PHASE_PLAN_PATHS[1]
-    return _set_next_step(state, "phase_1_plan_bootstrap")
+    return _set_next_step(state, plan_block_id(1))
 
 
 def _advance_from_bootstrap(
@@ -372,10 +499,7 @@ def advance_after_step(
             next_state, int(bootstrap_match.group(1)), bootstrap_match.group(2), root
         )
 
-    slice_match = re.match(
-        r"phase_(\d+)_slice_(.+)_(pre_alembic|alembic_preview|migration_manual_edit|alembic_continue|post_alembic|build)$",
-        completed_step,
-    )
+    slice_match = SLICE_SUBSTEP_RE.match(completed_step)
     if slice_match:
         plan_path = next_state.get("current_plan_path")
         plan_file = root / plan_path if plan_path else None
@@ -395,12 +519,75 @@ def advance_after_step(
     return next_state
 
 
+def current_substep(state: dict[str, Any], root: Path | None = None) -> str | None:
+    root = root or repo_root()
+    state = normalize_state(state, root)
+    step = state.get("next_step")
+    if not isinstance(step, str):
+        return None
+    if step == "done":
+        return None
+    if step == "phase_0_verify":
+        completed = set(state.get("completed_steps", []))
+        return None if "phase_0_verify" in completed else "phase_0_verify"
+    if is_macro_block(step):
+        remaining = block_substeps_remaining(state, step, root)
+        return remaining[0] if remaining else None
+    return step
+
+
+def _finalize_substep_complete(
+    state: dict[str, Any], *, prior_block: str | None, root: Path
+) -> dict[str, Any]:
+    if prior_block == "phase_0_verify" or state.get("next_step") == "done":
+        return normalize_state(state, root)
+
+    granular_next = state.get("next_step")
+    if not isinstance(granular_next, str):
+        return normalize_state(state, root)
+
+    if prior_block and is_macro_block(prior_block):
+        if block_substeps_remaining(state, prior_block, root):
+            return _set_next_step(state, prior_block)
+        next_macro = macro_step_for_next_step(granular_next)
+        return _set_next_step(state, next_macro)
+
+    return normalize_state(state, root)
+
+
+def substep_complete(
+    state: dict[str, Any], substep_id: str, root: Path | None = None
+) -> tuple[dict[str, Any], list[str]]:
+    root = root or repo_root()
+    normalized = normalize_state(state, root)
+    prior_block = normalized.get("next_step")
+    if not isinstance(prior_block, str):
+        prior_block = None
+
+    expected = current_substep(normalized, root)
+    if expected is not None and substep_id != expected:
+        print(
+            f"WARNING: substep-complete {substep_id!r} but current substep is {expected!r}",
+            file=sys.stderr,
+        )
+
+    advanced = advance_after_step(normalized, substep_id, root)
+    finalized = _finalize_substep_complete(advanced, prior_block=prior_block, root=root)
+    return finalized, validate_state(finalized, root)
+
+
 def cmd_validate(_: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         print(f"Missing state file: {STATE_PATH}")
         return 1
+    root = repo_root()
     state = load_state()
-    errors = validate_state(state)
+    normalized = normalize_state(state, root)
+    if normalized != state:
+        save_state(normalized)
+        print("Normalized legacy next_step to macro block.")
+        state = normalized
+    errors = validate_state(state, root)
     if errors:
         for error in errors:
             print(f"ERROR: {error}")
@@ -417,8 +604,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def complete_step(state: dict[str, Any], step_id: str) -> tuple[dict[str, Any], list[str]]:
-    state = advance_after_step(state, step_id)
-    return state, validate_state(state)
+    return substep_complete(state, step_id)
 
 
 def cmd_complete(args: argparse.Namespace) -> int:
@@ -426,9 +612,13 @@ def cmd_complete(args: argparse.Namespace) -> int:
         print(f"Missing state file: {STATE_PATH}")
         return 1
     state = load_state()
-    if state.get("next_step") != args.step_id:
-        print(f"WARNING: completing {args.step_id!r} but next_step is {state.get('next_step')!r}")
-    state, errors = complete_step(state, args.step_id)
+    expected = current_substep(state)
+    if expected is not None and args.step_id != expected:
+        print(
+            f"WARNING: completing {args.step_id!r} but current substep is {expected!r}",
+            file=sys.stderr,
+        )
+    state, errors = substep_complete(state, args.step_id)
     if errors:
         for error in errors:
             print(f"ERROR: {error}")
@@ -438,25 +628,63 @@ def cmd_complete(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_fast_forward(_args: argparse.Namespace) -> int:
+def cmd_substep_complete(args: argparse.Namespace) -> int:
+    return cmd_complete(args)
+
+
+def cmd_current_substep(_: argparse.Namespace) -> int:
+    if not STATE_PATH.is_file():
+        print(f"Missing state file: {STATE_PATH}")
+        return 1
+    root = repo_root()
+    state = normalize_state(load_state(), root)
+    substep = current_substep(state, root)
+    block = state.get("next_step")
+    remaining: list[str] = []
+    if isinstance(block, str) and is_macro_block(block):
+        remaining = block_substeps_remaining(state, block, root)
+    print(
+        json.dumps(
+            {
+                "next_step": block,
+                "current_substep": substep,
+                "substeps_remaining": remaining,
+                "remaining_count": len(remaining),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_set_pause_auto_resume(args: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         print(f"Missing state file: {STATE_PATH}")
         return 1
     state = load_state()
+    state["pause_auto_resume"] = args.paused == "true"
+    save_state(state)
+    print(json.dumps({"pause_auto_resume": state["pause_auto_resume"]}, indent=2))
+    return 0
+
+
+def cmd_fast_forward(_args: argparse.Namespace) -> int:
+    if not STATE_PATH.is_file():
+        print(f"Missing state file: {STATE_PATH}")
+        return 1
+    root = repo_root()
+    state = normalize_state(load_state(), root)
     completed_ids: list[str] = []
     for _ in range(64):
-        step = state.get("next_step")
-        if not isinstance(step, str) or step == "done":
+        sub = current_substep(state, root)
+        if sub is None or not skip_if_done(state, sub, root):
             break
-        is_bootstrap = re.match(r"phase_\d+_plan_bootstrap$", step) is not None
-        if not is_bootstrap and not skip_if_done(state, step):
-            break
-        state, errors = complete_step(state, step)
+        state, errors = substep_complete(state, sub, root)
         if errors:
             for error in errors:
                 print(f"ERROR: {error}")
             return 1
-        completed_ids.append(step)
+        completed_ids.append(sub)
     save_state(state)
     print(json.dumps({"fast_forwarded": completed_ids, "state": state}, indent=2))
     return 0
@@ -466,50 +694,57 @@ def cmd_show(_: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         print(f"Missing state file: {STATE_PATH}")
         return 1
-    state = load_state()
+    root = repo_root()
+    state = normalize_state(load_state(), root)
     print(json.dumps(state, indent=2))
     step = state.get("next_step")
     if isinstance(step, str):
         print(f"\nrequired_mode={required_mode(step)}")
-        if skip_if_done(state, step):
-            print(f"skip_if_done: {step} predicate already satisfied")
+        sub = current_substep(state, root)
+        if sub:
+            print(f"current_substep={sub}")
+        if skip_if_done(state, sub or step, root):
+            print(f"skip_if_done: {(sub or step)!r} predicate already satisfied")
     return 0
 
 
-def batch_step_ids(state: dict[str, Any]) -> tuple[str, list[str]]:
+def batch_step_ids(state: dict[str, Any], root: Path | None = None) -> tuple[str, list[str]]:
+    root = root or repo_root()
+    state = normalize_state(state, root)
     step = state.get("next_step")
     if not isinstance(step, str):
         return "agent", []
     batch_mode = required_mode(step)
-    steps: list[str] = []
-    sim = dict(state)
-    for _ in range(256):
-        current = sim.get("next_step")
-        if not isinstance(current, str):
-            break
-        if required_mode(current) != batch_mode:
-            break
-        steps.append(current)
-        if current == "done":
-            break
-        sim, errors = complete_step(sim, current)
-        if errors:
-            break
-    return batch_mode, steps
+    if required_mode(step) != batch_mode:
+        return batch_mode, []
+    return batch_mode, [step]
 
 
-def batch_exit_check(state: dict[str, Any], batch_mode: str) -> dict[str, Any]:
+def batch_exit_check(
+    state: dict[str, Any], batch_mode: str, root: Path | None = None
+) -> dict[str, Any]:
+    root = root or repo_root()
+    state = normalize_state(state, root)
     step = state.get("next_step")
     if not isinstance(step, str):
         return {
             "may_exit": True,
             "exit_kind": "unknown",
             "remaining_steps": [],
+            "substeps_remaining": [],
             "remaining_count": 0,
+            "substeps_remaining_count": 0,
         }
 
     next_mode = required_mode(step)
-    _, remaining = batch_step_ids(state)
+    _, remaining = batch_step_ids(state, root)
+    substeps_remaining: list[str] = []
+    if is_macro_block(step):
+        substeps_remaining = block_substeps_remaining(state, step, root)
+    elif step == "phase_0_verify":
+        substeps_remaining = (
+            [] if "phase_0_verify" in set(state.get("completed_steps", [])) else ["phase_0_verify"]
+        )
 
     if step == "done":
         return {
@@ -519,7 +754,9 @@ def batch_exit_check(state: dict[str, Any], batch_mode: str) -> dict[str, Any]:
             "next_step": step,
             "next_required_mode": next_mode,
             "remaining_steps": [],
+            "substeps_remaining": [],
             "remaining_count": 0,
+            "substeps_remaining_count": 0,
         }
 
     if next_mode == batch_mode:
@@ -531,6 +768,8 @@ def batch_exit_check(state: dict[str, Any], batch_mode: str) -> dict[str, Any]:
             "next_required_mode": next_mode,
             "remaining_steps": remaining,
             "remaining_count": len(remaining),
+            "substeps_remaining": substeps_remaining,
+            "substeps_remaining_count": len(substeps_remaining),
         }
 
     return {
@@ -540,7 +779,9 @@ def batch_exit_check(state: dict[str, Any], batch_mode: str) -> dict[str, Any]:
         "next_step": step,
         "next_required_mode": next_mode,
         "remaining_steps": [],
+        "substeps_remaining": [],
         "remaining_count": 0,
+        "substeps_remaining_count": 0,
     }
 
 
@@ -548,15 +789,26 @@ def cmd_batch_steps(_: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         print(f"Missing state file: {STATE_PATH}")
         return 1
-    state = load_state()
-    batch_mode, steps = batch_step_ids(state)
+    root = repo_root()
+    state = normalize_state(load_state(), root)
+    batch_mode, steps = batch_step_ids(state, root)
+    substeps_remaining: list[str] = []
+    step = state.get("next_step")
+    if isinstance(step, str) and is_macro_block(step):
+        substeps_remaining = block_substeps_remaining(state, step, root)
+    elif step == "phase_0_verify":
+        substeps_remaining = (
+            [] if "phase_0_verify" in set(state.get("completed_steps", [])) else ["phase_0_verify"]
+        )
     print(
         json.dumps(
             {
                 "batch_mode": batch_mode,
-                "next_step": state.get("next_step"),
+                "next_step": step,
                 "steps_in_batch": steps,
                 "remaining_count": len(steps),
+                "substeps_remaining": substeps_remaining,
+                "substeps_remaining_count": len(substeps_remaining),
             },
             indent=2,
         )
@@ -568,12 +820,13 @@ def cmd_batch_exit_check(args: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         print(f"Missing state file: {STATE_PATH}")
         return 1
-    state = load_state()
+    root = repo_root()
+    state = normalize_state(load_state(), root)
     step = state.get("next_step")
     batch_mode = args.batch_mode
     if batch_mode is None:
         batch_mode = required_mode(step) if isinstance(step, str) else "agent"
-    print(json.dumps(batch_exit_check(state, batch_mode), indent=2))
+    print(json.dumps(batch_exit_check(state, batch_mode, root), indent=2))
     return 0
 
 
@@ -592,8 +845,29 @@ def main() -> int:
         help="Optional debug jump to phase 0-7 bootstrap",
     )
 
-    complete_parser = subparsers.add_parser("complete", help="Mark a step complete and advance")
-    complete_parser.add_argument("step_id", help="Step ID that finished in this invocation")
+    complete_parser = subparsers.add_parser(
+        "complete", help="Mark a substep complete and advance macro block state"
+    )
+    complete_parser.add_argument("step_id", help="Granular substep ID that finished")
+
+    substep_parser = subparsers.add_parser(
+        "substep-complete", help="Alias for complete (granular substep within macro block)"
+    )
+    substep_parser.add_argument("step_id", help="Granular substep ID that finished")
+
+    subparsers.add_parser(
+        "current-substep", help="Return the granular substep to execute for the current macro block"
+    )
+
+    pause_parser = subparsers.add_parser(
+        "set-pause-auto-resume",
+        help="Pause or resume stop-hook auto continuation (AskQuestion / hard failure)",
+    )
+    pause_parser.add_argument(
+        "paused",
+        choices=("true", "false"),
+        help="Whether the stop hook should skip auto-resume",
+    )
 
     subparsers.add_parser("show", help="Print current state and next step metadata")
 
@@ -604,7 +878,7 @@ def main() -> int:
 
     subparsers.add_parser(
         "batch-steps",
-        help="List step IDs in the current mode batch (simulated advance)",
+        help="List macro block IDs in the current mode batch (one per mode stretch)",
     )
 
     batch_exit_parser = subparsers.add_parser(
@@ -622,6 +896,9 @@ def main() -> int:
         "validate": cmd_validate,
         "init": cmd_init,
         "complete": cmd_complete,
+        "substep-complete": cmd_substep_complete,
+        "current-substep": cmd_current_substep,
+        "set-pause-auto-resume": cmd_set_pause_auto_resume,
         "show": cmd_show,
         "fast-forward": cmd_fast_forward,
         "batch-steps": cmd_batch_steps,
