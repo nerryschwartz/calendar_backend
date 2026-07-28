@@ -2,10 +2,10 @@
   "version": 1,
   "branch": "new-design-and-implementation-doc",
   "next_required_mode": "agent",
-  "next_step": "phase_1_slice_10_build",
-  "current_phase": 1,
-  "current_plan_path": "docs/plans/v2_flat_goal_children.md",
-  "current_slice_id": "10",
+  "next_step": "phase_2_finalize_plan",
+  "current_phase": 2,
+  "current_plan_path": "docs/plans/v2_prerequisites.md",
+  "current_slice_id": null,
   "skip_tests_on_commit": true,
   "completed_steps": [
     "phase_0_verify",
@@ -29,7 +29,12 @@
     "phase_1_slice_8_migration_manual_edit",
     "phase_1_slice_8_alembic_continue",
     "phase_1_slice_8_post_alembic",
-    "phase_1_slice_9_build"
+    "phase_1_slice_9_build",
+    "phase_1_slice_10_build",
+    "phase_1_phase_checks",
+    "phase_2_plan_bootstrap",
+    "phase_2_request_questions",
+    "phase_2_draft_plan"
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": []
