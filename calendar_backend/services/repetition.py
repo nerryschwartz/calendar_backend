@@ -56,8 +56,8 @@ class RepetitionService:
         repeat_mode: RepeatMode | None = None,
         start_time: datetime | None = None,
         repeat_interval_minutes: int | None = None,
-        manual_count: int | None | _UnsetType = _UNSET,
-        end_time: datetime | None | _UnsetType = _UNSET,
+        manual_count: int | _UnsetType | None = _UNSET,
+        end_time: datetime | _UnsetType | None = _UNSET,
         default_instance_critical: bool | None = None,
     ) -> ServiceResult[RepetitionPlanDTO]:
         with transaction(self._session) as txn:
