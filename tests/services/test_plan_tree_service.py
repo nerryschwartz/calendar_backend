@@ -890,3 +890,41 @@ def test_remove_plan_prerequisite_is_idempotent(
         )
     )
     assert row is None
+
+
+@pytest.mark.integration
+def test_delete_plan_removes_plan_prerequisite_edges(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    goal_service = _goal_service(service_db_session)
+    plan_tree = _plan_tree_service(service_db_session)
+    prereq_result = goal_service.create_child(
+        master_plan_id,
+        PlanKind.TASK,
+        TaskCreatePayload("prereq task", 30, False, None),
+        is_critical=False,
+    )
+    dependent_result = goal_service.create_child(
+        master_plan_id,
+        PlanKind.TASK,
+        TaskCreatePayload("dependent task", 30, False, None),
+        is_critical=False,
+    )
+    assert prereq_result.success and prereq_result.value is not None
+    assert dependent_result.success and dependent_result.value is not None
+    prereq_id = prereq_result.value.plan_id
+    dependent_id = dependent_result.value.plan_id
+    assert plan_tree.add_plan_prerequisite(dependent_id, prereq_id).success
+
+    assert plan_tree.delete_plan(prereq_id).success
+
+    remaining_edge = service_db_session.scalar(
+        select(PlanPrerequisite).where(
+            PlanPrerequisite.plan_id == dependent_id,
+            PlanPrerequisite.prerequisite_plan_id == prereq_id,
+        )
+    )
+    assert remaining_edge is None
+    assert service_db_session.get(Plan, prereq_id) is None
+    assert service_db_session.get(Plan, dependent_id) is not None

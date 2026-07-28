@@ -43,6 +43,7 @@ from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
+from calendar_backend.services.plan_tree import PlanTreeService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
 from calendar_backend.services.task_assignment import (
@@ -1143,6 +1144,36 @@ def test_assign_tasks_occupied_past_task_blocks_placement(
     assert result.success and result.value is not None
     assert len(result.value.calendar_entries) == 1
     assert result.value.calendar_entries[0].start_time == _utc(2026, 6, 7, 10, 30)
+
+
+@pytest.mark.integration
+def test_assign_tasks_plan_prerequisite_orders_calendar(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    prereq_id = _create_task(service_db_session, master_id, name="prereq")
+    dependent_id = _create_task(service_db_session, master_id, name="dependent")
+    clock = _clock()
+    assert (
+        PlanTreeService(service_db_session, clock)
+        .add_plan_prerequisite(dependent_id, prereq_id)
+        .success
+    )
+    TimeConstraintService(service_db_session, clock).add_user_group(
+        master_id,
+        (_window(_utc(2026, 6, 7, 10, 0), _utc(2026, 6, 7, 12, 0)),),
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    entries_by_source = {entry.source_plan_id: entry for entry in result.value.calendar_entries}
+    assert prereq_id in entries_by_source
+    assert dependent_id in entries_by_source
+    assert entries_by_source[prereq_id].start_time < entries_by_source[dependent_id].start_time
 
 
 @pytest.mark.integration
