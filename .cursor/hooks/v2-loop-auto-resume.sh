@@ -23,12 +23,22 @@ if [[ "$pause_auto_resume" == "True" ]]; then
   exit 0
 fi
 
+active_batch_mode="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("active_batch_mode"))' "$state_file")"
+if [[ "$active_batch_mode" == "None" || -z "$active_batch_mode" ]]; then
+  echo '{}'
+  exit 0
+fi
+
 cd "$repo_root"
-batch_mode="$(python3 -c 'import json,sys; print(json.load(open(".cursor/v2_implementation_loop.json")).get("next_required_mode","agent"))')"
-exit_json="$(uv run python scripts/cursor/v2_loop_state.py batch-exit-check --batch-mode "$batch_mode")"
+exit_json="$(uv run python scripts/cursor/v2_loop_state.py batch-exit-check --batch-mode "$active_batch_mode")"
 may_exit="$(echo "$exit_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("may_exit", True))')"
 
 if [[ "$may_exit" == "True" ]]; then
+  exit_kind="$(echo "$exit_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("exit_kind",""))')"
+  uv run python scripts/cursor/v2_loop_state.py clear-active-batch-mode >/dev/null
+  if [[ "$exit_kind" == "mode_change" || "$exit_kind" == "done" ]]; then
+    uv run python scripts/cursor/v2_loop_state.py set-pause-auto-resume true >/dev/null
+  fi
   echo '{}'
   exit 0
 fi

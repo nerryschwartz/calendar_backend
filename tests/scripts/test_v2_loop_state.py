@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -210,3 +212,66 @@ def test_substep_complete_finishes_plan_block(repo_root: Path) -> None:
     assert errors == []
     assert updated["next_step"] == "phase_3_agent_block"
     assert updated["next_required_mode"] == "agent"
+
+
+def test_batch_exit_check_plan_handoff_after_plan_block(repo_root: Path) -> None:
+    state = {
+        "version": 1,
+        "branch": "main",
+        "next_required_mode": "agent",
+        "next_step": "phase_3_agent_block",
+        "current_phase": 3,
+        "current_plan_path": "docs/plans/v2_block_orm.md",
+        "current_slice_id": None,
+        "skip_tests_on_commit": True,
+        "completed_steps": [
+            "phase_3_plan_bootstrap",
+            "phase_3_request_questions",
+        ],
+        "alembic_group": None,
+        "plan_mode_escape_hatches": [],
+        "pause_auto_resume": False,
+        "active_batch_mode": "plan",
+    }
+    plan_result = loop.batch_exit_check(state, "plan", repo_root)
+    assert plan_result["may_exit"] is True
+    assert plan_result["exit_kind"] == "mode_change"
+
+    agent_result = loop.batch_exit_check(state, "agent", repo_root)
+    assert agent_result["may_exit"] is False
+    assert agent_result["exit_kind"] == "batch_incomplete"
+
+
+def test_set_and_clear_active_batch_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state_path = tmp_path / ".cursor" / "v2_implementation_loop.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "branch": "main",
+                "next_required_mode": "agent",
+                "next_step": "phase_3_agent_block",
+                "current_phase": 3,
+                "current_plan_path": "docs/plans/v2_block_orm.md",
+                "current_slice_id": None,
+                "skip_tests_on_commit": True,
+                "completed_steps": [],
+                "alembic_group": None,
+                "plan_mode_escape_hatches": [],
+                "pause_auto_resume": False,
+                "active_batch_mode": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loop, "STATE_PATH", state_path)
+    monkeypatch.setattr(loop, "repo_root", lambda: tmp_path)
+
+    assert loop.cmd_set_active_batch_mode(argparse.Namespace(mode="agent")) == 0
+    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    assert loaded["active_batch_mode"] == "agent"
+
+    assert loop.cmd_clear_active_batch_mode(argparse.Namespace()) == 0
+    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    assert loaded["active_batch_mode"] is None

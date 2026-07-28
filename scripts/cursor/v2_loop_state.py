@@ -58,14 +58,16 @@ def repo_root() -> Path:
     return Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
 
 
-def load_state(path: Path = STATE_PATH) -> dict[str, Any]:
-    with path.open(encoding="utf-8") as handle:
+def load_state(path: Path | None = None) -> dict[str, Any]:
+    state_path = path if path is not None else STATE_PATH
+    with state_path.open(encoding="utf-8") as handle:
         return json.load(handle)
 
 
-def save_state(state: dict[str, Any], path: Path = STATE_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
+def save_state(state: dict[str, Any], path: Path | None = None) -> None:
+    state_path = path if path is not None else STATE_PATH
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with state_path.open("w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=2)
         handle.write("\n")
 
@@ -242,6 +244,8 @@ def normalize_state(state: dict[str, Any], root: Path | None = None) -> dict[str
     next_state = dict(state)
     if "pause_auto_resume" not in next_state:
         next_state["pause_auto_resume"] = False
+    if "active_batch_mode" not in next_state:
+        next_state["active_batch_mode"] = None
     step = next_state.get("next_step")
     if not isinstance(step, str):
         return next_state
@@ -290,6 +294,7 @@ def initial_state(*, phase: int | None = None) -> dict[str, Any]:
         "alembic_group": None,
         "plan_mode_escape_hatches": [],
         "pause_auto_resume": False,
+        "active_batch_mode": None,
     }
 
 
@@ -324,6 +329,10 @@ def validate_state(state: dict[str, Any], root: Path | None = None) -> list[str]
 
     if not isinstance(state.get("pause_auto_resume"), bool):
         errors.append("pause_auto_resume must be a boolean")
+
+    active_batch_mode = state.get("active_batch_mode")
+    if active_batch_mode is not None and active_batch_mode not in {"plan", "agent"}:
+        errors.append("active_batch_mode must be null, 'plan', or 'agent'")
 
     if not state.get("skip_tests_on_commit"):
         errors.append("skip_tests_on_commit must be true during loop")
@@ -668,6 +677,28 @@ def cmd_set_pause_auto_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_active_batch_mode(args: argparse.Namespace) -> int:
+    if not STATE_PATH.is_file():
+        print(f"Missing state file: {STATE_PATH}")
+        return 1
+    state = load_state()
+    state["active_batch_mode"] = args.mode
+    save_state(state)
+    print(json.dumps({"active_batch_mode": state["active_batch_mode"]}, indent=2))
+    return 0
+
+
+def cmd_clear_active_batch_mode(_args: argparse.Namespace) -> int:
+    if not STATE_PATH.is_file():
+        print(f"Missing state file: {STATE_PATH}")
+        return 1
+    state = load_state()
+    state["active_batch_mode"] = None
+    save_state(state)
+    print(json.dumps({"active_batch_mode": None}, indent=2))
+    return 0
+
+
 def cmd_fast_forward(_args: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         print(f"Missing state file: {STATE_PATH}")
@@ -869,6 +900,21 @@ def main() -> int:
         help="Whether the stop hook should skip auto-resume",
     )
 
+    active_batch_parser = subparsers.add_parser(
+        "set-active-batch-mode",
+        help="Record the mode stretch running in the current /run-v2-implementation invocation",
+    )
+    active_batch_parser.add_argument(
+        "mode",
+        choices=("plan", "agent"),
+        help="Plan or Agent mode stretch that passed the mode gate",
+    )
+
+    subparsers.add_parser(
+        "clear-active-batch-mode",
+        help="Clear active_batch_mode when a mode stretch finishes",
+    )
+
     subparsers.add_parser("show", help="Print current state and next step metadata")
 
     subparsers.add_parser(
@@ -899,6 +945,8 @@ def main() -> int:
         "substep-complete": cmd_substep_complete,
         "current-substep": cmd_current_substep,
         "set-pause-auto-resume": cmd_set_pause_auto_resume,
+        "set-active-batch-mode": cmd_set_active_batch_mode,
+        "clear-active-batch-mode": cmd_clear_active_batch_mode,
         "show": cmd_show,
         "fast-forward": cmd_fast_forward,
         "batch-steps": cmd_batch_steps,

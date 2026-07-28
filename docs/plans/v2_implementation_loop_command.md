@@ -11,8 +11,8 @@ Build a **single-PR, multi-plan** Cursor workflow for all V2 phases in [`docs/v2
 - Uses **non-interactive commits for every commit**; you open the PR manually after all commits
 - Collapses Alembic five-step groups: no commit on preview / manual-edit middle steps; `db-revision-continue` owns its commit (no `/request-questions` on any build slice)
 - Uses **`--skip-tests` until the last slice of the entire PR**, then runs full checks once
-- Persists progress in a **git-tracked** [`.cursor/v2_implementation_loop.json`](../../.cursor/v2_implementation_loop.json) with `next_required_mode: plan|agent`
-- **Pauses** when the current Cursor mode cannot run the next macro block; you switch mode and invoke `/run-v2-implementation` once (Plan mode at `phase_N_plan_block`; Agent at `phase_N_agent_block`). Mid-batch continuation uses the stop hook — not manual re-invoke.
+- Persists progress in a **git-tracked** [`.cursor/v2_implementation_loop.json`](../../.cursor/v2_implementation_loop.json) with `next_required_mode: plan|agent` and `active_batch_mode` while a mode stretch runs
+- **Pauses** when the current Cursor mode cannot run the next macro block; you switch mode and invoke `/run-v2-implementation` once (Plan mode at `phase_N_plan_block`; Agent at `phase_N_agent_block`). Mid-batch continuation uses the stop hook (`active_batch_mode`, not `next_required_mode`) — not manual re-invoke.
 
 This plan covers **audit → design → command build** only. It does **not** implement V2 domain features (blocks, prerequisites, etc.).
 
@@ -316,7 +316,7 @@ None.
 | C3 | Phase 0 + idempotency | **Include Phase 0** in the state machine. **Skip-if-done** runs before **every** phase and slice step when its completion predicate is already satisfied (covers mostly-done Phase 0). | SC-11 |
 | C4 | Check suite timing | Run **[`scripts/cursor/checks.sh`](../../scripts/cursor/checks.sh)** (ruff format, ruff check, pyright, pytest) at **end of each V2 phase** and again when `next_step` is `done`. Loop commits still pass `--skip-tests`. | SC-9, SC-12 |
 | C5 | Plan file mapping | **One finalized plan per phase 0–7** (split old V2-3 mega-plan). See [Phase → plan paths](#phase--plan-paths) below. | A2, guide §9 |
-| C6 | Human approval | **No chat approval** between slices. User invokes **`/run-v2-implementation`** once per **mode stretch** (macro block). Agent runs all `substeps_remaining` via `current-substep` / `substep-complete`. Turn-boundary auto-resume via stop hook. **False “batch complete”** while `next_required_mode` still equals `batch_mode` is a protocol violation — use `batch-exit-check`. | SC-13 |
+| C6 | Human approval | **No chat approval** between slices. User invokes **`/run-v2-implementation`** once per **mode stretch** (macro block). Agent runs all `substeps_remaining` via `current-substep` / `substep-complete`. Turn-boundary auto-resume via stop hook using **`active_batch_mode`**. **False “batch complete”** while `next_required_mode` still equals `batch_mode` is a protocol violation — use `batch-exit-check`. | SC-13 |
 | C7 | Non-interactive staging | **`commit_changes.py --non-interactive --message "…"`** stages **all working-tree changes** (tracked + untracked, non-ignored). No `input()` prompts. | SC-1, SC-10 |
 | C8 | Pre-commit reviews | Run audit-commit-readiness then review-abstractions before each loop commit step. **Auto-fix only in current substep scope**; if still blocked, set `pause_auto_resume true` and **stop** with error (no chat override). | SC-14 |
 
@@ -376,13 +376,17 @@ Git-tracked [`.cursor/v2_implementation_loop.json`](../../.cursor/v2_implementat
   "skip_tests_on_commit": true,
   "completed_steps": [],
   "alembic_group": null,
-  "plan_mode_escape_hatches": []
+  "plan_mode_escape_hatches": [],
+  "pause_auto_resume": false,
+  "active_batch_mode": null
 }
 ```
 
 Field notes:
 
 - **`next_required_mode`:** `plan` only for `phase_N_plan_bootstrap` and `phase_N_request_questions`; `agent` for `draft_plan`, `finalize_plan`, all build, db-revision, commit, and check steps.
+- **`active_batch_mode`:** Set when a `/run-v2-implementation` invocation passes the mode gate; cleared when the stop hook sees `may_exit: true`. The stop hook uses this field (not `next_required_mode`) for `batch-exit-check`.
+- **`pause_auto_resume`:** When `true`, the stop hook does not auto-submit `/run-v2-implementation` (AskQuestion, hard failure, or batch end awaiting mode switch).
 - **`alembic_group`:** When inside a five-step migration group, holds `{ "slice_id", "phase", "substep": "pre_alembic|preview|manual_edit|continue|post_alembic" }`; cleared after post-alembic commit.
 - **`skip_tests_on_commit`:** Always `true` during loop; phase-end and final steps run full `checks.sh` explicitly (C4).
 - **`plan_mode_escape_hatches`:** Empty array; reserved for future rare Plan-mode returns (C2).

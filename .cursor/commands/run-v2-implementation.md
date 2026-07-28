@@ -15,7 +15,7 @@ uv run python scripts/cursor/v2_loop_state.py current-substep
 ```
 Keep `steps_in_batch` (one macro ID) and `current_substep` for the invocation. Do **not** stop until the macro block is complete (or a hard failure).
 
-**Turn-boundary auto-resume:** [`.cursor/hooks/v2-loop-auto-resume.sh`](../hooks/v2-loop-auto-resume.sh) submits `/run-v2-implementation` when a turn ends with `may_exit: false`. The user does **not** manually re-invoke mid-batch. Set `pause_auto_resume` before `AskQuestion` or hard failure (see below).
+**Turn-boundary auto-resume:** [`.cursor/hooks/v2-loop-auto-resume.sh`](../hooks/v2-loop-auto-resume.sh) submits `/run-v2-implementation` when a turn ends with `may_exit: false` **for the recorded `active_batch_mode` stretch** (not `next_required_mode`). The user does **not** manually re-invoke mid-batch. Set `pause_auto_resume` before `AskQuestion` or hard failure (see below). When no batch is active (`active_batch_mode` is null), the hook does nothing.
 
 **Forbidden before `batch-exit-check` says `may_exit: true`:**
 - Posting **“Loop batch complete”** when `next_required_mode` still equals `batch_mode`
@@ -82,7 +82,10 @@ Run these steps silently; report only mode mismatches, AskQuestion prompts, hard
      Switch mode and re-invoke: /run-v2-implementation
      ```
 
-4. **Record starting mode** — read `next_required_mode` from state after validation; this is `batch_mode` for the rest of the invocation.
+4. **Record starting mode** — read `next_required_mode` from state after validation; this is `batch_mode` for the rest of the invocation. Persist it for the stop hook:
+   ```bash
+   uv run python scripts/cursor/v2_loop_state.py set-active-batch-mode <batch_mode>
+   ```
 
 5. **Load batch checklist (mandatory):**
    ```bash
