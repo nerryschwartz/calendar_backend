@@ -124,7 +124,6 @@ def test_plan_prerequisite_metadata_self_edge_check() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_foreign_key_invalid_plan_prerequisite_plan_id_rejected(
     prerequisite_schema_engine: Engine,
 ) -> None:
@@ -144,7 +143,6 @@ def test_foreign_key_invalid_plan_prerequisite_plan_id_rejected(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_foreign_key_invalid_immediate_prerequisite_plan_id_rejected(
     prerequisite_schema_engine: Engine,
 ) -> None:
@@ -165,7 +163,6 @@ def test_foreign_key_invalid_immediate_prerequisite_plan_id_rejected(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_check_plan_prerequisite_rejects_self_edge(
     prerequisite_schema_engine: Engine,
 ) -> None:
@@ -190,7 +187,6 @@ def test_check_plan_prerequisite_rejects_self_edge(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_plan_prerequisite_accepts_valid_edge(
     prerequisite_schema_engine: Engine,
 ) -> None:
@@ -220,7 +216,6 @@ def test_plan_prerequisite_accepts_valid_edge(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_task_plan_accepts_null_immediate_prerequisite(
     prerequisite_schema_engine: Engine,
 ) -> None:
@@ -242,7 +237,6 @@ def test_task_plan_accepts_null_immediate_prerequisite(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_alembic_upgrade_creates_plan_prerequisite_table(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -272,7 +266,6 @@ def test_alembic_upgrade_creates_plan_prerequisite_table(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_alembic_upgrade_enforces_plan_prerequisite_self_edge_check(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
