@@ -5,7 +5,7 @@
   "next_step": "phase_3_agent_block",
   "current_phase": 3,
   "current_plan_path": "docs/plans/v2_block_orm.md",
-  "current_slice_id": null,
+  "current_slice_id": "1_pre",
   "skip_tests_on_commit": true,
   "completed_steps": [
     "phase_0_verify",
@@ -51,7 +51,8 @@
     "phase_2_phase_checks",
     "phase_3_plan_bootstrap",
     "phase_3_request_questions",
-    "phase_3_draft_plan"
+    "phase_3_draft_plan",
+    "phase_3_finalize_plan"
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": [],

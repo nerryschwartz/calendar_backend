@@ -30,6 +30,7 @@ from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.models.prerequisites import PlanPrerequisite
 
 if TYPE_CHECKING:
+    from calendar_backend.models.blocks import BlockPlan
     from calendar_backend.models.constraints import TimeConstraintGroup
     from calendar_backend.models.repetitions import RepetitionInstance
 
@@ -102,6 +103,11 @@ class Plan(Base):
         back_populates="plan",
         uselist=False,
         foreign_keys="TaskPlan.plan_id",
+    )
+    block_plan: Mapped[BlockPlan | None] = relationship(
+        back_populates="plan",
+        uselist=False,
+        foreign_keys="BlockPlan.plan_id",
     )
     repetition_plan: Mapped[RepetitionPlan | None] = relationship(
         back_populates="plan",
