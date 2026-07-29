@@ -130,7 +130,6 @@ def test_task_plan_accepts_json_array_allowed_block_families(
 
 
 @pytest.mark.integration
-@pytest.mark.failure_expected
 def test_alembic_upgrade_adds_allowed_block_families_column(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
