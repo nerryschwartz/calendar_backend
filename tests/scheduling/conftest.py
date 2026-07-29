@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.task_families import DownstreamTaskFeasibilitySummary
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.scheduling.decomposition import AssignmentComponent
 from calendar_backend.scheduling.input import (
@@ -37,6 +38,7 @@ def schedulable_task(
     divisible: bool = False,
     minimum_chunk_size_minutes: int | None = None,
     priority_path: tuple[int, ...] = (0,),
+    block_family: str | None = None,
 ) -> SchedulableTask:
     return SchedulableTask(
         plan_id=task_id or plan_id(),
@@ -45,6 +47,7 @@ def schedulable_task(
         minimum_chunk_size_minutes=minimum_chunk_size_minutes,
         effective_time_windows=effective_time_windows,
         priority_path=priority_path,
+        block_family=block_family,
     )
 
 
@@ -134,6 +137,7 @@ def assignment_component(
     previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...] = (),
     run_started_at: datetime = RUN_AT,
     solver_limits_value: SolverLimits | None = None,
+    downstream_task_feasibility_summaries: tuple[DownstreamTaskFeasibilitySummary, ...] = (),
 ) -> AssignmentComponent:
     return AssignmentComponent(
         run_started_at=run_started_at,
@@ -142,6 +146,7 @@ def assignment_component(
         occupied_intervals=occupied_intervals,
         previous_placements_by_task_id=previous_placements_by_task_id,
         solver_limits=solver_limits_value or solver_limits(),
+        downstream_task_feasibility_summaries=downstream_task_feasibility_summaries,
     )
 
 

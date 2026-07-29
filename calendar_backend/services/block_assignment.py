@@ -20,10 +20,13 @@ from calendar_backend.domain.block_resolution import ResolveBlocksResult
 from calendar_backend.domain.enums import CalendarEntryType, CalendarRunStatus, SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import BlockCalendarEntryID, CalendarRunID, new_id
+from calendar_backend.domain.resolution import resolve_tasks_from_graph
 from calendar_backend.domain.results import ServiceResult, fail, ok
+from calendar_backend.domain.task_families import DownstreamTaskFeasibilitySummary
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
+from calendar_backend.models.plans import Plan
 from calendar_backend.models.runs import ActiveCalendarState
 from calendar_backend.scheduling.input import (
     block_assignment_input_from_resolved,
@@ -39,6 +42,7 @@ from calendar_backend.services.task_assignment import (
     _solve_assignment,  # pyright: ignore[reportPrivateUsage]
     _solver_limits_from_settings,  # pyright: ignore[reportPrivateUsage]
 )
+from calendar_backend.services.task_resolution import load_plan_graph
 
 
 class BlockAssignmentService:
@@ -81,11 +85,17 @@ class BlockAssignmentService:
                 task_entries,
                 run_started_at,
             )
+            plans = load_plan_graph(txn)
+            downstream_summaries = _downstream_task_feasibility_summaries(
+                run_started_at,
+                plans=plans,
+            )
 
         assignment_input = block_assignment_input_from_resolved(
             resolved,
             occupied_intervals=occupied_intervals,
             solver_limits=_solver_limits_from_settings(settings),
+            downstream_task_feasibility_summaries=downstream_summaries,
         )
         solver_result, runtime_ms = _solve_assignment(
             assignment_input,
@@ -144,6 +154,22 @@ def _assign_blocks_precondition_error(
         )
 
     return None
+
+
+def _downstream_task_feasibility_summaries(
+    run_started_at: datetime,
+    *,
+    plans: tuple[Plan, ...],
+) -> tuple[DownstreamTaskFeasibilitySummary, ...]:
+    baseline = resolve_tasks_from_graph(run_started_at, plans, block_placements=())
+    return tuple(
+        DownstreamTaskFeasibilitySummary(
+            plan_id=task.plan_id,
+            allowed_block_families=task.allowed_block_families,
+            base_effective_windows=task.effective_time_windows,
+        )
+        for task in baseline.valid_incomplete
+    )
 
 
 def _load_task_calendar_entries(

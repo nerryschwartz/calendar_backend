@@ -12,6 +12,9 @@ from calendar_backend.domain.resolution import (
     ResolvedTask,
     ResolveTasksResult,
 )
+from calendar_backend.domain.task_families import (
+    DownstreamTaskFeasibilitySummary,
+)
 from calendar_backend.domain.time import TimeWindow, is_minute_aligned
 
 # ``previous_placements_by_task_id`` is populated by TaskAssignmentService from future
@@ -33,6 +36,7 @@ class SchedulableTask:
     minimum_chunk_size_minutes: int | None
     effective_time_windows: tuple[TimeWindow, ...]
     priority_path: tuple[int, ...]
+    block_family: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,7 @@ class AssignmentInput:
     occupied_intervals: tuple[OccupiedInterval, ...]
     previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...] = ()
     solver_limits: SolverLimits | None = None
+    downstream_task_feasibility_summaries: tuple[DownstreamTaskFeasibilitySummary, ...] = ()
 
 
 def block_assignment_input_from_resolved(
@@ -62,6 +67,7 @@ def block_assignment_input_from_resolved(
     *,
     occupied_intervals: tuple[OccupiedInterval, ...] = (),
     solver_limits: SolverLimits | None = None,
+    downstream_task_feasibility_summaries: tuple[DownstreamTaskFeasibilitySummary, ...] = (),
 ) -> AssignmentInput:
     """Build solver input from block resolution output."""
     assignment_input = AssignmentInput(
@@ -72,6 +78,7 @@ def block_assignment_input_from_resolved(
         ),
         occupied_intervals=occupied_intervals,
         solver_limits=solver_limits,
+        downstream_task_feasibility_summaries=downstream_task_feasibility_summaries,
     )
     validate_assignment_input(assignment_input)
     return assignment_input
@@ -85,6 +92,7 @@ def _schedulable_block_from_resolved(block: ResolvedBlock) -> SchedulableTask:
         minimum_chunk_size_minutes=block.minimum_chunk_size_minutes,
         effective_time_windows=block.effective_time_windows,
         priority_path=block.priority_path,
+        block_family=block.block_family,
     )
 
 

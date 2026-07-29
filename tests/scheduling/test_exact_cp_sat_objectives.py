@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from calendar_backend.domain.task_families import DownstreamTaskFeasibilitySummary
 from calendar_backend.scheduling.exact_cp_sat import (
     _solve_single_component,  # pyright: ignore[reportPrivateUsage]
 )
@@ -142,3 +143,42 @@ def test_solve_without_stability_hints_still_returns_feasible_assignment() -> No
     assert assignments is not None
     assert len(assignments) == 1
     assert assignments[0].segments[0].start_time == utc(2026, 6, 7, 9, 0)
+
+
+def test_downstream_task_feasibility_lex_prefers_transit_block_in_contested_slot() -> None:
+    morning = window(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 12, 0))
+    only_free_slot = window(utc(2026, 6, 7, 10, 0), utc(2026, 6, 7, 10, 30))
+    transit_id = plan_id()
+    focus_id = plan_id()
+    transit_block = schedulable_task(
+        task_id=transit_id,
+        duration_minutes=30,
+        effective_time_windows=(morning,),
+        block_family="transit",
+    )
+    focus_block = schedulable_task(
+        task_id=focus_id,
+        duration_minutes=30,
+        effective_time_windows=(morning,),
+        block_family="focus",
+    )
+    summary = DownstreamTaskFeasibilitySummary(
+        plan_id=plan_id(),
+        allowed_block_families=("transit",),
+        base_effective_windows=(only_free_slot,),
+    )
+    component = assignment_component(
+        tasks=(transit_block, focus_block),
+        occupied_intervals=(
+            occupied(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 10, 0)),
+            occupied(utc(2026, 6, 7, 10, 30), utc(2026, 6, 7, 12, 0)),
+        ),
+        downstream_task_feasibility_summaries=(summary,),
+    )
+
+    assignments = _solve_single_component(component)
+
+    assert assignments is not None
+    by_plan_id = {assignment.plan_id: assignment for assignment in assignments}
+    assert by_plan_id[transit_id].segments[0] == only_free_slot
+    assert by_plan_id[focus_id].segments[0].start_time == utc(2026, 6, 7, 9, 0)
