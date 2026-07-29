@@ -21,6 +21,11 @@ from calendar_backend.domain.prerequisites import (
     expand_plan_prerequisite_precedence,
     leaf_task_ids_in_subtree,
 )
+from calendar_backend.domain.task_families import (
+    BlockPlacementSnapshot,
+    effective_allowed_block_families,
+    narrow_task_effective_windows,
+)
 from calendar_backend.domain.time import TimeWindow, validate_time_window
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import Plan
@@ -42,6 +47,7 @@ class ResolvedTask:
     minimum_chunk_size_minutes: int | None
     user_completed: bool
     completed_at: datetime | None
+    allowed_block_families: tuple[str, ...]
     effective_time_windows: tuple[TimeWindow, ...]
     constraint_sources: tuple[ConstraintSource, ...]
     priority_path: tuple[int, ...]
@@ -214,6 +220,54 @@ def _apply_effective_constraints(
     return enriched
 
 
+def _allowed_families_for_task(plan_id: PlanID, indexes: ResolutionIndexes) -> tuple[str, ...]:
+    plan = indexes.plans_by_id.get(plan_id)
+    if plan is None or plan.task_plan is None:
+        return effective_allowed_block_families(None)
+    return effective_allowed_block_families(plan.task_plan.allowed_block_families)
+
+
+def _apply_allowed_families_and_narrowing(
+    tasks: list[ResolvedTask],
+    indexes: ResolutionIndexes,
+    block_placements: tuple[BlockPlacementSnapshot, ...],
+) -> list[ResolvedTask]:
+    enriched: list[ResolvedTask] = []
+    for task in tasks:
+        allowed_families = _allowed_families_for_task(task.plan_id, indexes)
+        if block_placements:
+            narrowed = narrow_task_effective_windows(
+                task.effective_time_windows,
+                allowed_families,
+                block_placements,
+            )
+            validation_errors = list(task.validation_errors)
+            if not validation_errors and not task.user_completed and not narrowed:
+                validation_errors.append(
+                    ServiceMessage(
+                        code=MessageCode.NO_VALID_WINDOW_FOR_TASK,
+                        message="Task has no effective time windows after family narrowing",
+                        details={"plan_id": str(task.plan_id)},
+                    )
+                )
+            enriched.append(
+                replace(
+                    task,
+                    allowed_block_families=allowed_families,
+                    effective_time_windows=narrowed,
+                    validation_errors=tuple(validation_errors),
+                )
+            )
+        else:
+            enriched.append(
+                replace(
+                    task,
+                    allowed_block_families=allowed_families,
+                )
+            )
+    return enriched
+
+
 def graph_leaf_completion_sets(
     *,
     plans: tuple[Plan, ...],
@@ -300,6 +354,8 @@ def collect_precedence_constraints(
 def resolve_tasks_from_graph(
     run_started_at: datetime,
     plans: tuple[Plan, ...],
+    *,
+    block_placements: tuple[BlockPlacementSnapshot, ...] = (),
 ) -> ResolveTasksResult:
     indexes = build_resolution_indexes(plans)
     collector = _TaskCollector(indexes=indexes)
@@ -310,6 +366,11 @@ def resolve_tasks_from_graph(
         inherited_errors=(),
     )
     enriched_tasks = _apply_effective_constraints(collector.tasks, indexes)
+    enriched_tasks = _apply_allowed_families_and_narrowing(
+        enriched_tasks,
+        indexes,
+        block_placements,
+    )
     precedence_constraints = collect_precedence_constraints(
         plans,
         indexes,
@@ -554,6 +615,9 @@ class _TaskCollector:
                 minimum_chunk_size_minutes=task_plan.minimum_chunk_size_minutes,
                 user_completed=task_plan.user_completed,
                 completed_at=task_plan.completed_at,
+                allowed_block_families=effective_allowed_block_families(
+                    task_plan.allowed_block_families
+                ),
                 effective_time_windows=(),
                 constraint_sources=(),
                 priority_path=context.priority_path,

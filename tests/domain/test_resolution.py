@@ -191,6 +191,7 @@ def _resolved_task(
         minimum_chunk_size_minutes=None,
         user_completed=user_completed,
         completed_at=_NOW if user_completed else None,
+        allowed_block_families=("default",),
         effective_time_windows=(),
         constraint_sources=(),
         priority_path=(0,),

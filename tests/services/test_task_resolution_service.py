@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,6 +11,7 @@ from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind,
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
@@ -21,6 +23,7 @@ from calendar_backend.domain.resolution import (
     is_invalid_incomplete_task,
 )
 from calendar_backend.domain.time import TimeWindow
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as OrmTimeWindow
 from calendar_backend.models.plans import Plan, RepetitionPlan
@@ -219,6 +222,23 @@ def _normalize_plan_window_timezones(plans: tuple[Plan, ...]) -> tuple[Plan, ...
 
 def _load_plans_with_utc_windows(session: Session) -> tuple[Plan, ...]:
     return _normalize_plan_window_timezones(load_plan_graph(session))
+
+
+def _create_block(
+    session: Session,
+    parent_id: PlanID,
+    *,
+    name: str = "block",
+    block_family: str = "focus",
+) -> PlanID:
+    result = _goal_service(session).create_child(
+        parent_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload(name, 30, False, None, block_family),
+        is_critical=False,
+    )
+    assert result.success and result.value is not None
+    return result.value.plan_id
 
 
 def _resolve_seam(session: Session, run_at: datetime = RUN_AT) -> ResolveTasksResult:
@@ -618,4 +638,89 @@ def test_resolve_tasks_orders_instances_by_sort_order_within_critical_bucket(
     assert (
         task_by_root[lower_sort_order_task_id].priority_path
         < task_by_root[higher_sort_order_task_id].priority_path
+    )
+
+
+@pytest.mark.integration
+def test_resolve_tasks_narrows_effective_windows_from_block_calendar(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    assert (
+        _task_service(service_db_session).set_allowed_block_families(task_id, ("transit",)).success
+    )
+    user_window = TimeWindow(
+        start_time=RUN_AT - timedelta(hours=1),
+        end_time=RUN_AT + timedelta(hours=3),
+    )
+    TimeConstraintService(service_db_session, FakeClock(RUN_AT)).add_user_group(
+        master_id,
+        (user_window,),
+    )
+    block_id = _create_block(
+        service_db_session,
+        master_id,
+        block_family="transit",
+    )
+    transit_window = TimeWindow(
+        start_time=RUN_AT - timedelta(minutes=30),
+        end_time=RUN_AT - timedelta(minutes=15),
+    )
+    with transaction(service_db_session) as txn:
+        txn.add(
+            BlockCalendarEntry(
+                block_calendar_entry_id=uuid.uuid4(),
+                start_time=transit_window.start_time.replace(tzinfo=None),
+                end_time=transit_window.end_time.replace(tzinfo=None),
+                source_plan_id=block_id,
+                calendar_run_id=None,
+                display_label="transit",
+                created_at=RUN_AT.replace(tzinfo=None),
+                updated_at=RUN_AT.replace(tzinfo=None),
+            )
+        )
+        txn.flush()
+
+    result = _resolution_service(service_db_session).resolve_tasks(RUN_AT)
+    assert result.success and result.value is not None
+    task = next(task for task in result.value.valid_incomplete if task.plan_id == task_id)
+    assert task.allowed_block_families == ("transit",)
+    assert task.effective_time_windows == (transit_window,)
+
+
+@pytest.mark.integration
+def test_resolve_tasks_family_mismatch_marks_task_invalid_incomplete(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    assert (
+        _task_service(service_db_session).set_allowed_block_families(task_id, ("transit",)).success
+    )
+    block_id = _create_block(
+        service_db_session,
+        master_id,
+        block_family="focus",
+    )
+    with transaction(service_db_session) as txn:
+        txn.add(
+            BlockCalendarEntry(
+                block_calendar_entry_id=uuid.uuid4(),
+                start_time=(RUN_AT - timedelta(minutes=30)).replace(tzinfo=None),
+                end_time=(RUN_AT - timedelta(minutes=15)).replace(tzinfo=None),
+                source_plan_id=block_id,
+                calendar_run_id=None,
+                display_label="focus",
+                created_at=RUN_AT.replace(tzinfo=None),
+                updated_at=RUN_AT.replace(tzinfo=None),
+            )
+        )
+        txn.flush()
+
+    result = _resolution_service(service_db_session).resolve_tasks(RUN_AT)
+    assert result.success and result.value is not None
+    invalid = next(task for task in result.value.invalid_incomplete if task.plan_id == task_id)
+    assert any(
+        error.code == MessageCode.NO_VALID_WINDOW_FOR_TASK for error in invalid.validation_errors
     )
