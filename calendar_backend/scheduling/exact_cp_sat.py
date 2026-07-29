@@ -1014,6 +1014,7 @@ def _objective_maximize_downstream_task_feasibility(context: _ComponentContext) 
                         context,
                         segment=segment,
                         window=window,
+                        task_duration_minutes=task_vars.task.duration_minutes,
                     )
                 )
     total = model.NewIntVar(
@@ -1033,11 +1034,12 @@ def _bounded_overlap_minutes(
     *,
     segment: _SegmentVariables,
     window: TimeWindow,
+    task_duration_minutes: int,
 ) -> cp_model.IntVar:
     model = context.model
     window_start = _minute_offset(window.start_time, context.timeline_anchor)
     window_end = _minute_offset(window.end_time, context.timeline_anchor)
-    max_overlap = max(0, min(segment.task.duration_minutes, window_end - window_start))
+    max_overlap = max(0, min(task_duration_minutes, window_end - window_start))
     overlap = model.NewIntVar(0, max_overlap, "demand_overlap")
     model.Add(overlap <= segment.duration)
     model.Add(overlap <= segment.end - window_start)

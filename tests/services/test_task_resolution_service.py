@@ -7,7 +7,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from calendar_backend.db.session import transaction
-from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
+from calendar_backend.domain.enums import (
+    CalendarRunStatus,
+    CloneStatus,
+    ConstraintKind,
+    PlanKind,
+    RepeatMode,
+    SolverStatus,
+)
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
@@ -28,6 +35,7 @@ from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as OrmTimeWindow
 from calendar_backend.models.plans import Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_plan import MasterPlanService
@@ -641,6 +649,36 @@ def test_resolve_tasks_orders_instances_by_sort_order_within_critical_bucket(
     )
 
 
+def _seed_minimal_active_calendar_state(session: Session) -> uuid.UUID:
+    run_id = uuid.uuid4()
+    with transaction(session) as txn:
+        txn.add(
+            CalendarRun(
+                calendar_run_id=run_id,
+                run_started_at=RUN_AT,
+                run_finished_at=RUN_AT,
+                status=CalendarRunStatus.SUCCESS,
+                solver_status=SolverStatus.FEASIBLE,
+                conflict_count=0,
+                warning_count=0,
+                runtime_ms=1,
+                created_at=RUN_AT,
+            )
+        )
+        txn.add(
+            ActiveCalendarState(
+                singleton_id=1,
+                active_calendar_run_id=run_id,
+                last_refresh_failed=False,
+                last_failure_at=None,
+                last_failure_reason=None,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.flush()
+    return run_id
+
+
 @pytest.mark.integration
 def test_resolve_tasks_narrows_effective_windows_from_block_calendar(
     service_db_session: Session,
@@ -664,9 +702,10 @@ def test_resolve_tasks_narrows_effective_windows_from_block_calendar(
         block_family="transit",
     )
     transit_window = TimeWindow(
-        start_time=RUN_AT - timedelta(minutes=30),
-        end_time=RUN_AT - timedelta(minutes=15),
+        start_time=RUN_AT - timedelta(minutes=15),
+        end_time=RUN_AT + timedelta(minutes=15),
     )
+    _seed_minimal_active_calendar_state(service_db_session)
     with transaction(service_db_session) as txn:
         txn.add(
             BlockCalendarEntry(
@@ -686,7 +725,9 @@ def test_resolve_tasks_narrows_effective_windows_from_block_calendar(
     assert result.success and result.value is not None
     task = next(task for task in result.value.valid_incomplete if task.plan_id == task_id)
     assert task.allowed_block_families == ("transit",)
-    assert task.effective_time_windows == (transit_window,)
+    assert task.effective_time_windows == (
+        TimeWindow(start_time=RUN_AT, end_time=RUN_AT + timedelta(minutes=15)),
+    )
 
 
 @pytest.mark.integration
@@ -703,6 +744,7 @@ def test_resolve_tasks_family_mismatch_marks_task_invalid_incomplete(
         master_id,
         block_family="focus",
     )
+    _seed_minimal_active_calendar_state(service_db_session)
     with transaction(service_db_session) as txn:
         txn.add(
             BlockCalendarEntry(
