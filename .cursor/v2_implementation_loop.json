@@ -5,7 +5,7 @@
   "next_step": "phase_5_agent_block",
   "current_phase": 5,
   "current_plan_path": "docs/plans/v2_task_families.md",
-  "current_slice_id": null,
+  "current_slice_id": "1_pre",
   "skip_tests_on_commit": true,
   "completed_steps": [
     "phase_0_verify",
@@ -80,7 +80,8 @@
     "phase_4_phase_checks",
     "phase_5_plan_bootstrap",
     "phase_5_request_questions",
-    "phase_5_draft_plan"
+    "phase_5_draft_plan",
+    "phase_5_finalize_plan"
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": [],

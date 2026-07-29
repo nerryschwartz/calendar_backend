@@ -179,6 +179,7 @@ class TaskPlan(Base):
         ForeignKey("plan.plan_id"),
         nullable=True,
     )
+    allowed_block_families: Mapped[str | None] = mapped_column(String, nullable=True)
 
     plan: Mapped[Plan] = relationship(
         back_populates="task_plan",
