@@ -26,6 +26,7 @@ from calendar_backend.domain.plan_create import (
 )
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
 from calendar_backend.domain.time import TimeWindow
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan, RepetitionPlan
@@ -293,6 +294,7 @@ def _invalid_incomplete_task() -> tuple[ResolvedTask, ...]:
             minimum_chunk_size_minutes=None,
             user_completed=False,
             completed_at=None,
+            allowed_block_families=("default",),
             effective_time_windows=(),
             constraint_sources=(),
             priority_path=(0,),
@@ -320,6 +322,7 @@ def _invalid_completed_task() -> tuple[ResolvedTask, ...]:
             minimum_chunk_size_minutes=None,
             user_completed=True,
             completed_at=RUN_AT,
+            allowed_block_families=("default",),
             effective_time_windows=(),
             constraint_sources=(),
             priority_path=(0,),
@@ -414,6 +417,53 @@ def _seed_active_calendar_state_with_past_task(
         )
         txn.flush()
     return run_id
+
+
+def _seed_past_block_calendar_entry(
+    session: Session,
+    *,
+    past_start: datetime,
+    past_end: datetime,
+    source_plan_id: PlanID,
+) -> None:
+    run_id = uuid.uuid4()
+    with transaction(session) as txn:
+        txn.add(
+            CalendarRun(
+                calendar_run_id=run_id,
+                run_started_at=RUN_AT,
+                run_finished_at=RUN_AT,
+                status=CalendarRunStatus.SUCCESS,
+                solver_status=SolverStatus.FEASIBLE,
+                conflict_count=0,
+                warning_count=0,
+                runtime_ms=1,
+                created_at=RUN_AT,
+            )
+        )
+        txn.add(
+            ActiveCalendarState(
+                singleton_id=1,
+                active_calendar_run_id=run_id,
+                last_refresh_failed=False,
+                last_failure_at=None,
+                last_failure_reason=None,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.add(
+            BlockCalendarEntry(
+                block_calendar_entry_id=uuid.uuid4(),
+                start_time=past_start,
+                end_time=past_end,
+                source_plan_id=source_plan_id,
+                calendar_run_id=run_id,
+                display_label="past block",
+                created_at=RUN_AT,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.flush()
 
 
 @pytest.mark.integration
@@ -1149,6 +1199,34 @@ def test_assign_tasks_occupied_past_task_blocks_placement(
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     _seed_active_calendar_state_with_past_task(
+        service_db_session,
+        past_start=_utc(2026, 6, 7, 9, 0),
+        past_end=_utc(2026, 6, 7, 10, 30),
+        source_plan_id=task_id,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    assert len(result.value.calendar_entries) == 1
+    assert result.value.calendar_entries[0].start_time == _utc(2026, 6, 7, 10, 30)
+
+
+@pytest.mark.integration
+def test_assign_tasks_occupied_past_block_blocks_placement(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    clock = _clock()
+    TimeConstraintService(service_db_session, clock).add_user_group(
+        master_id,
+        (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
+    )
+    _seed_past_block_calendar_entry(
         service_db_session,
         past_start=_utc(2026, 6, 7, 9, 0),
         past_end=_utc(2026, 6, 7, 10, 30),

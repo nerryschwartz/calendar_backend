@@ -10,6 +10,8 @@ from calendar_backend.domain.block_resolution import ResolvedBlock
 from calendar_backend.domain.enums import SolverStatus
 from calendar_backend.domain.errors import ServiceMessage
 from calendar_backend.domain.ids import BlockCalendarEntryID, CalendarRunID, PlanID
+from calendar_backend.domain.task_families import BlockPlacementSnapshot
+from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.scheduling.input import OccupiedInterval
@@ -87,6 +89,71 @@ def occupied_intervals_from_task_calendar_entries_for_blocks(
 ) -> tuple[OccupiedInterval, ...]:
     """Reuse TASK calendar rows as hard occupied intervals for block assignment."""
     return occupied_intervals_from_calendar_entries(entries, run_started_at)
+
+
+def occupied_intervals_from_block_calendar_entries(
+    entries: tuple[BlockCalendarEntry, ...],
+    run_started_at: datetime,
+    *,
+    active_calendar_run_id: CalendarRunID | None,
+) -> tuple[OccupiedInterval, ...]:
+    """Map persisted block calendar rows to hard occupied intervals for task assignment."""
+    intervals: list[OccupiedInterval] = []
+    for entry in entries:
+        start_time = sqlite_utc(entry.start_time)
+        if start_time >= run_started_at and entry.calendar_run_id != active_calendar_run_id:
+            continue
+        intervals.append(
+            OccupiedInterval(
+                start_time=start_time,
+                end_time=sqlite_utc(entry.end_time),
+                source_plan_id=PlanID(entry.source_plan_id),
+            )
+        )
+    return tuple(
+        sorted(
+            intervals,
+            key=lambda interval: (
+                interval.start_time,
+                interval.end_time,
+                str(interval.source_plan_id) if interval.source_plan_id is not None else "",
+            ),
+        )
+    )
+
+
+def block_placements_from_block_calendar_entries(
+    entries: tuple[BlockCalendarEntry, ...],
+    *,
+    block_family_by_plan_id: dict[PlanID, str],
+) -> tuple[BlockPlacementSnapshot, ...]:
+    snapshots: list[BlockPlacementSnapshot] = []
+    for entry in entries:
+        source_plan_id = PlanID(entry.source_plan_id)
+        family = block_family_by_plan_id.get(source_plan_id)
+        if family is None:
+            continue
+        snapshots.append(
+            BlockPlacementSnapshot(
+                family=family,
+                window=TimeWindow(
+                    start_time=sqlite_utc(entry.start_time),
+                    end_time=sqlite_utc(entry.end_time),
+                ),
+                source_plan_id=source_plan_id,
+            )
+        )
+    return tuple(
+        sorted(
+            snapshots,
+            key=lambda snapshot: (
+                snapshot.window.start_time,
+                snapshot.window.end_time,
+                snapshot.family,
+                str(snapshot.source_plan_id),
+            ),
+        )
+    )
 
 
 def sqlite_utc(dt: datetime) -> datetime:

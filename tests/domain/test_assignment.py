@@ -10,11 +10,13 @@ from calendar_backend.domain.assignment import (
     calendar_entry_insert_specs_from_assignments,
     occupied_intervals_from_calendar_entries,
 )
+from calendar_backend.domain.block_assignment import occupied_intervals_from_block_calendar_entries
 from calendar_backend.domain.enums import CalendarEntryType, SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.ids import CalendarRunID, PlanID
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
 from calendar_backend.domain.time import TimeWindow
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.scheduling.input import AssignmentInput, SchedulableTask
 from calendar_backend.scheduling.types import (
@@ -79,6 +81,7 @@ def _resolved_task(
         minimum_chunk_size_minutes=None,
         user_completed=False,
         completed_at=None,
+        allowed_block_families=("default",),
         effective_time_windows=(_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
         constraint_sources=(),
         priority_path=priority_path,
@@ -117,6 +120,51 @@ def test_occupied_intervals_from_calendar_entries_includes_past_task_only() -> N
 
     assert len(intervals) == 1
     assert intervals[0].source_plan_id == PlanID(plan_id)
+
+
+def test_occupied_intervals_from_block_calendar_entries_includes_past_block() -> None:
+    plan_id = uuid.uuid4()
+    active_run_id = CalendarRunID(uuid.uuid4())
+    past = BlockCalendarEntry(
+        block_calendar_entry_id=uuid.uuid4(),
+        start_time=_utc(2026, 6, 7, 9, 0),
+        end_time=_utc(2026, 6, 7, 9, 30),
+        source_plan_id=plan_id,
+        calendar_run_id=None,
+        display_label="block",
+        created_at=_utc(2026, 6, 7, 9, 0),
+        updated_at=_utc(2026, 6, 7, 9, 0),
+    )
+    future_other_run = BlockCalendarEntry(
+        block_calendar_entry_id=uuid.uuid4(),
+        start_time=_utc(2026, 6, 7, 11, 0),
+        end_time=_utc(2026, 6, 7, 11, 30),
+        source_plan_id=plan_id,
+        calendar_run_id=uuid.uuid4(),
+        display_label="future",
+        created_at=_utc(2026, 6, 7, 11, 0),
+        updated_at=_utc(2026, 6, 7, 11, 0),
+    )
+    future_active_run = BlockCalendarEntry(
+        block_calendar_entry_id=uuid.uuid4(),
+        start_time=_utc(2026, 6, 7, 12, 0),
+        end_time=_utc(2026, 6, 7, 12, 30),
+        source_plan_id=plan_id,
+        calendar_run_id=active_run_id,
+        display_label="active",
+        created_at=_utc(2026, 6, 7, 12, 0),
+        updated_at=_utc(2026, 6, 7, 12, 0),
+    )
+
+    intervals = occupied_intervals_from_block_calendar_entries(
+        (past, future_other_run, future_active_run),
+        RUN_AT,
+        active_calendar_run_id=active_run_id,
+    )
+
+    assert len(intervals) == 2
+    assert intervals[0].start_time == _utc(2026, 6, 7, 9, 0)
+    assert intervals[1].start_time == _utc(2026, 6, 7, 12, 0)
 
 
 def test_occupied_intervals_from_calendar_entries_excludes_future_task() -> None:
@@ -270,6 +318,7 @@ def test_analyze_assignment_conflicts_adds_staged_input_failures_for_other_tasks
         minimum_chunk_size_minutes=None,
         user_completed=False,
         completed_at=None,
+        allowed_block_families=("default",),
         effective_time_windows=(),
         constraint_sources=(),
         priority_path=(1,),

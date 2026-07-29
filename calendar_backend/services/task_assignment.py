@@ -18,6 +18,7 @@ from calendar_backend.domain.assignment import (
     occupied_intervals_from_calendar_entries,
     previous_placements_from_future_task_entries,
 )
+from calendar_backend.domain.block_assignment import occupied_intervals_from_block_calendar_entries
 from calendar_backend.domain.deletion import AssignmentConflict
 from calendar_backend.domain.dtos import AppSettingsDTO
 from calendar_backend.domain.enums import (
@@ -31,6 +32,7 @@ from calendar_backend.domain.ids import CalendarEntryID, CalendarRunID, new_id
 from calendar_backend.domain.resolution import ResolveTasksResult
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.scheduling import decomposition
@@ -97,9 +99,20 @@ class TaskAssignmentService:
                 return fail(exact_unavailable_error)
 
             task_entries = _load_task_calendar_entries(txn, run_started_at=run_started_at)
+            block_entries = _load_block_calendar_entries(txn, run_started_at=run_started_at)
+            state = txn.get(ActiveCalendarState, 1)
+            active_calendar_run_id = (
+                CalendarRunID(state.active_calendar_run_id)
+                if state is not None and state.active_calendar_run_id is not None
+                else None
+            )
             occupied_intervals = occupied_intervals_from_calendar_entries(
                 task_entries,
                 run_started_at,
+            ) + occupied_intervals_from_block_calendar_entries(
+                block_entries,
+                run_started_at,
+                active_calendar_run_id=active_calendar_run_id,
             )
             schedulable_plan_ids = frozenset(task.plan_id for task in resolved.valid_incomplete)
             previous_placements = previous_placements_from_future_task_entries(
@@ -220,6 +233,28 @@ def _load_task_calendar_entries(
                 or_(
                     CalendarEntry.start_time < run_started_at,
                     CalendarEntry.calendar_run_id == active_calendar_run_id,
+                ),
+            )
+        ).all()
+    )
+
+
+def _load_block_calendar_entries(
+    session: Session,
+    *,
+    run_started_at: datetime,
+) -> tuple[BlockCalendarEntry, ...]:
+    state = session.get(ActiveCalendarState, 1)
+    if state is None or state.active_calendar_run_id is None:
+        return ()
+
+    active_calendar_run_id = state.active_calendar_run_id
+    return tuple(
+        session.scalars(
+            select(BlockCalendarEntry).where(
+                or_(
+                    BlockCalendarEntry.start_time < run_started_at,
+                    BlockCalendarEntry.calendar_run_id == active_calendar_run_id,
                 ),
             )
         ).all()

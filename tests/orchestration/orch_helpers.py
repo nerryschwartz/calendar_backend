@@ -346,6 +346,7 @@ def invalid_incomplete_task() -> tuple[ResolvedTask, ...]:
             minimum_chunk_size_minutes=None,
             user_completed=False,
             completed_at=None,
+            allowed_block_families=("default",),
             effective_time_windows=(),
             constraint_sources=(),
             priority_path=(0,),
