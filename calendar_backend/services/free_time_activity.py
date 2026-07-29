@@ -13,6 +13,8 @@ from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.free_time import (
     FreeTimeActivityDTO,
     free_time_activity_dto_from_row,
+    serialize_activity_block_families,
+    validate_activity_block_families_for_write,
     validate_activity_fields,
     validate_enabled_fractions_sum_to_one,
 )
@@ -237,6 +239,48 @@ class FreeTimeActivityService:
                     )
                 )
             )
+
+    def set_allowed_block_families(
+        self,
+        activity_id: FreeTimeActivityID,
+        families: tuple[str, ...],
+    ) -> ServiceResult[FreeTimeActivityDTO]:
+        validation_error = validate_activity_block_families_for_write(families)
+        if validation_error is not None:
+            return fail(validation_error)
+
+        with transaction(self._session) as txn:
+            loaded = _load_activity(txn, activity_id)
+            if loaded is None:
+                return fail(_activity_not_found(activity_id))
+
+            now = self._clock.now_utc()
+            loaded.allowed_block_families = serialize_activity_block_families(families)
+            loaded.updated_at = now
+            txn.flush()
+            reloaded = _load_activity(txn, activity_id)
+            assert reloaded is not None
+            return ok(free_time_activity_dto_from_row(reloaded))
+
+    def clear_allowed_block_families(
+        self,
+        activity_id: FreeTimeActivityID,
+    ) -> ServiceResult[FreeTimeActivityDTO]:
+        with transaction(self._session) as txn:
+            loaded = _load_activity(txn, activity_id)
+            if loaded is None:
+                return fail(_activity_not_found(activity_id))
+
+            if loaded.allowed_block_families is None:
+                return ok(free_time_activity_dto_from_row(loaded))
+
+            now = self._clock.now_utc()
+            loaded.allowed_block_families = None
+            loaded.updated_at = now
+            txn.flush()
+            reloaded = _load_activity(txn, activity_id)
+            assert reloaded is not None
+            return ok(free_time_activity_dto_from_row(reloaded))
 
 
 def cleanup_orphaned_activities_after_plan_delete(

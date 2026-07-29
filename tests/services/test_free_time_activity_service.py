@@ -11,6 +11,7 @@ from calendar_backend.db.session import transaction
 from calendar_backend.domain.enums import CalendarEntryType
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import FreeTimeActivityID, FreeTimeActivityPrerequisiteID, PlanID
+from calendar_backend.domain.task_families import DEFAULT_BLOCK_FAMILY, FREE_TIME_BLOCK_FAMILY
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.free_time import FreeTimeActivity, FreeTimeActivityPrerequisite
 from calendar_backend.services.app_settings import AppSettingsService
@@ -293,3 +294,48 @@ def test_all_disabled_fraction_configuration_is_allowed(service_db_session: Sess
     assert second.success
     count = service_db_session.scalar(select(func.count()).select_from(FreeTimeActivity))
     assert count == 2
+
+
+@pytest.mark.integration
+def test_set_allowed_block_families_persists_and_returns_effective(
+    service_db_session: Session,
+) -> None:
+    created = _service(service_db_session).create_activity(
+        "reading",
+        Decimal("1"),
+        minimum_block_size_minutes=30,
+    )
+    assert created.success and created.value is not None
+    activity_id = created.value.free_time_activity_id
+
+    result = _service(service_db_session).set_allowed_block_families(activity_id, ("transit",))
+    assert result.success and result.value is not None
+    assert result.value.allowed_block_families == (FREE_TIME_BLOCK_FAMILY, "transit")
+
+    row = service_db_session.get(FreeTimeActivity, activity_id)
+    assert row is not None
+    assert row.allowed_block_families == '["transit"]'
+
+
+@pytest.mark.integration
+def test_clear_allowed_block_families_stores_null(service_db_session: Session) -> None:
+    created = _service(service_db_session).create_activity(
+        "reading",
+        Decimal("1"),
+        minimum_block_size_minutes=30,
+    )
+    assert created.success and created.value is not None
+    activity_id = created.value.free_time_activity_id
+    service = _service(service_db_session)
+    assert service.set_allowed_block_families(activity_id, ("transit",)).success
+
+    result = service.clear_allowed_block_families(activity_id)
+    assert result.success and result.value is not None
+    assert result.value.allowed_block_families == (
+        FREE_TIME_BLOCK_FAMILY,
+        DEFAULT_BLOCK_FAMILY,
+    )
+
+    row = service_db_session.get(FreeTimeActivity, activity_id)
+    assert row is not None
+    assert row.allowed_block_families is None
