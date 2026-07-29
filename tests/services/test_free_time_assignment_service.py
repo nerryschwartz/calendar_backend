@@ -19,11 +19,14 @@ from calendar_backend.domain.enums import (
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import FreeTimeActivityID, PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
 from calendar_backend.domain.resolution import ResolveTasksResult
+from calendar_backend.domain.task_families import FREE_TIME_BLOCK_FAMILY
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import RepetitionPlan
@@ -280,6 +283,59 @@ def _add_calendar_entry(
         )
         txn.flush()
     return entry_id
+
+
+def _create_block(
+    session: Session,
+    parent_id: PlanID,
+    *,
+    name: str = "block",
+    block_family: str = "focus",
+) -> PlanID:
+    result = GoalService(session, _clock()).create_child(
+        parent_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload(name, 30, False, None, block_family),
+        is_critical=False,
+    )
+    assert result.success and result.value is not None
+    return result.value.plan_id
+
+
+def _seed_block_calendar_entry(
+    session: Session,
+    *,
+    start_time: datetime,
+    end_time: datetime,
+    source_plan_id: PlanID,
+    calendar_run_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    entry_id = uuid.uuid4()
+    with transaction(session) as txn:
+        txn.add(
+            BlockCalendarEntry(
+                block_calendar_entry_id=entry_id,
+                start_time=start_time,
+                end_time=end_time,
+                source_plan_id=source_plan_id,
+                calendar_run_id=calendar_run_id,
+                display_label="block",
+                created_at=RUN_AT,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.flush()
+    return entry_id
+
+
+def _entry_overlaps_window(
+    entry: CalendarEntryDTO,
+    window_start: datetime,
+    window_end: datetime,
+) -> bool:
+    start_time = _normalize_entry_time(entry.start_time)
+    end_time = _normalize_entry_time(entry.end_time)
+    return start_time < window_end and end_time > window_start
 
 
 def _calendar_entry_count(session: Session) -> int:
@@ -689,3 +745,112 @@ def test_assign_free_time_blocked_by_template_subtree_prerequisite(
     assert result.success and result.value is not None
     assert result.value.calendar_entries == ()
     assert service_db_session.get(CalendarEntry, stale_future_id) is None
+
+
+@pytest.mark.integration
+def test_assign_free_time_block_calendar_consumes_default_activity_gap(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    active_run_id = _seed_active_calendar_run(service_db_session)
+    block_id = _create_block(service_db_session, master_id, block_family="focus")
+    block_start = _utc(2026, 6, 7, 11, 0)
+    block_end = _utc(2026, 6, 7, 12, 0)
+    _seed_block_calendar_entry(
+        service_db_session,
+        start_time=block_start,
+        end_time=block_end,
+        source_plan_id=block_id,
+        calendar_run_id=active_run_id,
+    )
+    _create_enabled_activity(service_db_session)
+
+    result = _free_time_assignment_service(service_db_session).assign_free_time(RUN_AT)
+
+    assert result.success and result.value is not None
+    for entry in result.value.calendar_entries:
+        assert not _entry_overlaps_window(entry, block_start, block_end)
+
+
+@pytest.mark.integration
+def test_assign_free_time_transit_activity_uses_transit_block_window(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    active_run_id = _seed_active_calendar_run(service_db_session)
+    _add_calendar_entry(
+        service_db_session,
+        entry_type=CalendarEntryType.TASK,
+        start_time=_utc(2026, 6, 7, 10, 0),
+        end_time=_utc(2026, 6, 7, 11, 0),
+        source_plan_id=master_id,
+        calendar_run_id=active_run_id,
+    )
+    block_id = _create_block(service_db_session, master_id, block_family="transit")
+    transit_start = _utc(2026, 6, 7, 11, 0)
+    transit_end = _utc(2026, 6, 7, 12, 0)
+    _seed_block_calendar_entry(
+        service_db_session,
+        start_time=transit_start,
+        end_time=transit_end,
+        source_plan_id=block_id,
+        calendar_run_id=active_run_id,
+    )
+    created = FreeTimeActivityService(service_db_session, _clock()).create_activity(
+        "commute reading",
+        Decimal("1"),
+        minimum_block_size_minutes=0,
+    )
+    assert created.success and created.value is not None
+    activity_id = created.value.free_time_activity_id
+    assert (
+        FreeTimeActivityService(service_db_session, _clock())
+        .set_allowed_block_families(activity_id, ("transit",))
+        .success
+    )
+
+    result = _free_time_assignment_service(service_db_session).assign_free_time(RUN_AT)
+
+    assert result.success and result.value is not None
+    assert result.value.calendar_entries
+    assert any(
+        entry.source_free_time_activity_id == activity_id
+        and _entry_overlaps_window(entry, transit_start, transit_end)
+        for entry in result.value.calendar_entries
+    )
+
+
+@pytest.mark.integration
+def test_assign_free_time_only_activity_excludes_default_block_region(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    active_run_id = _seed_active_calendar_run(service_db_session)
+    block_id = _create_block(service_db_session, master_id, block_family="focus")
+    focus_start = _utc(2026, 6, 7, 12, 0)
+    focus_end = _utc(2026, 6, 7, 13, 0)
+    _seed_block_calendar_entry(
+        service_db_session,
+        start_time=focus_start,
+        end_time=focus_end,
+        source_plan_id=block_id,
+        calendar_run_id=active_run_id,
+    )
+    created = FreeTimeActivityService(service_db_session, _clock()).create_activity(
+        "reading",
+        Decimal("1"),
+        minimum_block_size_minutes=0,
+    )
+    assert created.success and created.value is not None
+    activity_id = created.value.free_time_activity_id
+    assert (
+        FreeTimeActivityService(service_db_session, _clock())
+        .set_allowed_block_families(activity_id, (FREE_TIME_BLOCK_FAMILY,))
+        .success
+    )
+
+    result = _free_time_assignment_service(service_db_session).assign_free_time(RUN_AT)
+
+    assert result.success and result.value is not None
+    for entry in result.value.calendar_entries:
+        assert not _entry_overlaps_window(entry, focus_start, focus_end)
