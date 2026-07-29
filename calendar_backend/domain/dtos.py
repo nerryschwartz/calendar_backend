@@ -7,6 +7,7 @@ from datetime import datetime
 
 from calendar_backend.domain.enums import ConstraintKind, FreeTimeWeekStartDay, RepeatMode
 from calendar_backend.domain.ids import CalendarEntryID, PlanID, TimeConstraintGroupID, TimeWindowID
+from calendar_backend.domain.task_families import effective_allowed_block_families
 from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
@@ -45,6 +46,7 @@ class TaskPlanDTO:
     minimum_chunk_size_minutes: int | None
     user_completed: bool
     completed_at: datetime | None
+    allowed_block_families: tuple[str, ...]
     created_at: datetime
     updated_at: datetime
 
@@ -60,6 +62,7 @@ def task_plan_dto_from_rows(plan: Plan, task_plan: TaskPlan) -> TaskPlanDTO:
         minimum_chunk_size_minutes=task_plan.minimum_chunk_size_minutes,
         user_completed=task_plan.user_completed,
         completed_at=task_plan.completed_at,
+        allowed_block_families=effective_allowed_block_families(task_plan.allowed_block_families),
         created_at=plan.created_at,
         updated_at=plan.updated_at,
     )

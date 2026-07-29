@@ -14,6 +14,10 @@ from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.prerequisites import validate_immediate_prerequisite_link
 from calendar_backend.domain.results import ServiceResult, fail, ok
+from calendar_backend.domain.task_families import (
+    serialize_allowed_block_families,
+    validate_allowed_block_families_for_write,
+)
 from calendar_backend.domain.tasks import validate_task_scheduling_fields
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.plans import Plan
@@ -134,6 +138,45 @@ class TaskService:
 
             now = self._clock.now_utc()
             task_plan.immediate_prerequisite_plan_id = None
+            plan.updated_at = now
+            detach_linked_self_and_descendants(txn, plan, now)
+            txn.flush()
+            return ok(task_plan_dto_from_rows(plan, task_plan))
+
+    def set_allowed_block_families(
+        self,
+        plan_id: PlanID,
+        families: tuple[str, ...],
+    ) -> ServiceResult[TaskPlanDTO]:
+        validation_error = validate_allowed_block_families_for_write(families)
+        if validation_error is not None:
+            return fail(validation_error)
+
+        with transaction(self._session) as txn:
+            loaded = load_plan_with_subtype(txn, plan_id, expected_kind=PlanKind.TASK)
+            if isinstance(loaded, ServiceMessage):
+                return fail(loaded)
+            plan, task_plan = loaded
+
+            now = self._clock.now_utc()
+            task_plan.allowed_block_families = serialize_allowed_block_families(families)
+            plan.updated_at = now
+            detach_linked_self_and_descendants(txn, plan, now)
+            txn.flush()
+            return ok(task_plan_dto_from_rows(plan, task_plan))
+
+    def clear_allowed_block_families(self, plan_id: PlanID) -> ServiceResult[TaskPlanDTO]:
+        with transaction(self._session) as txn:
+            loaded = load_plan_with_subtype(txn, plan_id, expected_kind=PlanKind.TASK)
+            if isinstance(loaded, ServiceMessage):
+                return fail(loaded)
+            plan, task_plan = loaded
+
+            if task_plan.allowed_block_families is None:
+                return ok(task_plan_dto_from_rows(plan, task_plan))
+
+            now = self._clock.now_utc()
+            task_plan.allowed_block_families = None
             plan.updated_at = now
             detach_linked_self_and_descendants(txn, plan, now)
             txn.flush()

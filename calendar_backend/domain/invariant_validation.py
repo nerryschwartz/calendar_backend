@@ -24,6 +24,7 @@ from calendar_backend.domain.prerequisites import (
     persisted_prerequisite_graph_has_cycle,
     plan_prerequisite_edges_from_plans,
 )
+from calendar_backend.domain.task_families import parse_allowed_block_families_json
 from calendar_backend.domain.template_trace import compute_template_trace, traces_match
 from calendar_backend.domain.time import (
     TimeWindow,
@@ -49,6 +50,7 @@ def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage,
         violations.extend(_check_reachability(plans, master))
     violations.extend(_check_subtype_pairing(plans))
     violations.extend(_check_task_completion_pairing(plans))
+    violations.extend(_check_allowed_block_families(plans))
     violations.extend(_check_master_goal_children_non_critical(plans))
     violations.extend(_check_goal_child_ordering(plans))
     violations.extend(_check_repetition_plans(plans))
@@ -211,6 +213,24 @@ def _check_task_completion_pairing(plans: tuple[Plan, ...]) -> list[ServiceMessa
                         },
                     )
                 )
+    return violations
+
+
+def _check_allowed_block_families(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+    violations: list[ServiceMessage] = []
+    for plan in plans:
+        task_plan = plan.task_plan
+        if task_plan is None or task_plan.allowed_block_families is None:
+            continue
+        parsed = parse_allowed_block_families_json(task_plan.allowed_block_families)
+        if isinstance(parsed, ServiceMessage):
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.CONSTRAINT_INVARIANT_VIOLATION,
+                    message="task_plan.allowed_block_families must be valid JSON",
+                    details={"plan_id": str(plan.plan_id)},
+                )
+            )
     return violations
 
 

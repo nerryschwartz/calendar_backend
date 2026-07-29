@@ -594,3 +594,55 @@ def test_set_immediate_prerequisite_detaches_linked_clone(
     assert result.success
     assert _clone_status(service_db_session, target_task_id) == CloneStatus.DETACHED
     assert _clone_status(service_db_session, seeded["nested_task_id"]) == CloneStatus.DETACHED
+
+
+@pytest.mark.integration
+def test_set_allowed_block_families_persists_and_returns_effective(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    task_id = _create_task(service_db_session, master_plan_id)
+    service = _task_service(service_db_session)
+
+    result = service.set_allowed_block_families(task_id, ("transit", "default"))
+    assert result.success and result.value is not None
+    assert result.value.allowed_block_families == ("default", "transit")
+
+    task_plan = service_db_session.get(TaskPlan, task_id)
+    assert task_plan is not None
+    assert task_plan.allowed_block_families == '["default", "transit"]'
+
+
+@pytest.mark.integration
+def test_clear_allowed_block_families_stores_null(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    task_id = _create_task(service_db_session, master_plan_id)
+    service = _task_service(service_db_session)
+    assert service.set_allowed_block_families(task_id, ("transit",)).success
+
+    result = service.clear_allowed_block_families(task_id)
+    assert result.success and result.value is not None
+    assert result.value.allowed_block_families == ("default",)
+
+    task_plan = service_db_session.get(TaskPlan, task_id)
+    assert task_plan is not None
+    assert task_plan.allowed_block_families is None
+
+
+@pytest.mark.integration
+def test_set_allowed_block_families_rejects_free_time(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    task_id = _create_task(service_db_session, master_plan_id)
+    result = _task_service(service_db_session).set_allowed_block_families(
+        task_id,
+        ("free-time",),
+    )
+    assert not result.success
+    assert result.errors[0].code == MessageCode.INVALID_ALLOWED_BLOCK_FAMILIES
+    task_plan = service_db_session.get(TaskPlan, task_id)
+    assert task_plan is not None
+    assert task_plan.allowed_block_families is None
