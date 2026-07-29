@@ -109,6 +109,7 @@ def _activity_dto(
         real_fraction=real_fraction,
         minimum_block_size_minutes=minimum_block_size_minutes,
         prerequisite_plan_ids=tuple(PlanID(plan_id) for plan_id in prerequisite_plan_ids),
+        allowed_block_families=("free-time", "default"),
         created_at=_NOW,
         updated_at=_NOW,
     )
