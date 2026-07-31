@@ -69,6 +69,8 @@ class TaskAssignmentService:
         self,
         resolved: ResolveTasksResult,
         run_started_at: datetime,
+        *,
+        calendar_run_id: CalendarRunID | None = None,
     ) -> ServiceResult[AssignmentResult]:
         """Assign valid incomplete tasks and persist TASK calendar entries.
 
@@ -148,6 +150,7 @@ class TaskAssignmentService:
                     solver_result=solver_result,
                     conflicts=analysis_result.value,
                     runtime_ms=runtime_ms,
+                    calendar_run_id=calendar_run_id,
                 )
             return fail(solver_result.failure, _value=assignment_result)
 
@@ -159,6 +162,7 @@ class TaskAssignmentService:
                 resolved=resolved,
                 solver_result=solver_result,
                 runtime_ms=runtime_ms,
+                calendar_run_id=calendar_run_id,
             )
         return ok(assignment_result)
 
@@ -388,21 +392,26 @@ def _persist_failed_assignment(
     solver_result: AssignmentSolverResult,
     conflicts: tuple[AssignmentConflict, ...],
     runtime_ms: int,
+    calendar_run_id: CalendarRunID | None = None,
 ) -> AssignmentResult:
     now = clock.now_utc()
 
-    calendar_run = _new_calendar_run(
-        run_started_at=run_started_at,
-        clock=clock,
-        status=CalendarRunStatus.FAILED,
-        solver_status=SolverStatus.INFEASIBLE,
-        conflict_count=len(conflicts),
-        warning_count=len(solver_result.warnings),
-        runtime_ms=runtime_ms,
-        run_finished_at=now,
-    )
-    session.add(calendar_run)
-    session.flush()
+    if calendar_run_id is None:
+        calendar_run = _new_calendar_run(
+            run_started_at=run_started_at,
+            clock=clock,
+            status=CalendarRunStatus.FAILED,
+            solver_status=SolverStatus.INFEASIBLE,
+            conflict_count=len(conflicts),
+            warning_count=len(solver_result.warnings),
+            runtime_ms=runtime_ms,
+            run_finished_at=now,
+        )
+        session.add(calendar_run)
+        session.flush()
+        result_run_id = CalendarRunID(calendar_run.calendar_run_id)
+    else:
+        result_run_id = calendar_run_id
 
     active_state = load_or_create_active_calendar_state(session, clock)
     active_state.last_refresh_failed = True
@@ -418,7 +427,7 @@ def _persist_failed_assignment(
         conflicts=conflicts,
         warnings=solver_result.warnings,
         runtime_ms=runtime_ms,
-        calendar_run_id=CalendarRunID(calendar_run.calendar_run_id),
+        calendar_run_id=result_run_id,
     )
 
 
@@ -430,6 +439,7 @@ def _persist_successful_assignment(
     resolved: ResolveTasksResult,
     solver_result: AssignmentSolverResult,
     runtime_ms: int,
+    calendar_run_id: CalendarRunID | None = None,
 ) -> AssignmentResult:
     resolved_tasks_by_id = {task.plan_id: task for task in resolved.valid_incomplete}
     insert_specs = calendar_entry_insert_specs_from_assignments(
@@ -446,18 +456,22 @@ def _persist_successful_assignment(
         execution_options={"synchronize_session": False},
     )
 
-    calendar_run = _new_calendar_run(
-        run_started_at=run_started_at,
-        clock=clock,
-        status=CalendarRunStatus.SUCCESS,
-        solver_status=solver_result.status,
-        conflict_count=0,
-        warning_count=len(solver_result.warnings),
-        runtime_ms=runtime_ms,
-        run_finished_at=now,
-    )
-    session.add(calendar_run)
-    session.flush()
+    if calendar_run_id is None:
+        calendar_run = _new_calendar_run(
+            run_started_at=run_started_at,
+            clock=clock,
+            status=CalendarRunStatus.SUCCESS,
+            solver_status=solver_result.status,
+            conflict_count=0,
+            warning_count=len(solver_result.warnings),
+            runtime_ms=runtime_ms,
+            run_finished_at=now,
+        )
+        session.add(calendar_run)
+        session.flush()
+        result_run_id = calendar_run.calendar_run_id
+    else:
+        result_run_id = calendar_run_id
 
     inserted_entries: list[CalendarEntry] = []
     for spec in insert_specs:
@@ -468,7 +482,7 @@ def _persist_successful_assignment(
             end_time=spec.end_time,
             source_plan_id=spec.source_plan_id,
             source_free_time_activity_id=None,
-            calendar_run_id=calendar_run.calendar_run_id,
+            calendar_run_id=result_run_id,
             display_label=spec.display_label,
             created_at=now,
             updated_at=now,
@@ -477,7 +491,7 @@ def _persist_successful_assignment(
         inserted_entries.append(entry)
 
     active_state = load_or_create_active_calendar_state(session, clock)
-    active_state.active_calendar_run_id = calendar_run.calendar_run_id
+    active_state.active_calendar_run_id = result_run_id
     active_state.last_refresh_failed = False
     active_state.last_failure_at = None
     active_state.last_failure_reason = None
@@ -491,7 +505,7 @@ def _persist_successful_assignment(
         conflicts=(),
         warnings=solver_result.warnings,
         runtime_ms=runtime_ms,
-        calendar_run_id=CalendarRunID(calendar_run.calendar_run_id),
+        calendar_run_id=CalendarRunID(result_run_id),
     )
 
 

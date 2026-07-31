@@ -1,11 +1,11 @@
 {
   "version": 1,
   "branch": "new-design-and-implementation-doc",
-  "next_required_mode": "plan",
-  "next_step": "phase_7_plan_block",
+  "next_required_mode": "agent",
+  "next_step": "phase_7_agent_block",
   "current_phase": 7,
   "current_plan_path": "docs/plans/v2_orchestration_integration.md",
-  "current_slice_id": null,
+  "current_slice_id": "1",
   "skip_tests_on_commit": true,
   "completed_steps": [
     "phase_0_verify",
@@ -109,7 +109,11 @@
     "phase_6_slice_4_build",
     "phase_6_slice_5_build",
     "phase_6_slice_6_build",
-    "phase_6_phase_checks"
+    "phase_6_phase_checks",
+    "phase_7_plan_bootstrap",
+    "phase_7_request_questions",
+    "phase_7_draft_plan",
+    "phase_7_finalize_plan"
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": [],

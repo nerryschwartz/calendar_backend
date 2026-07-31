@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from calendar_backend.domain.enums import ConstraintKind, FreeTimeWeekStartDay, RepeatMode
-from calendar_backend.domain.ids import CalendarEntryID, PlanID, TimeConstraintGroupID, TimeWindowID
+from calendar_backend.domain.ids import (
+    BlockCalendarEntryID,
+    CalendarEntryID,
+    PlanID,
+    TimeConstraintGroupID,
+    TimeWindowID,
+)
 from calendar_backend.domain.task_families import effective_allowed_block_families
 from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
@@ -142,7 +148,10 @@ def repetition_plan_dto_from_rows(plan: Plan, repetition_plan: RepetitionPlan) -
 class PlanDeletionPreviewDTO:
     root_plan_id: PlanID
     affected_plan_ids: tuple[PlanID, ...]
+    affected_task_ids: tuple[PlanID, ...]
+    affected_block_ids: tuple[PlanID, ...]
     affected_calendar_entry_ids: tuple[CalendarEntryID, ...]
+    affected_block_calendar_entry_ids: tuple[BlockCalendarEntryID, ...]
     warnings: tuple[str, ...] = ()
 
 

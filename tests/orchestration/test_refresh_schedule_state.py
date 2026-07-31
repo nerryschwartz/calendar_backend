@@ -51,7 +51,6 @@ def test_refresh_schedule_solver_failure_preserves_active_calendar_run_id(
     assert success.success
     state = oh.active_state(service_db_session)
     assert state is not None
-    prior_active_run_id = state.active_calendar_run_id
 
     TimeConstraintService(service_db_session, oh.clock()).add_user_group(
         master_id,
@@ -61,9 +60,15 @@ def test_refresh_schedule_solver_failure_preserves_active_calendar_run_id(
     failure = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
 
     assert not failure.success
+    assert failure.value is not None
+    assert failure.value.block_assignment is not None
+    assert failure.value.assignment is not None
     state = oh.active_state(service_db_session)
     assert state is not None
-    assert state.active_calendar_run_id == prior_active_run_id
+    assert state.active_calendar_run_id == failure.value.block_assignment.calendar_run_id
+    assert (
+        failure.value.assignment.calendar_run_id == failure.value.block_assignment.calendar_run_id
+    )
     assert state.last_refresh_failed is True
     assert state.last_failure_reason == LastFailureReason.ASSIGNMENT_FAILED
 
@@ -94,15 +99,17 @@ def test_refresh_schedule_precondition_failure_sets_reason_without_calendar_muta
     assert not result.success
     assert result.errors[0].code == MessageCode.INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT
     assert result.value is not None
+    assert result.value.resolved_blocks is not None
+    assert result.value.block_assignment is not None
     assert result.value.resolved is not None
     assert len(result.value.resolved.invalid_incomplete) == 1
     assert oh.calendar_entry_count(service_db_session) == entries_before
-    assert oh.calendar_run_count(service_db_session) == runs_before
+    assert oh.calendar_run_count(service_db_session) == runs_before + 1
     state = oh.active_state(service_db_session)
     assert state is not None
     assert state.last_refresh_failed is True
     assert state.last_failure_reason == LastFailureReason.ASSIGNMENT_PRECONDITION_FAILED
-    assert state.active_calendar_run_id is None
+    assert state.active_calendar_run_id == result.value.block_assignment.calendar_run_id
 
 
 @pytest.mark.integration

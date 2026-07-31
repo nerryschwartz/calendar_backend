@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from calendar_backend.domain.dtos import PlanDeletionPreviewDTO
 from calendar_backend.domain.enums import PlanKind
 from calendar_backend.domain.errors import MessageCode
-from calendar_backend.domain.ids import CalendarEntryID, PlanID
+from calendar_backend.domain.ids import BlockCalendarEntryID, CalendarEntryID, PlanID
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.plans import Plan
 
@@ -25,7 +26,9 @@ class DeletionPreview:
     legal_operation: DeletionOperation
     affected_plan_ids: tuple[PlanID, ...]
     affected_task_ids: tuple[PlanID, ...]
+    affected_block_ids: tuple[PlanID, ...]
     affected_calendar_entry_ids: tuple[CalendarEntryID, ...]
+    affected_block_calendar_entry_ids: tuple[BlockCalendarEntryID, ...]
     affected_depth_counts_from_master: tuple[int, ...]
     warnings: tuple[str, ...] = ()
 
@@ -76,6 +79,7 @@ def compute_deletion_impact(
     root_plan_id: PlanID,
     plans: tuple[Plan, ...],
     calendar_entries: tuple[CalendarEntry, ...],
+    block_calendar_entries: tuple[BlockCalendarEntry, ...] = (),
 ) -> PlanDeletionPreviewDTO:
     (
         children_by_parent,
@@ -105,10 +109,21 @@ def compute_deletion_impact(
             if entry.source_plan_id in affected
         )
     )
+    affected_block_calendar_entry_ids = tuple(
+        sorted(
+            BlockCalendarEntryID(entry.block_calendar_entry_id)
+            for entry in block_calendar_entries
+            if entry.source_plan_id in affected
+        )
+    )
     return PlanDeletionPreviewDTO(
         root_plan_id=root_plan_id,
         affected_plan_ids=affected_plan_ids,
+        affected_task_ids=affected_task_ids_from_plans(plans, affected_plan_ids),
+        affected_block_ids=affected_block_ids_from_plans(plans, affected_plan_ids),
         affected_calendar_entry_ids=affected_calendar_entry_ids,
+        affected_block_calendar_entry_ids=affected_block_calendar_entry_ids,
+        warnings=(),
     )
 
 
@@ -122,6 +137,20 @@ def affected_task_ids_from_plans(
             plan_id
             for plan_id in affected_plan_ids
             if (plan := plans_by_id.get(plan_id)) is not None and plan.plan_kind == PlanKind.TASK
+        )
+    )
+
+
+def affected_block_ids_from_plans(
+    plans: tuple[Plan, ...],
+    affected_plan_ids: tuple[PlanID, ...],
+) -> tuple[PlanID, ...]:
+    plans_by_id = {plan.plan_id: plan for plan in plans}
+    return tuple(
+        sorted(
+            plan_id
+            for plan_id in affected_plan_ids
+            if (plan := plans_by_id.get(plan_id)) is not None and plan.plan_kind == PlanKind.BLOCK
         )
     )
 
@@ -163,19 +192,27 @@ def build_deletion_preview(
     operation: DeletionOperation,
     plans: tuple[Plan, ...],
     calendar_entries: tuple[CalendarEntry, ...],
+    block_calendar_entries: tuple[BlockCalendarEntry, ...] = (),
 ) -> DeletionPreview:
     masters = [plan for plan in plans if plan.is_master]
     if len(masters) != 1:
         raise ValueError("deletion preview requires exactly one master plan in loaded graph")
     master_plan_id = PlanID(masters[0].plan_id)
 
-    core = compute_deletion_impact(operation.root_plan_id, plans, calendar_entries)
+    core = compute_deletion_impact(
+        operation.root_plan_id,
+        plans,
+        calendar_entries,
+        block_calendar_entries,
+    )
     return DeletionPreview(
         root_plan_id=core.root_plan_id,
         legal_operation=operation,
         affected_plan_ids=core.affected_plan_ids,
-        affected_task_ids=affected_task_ids_from_plans(plans, core.affected_plan_ids),
+        affected_task_ids=core.affected_task_ids,
+        affected_block_ids=core.affected_block_ids,
         affected_calendar_entry_ids=core.affected_calendar_entry_ids,
+        affected_block_calendar_entry_ids=core.affected_block_calendar_entry_ids,
         affected_depth_counts_from_master=compute_affected_depth_counts_from_master(
             plans,
             core.affected_plan_ids,

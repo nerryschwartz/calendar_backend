@@ -20,6 +20,7 @@ from calendar_backend.domain.enums import (
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
@@ -42,6 +43,8 @@ from calendar_backend.scheduling.types import (
     infeasible_result,
 )
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.block_assignment import BlockAssignmentService
+from calendar_backend.services.block_resolution import BlockResolutionService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
@@ -1385,3 +1388,46 @@ def test_assign_tasks_persists_only_instance_clone_source_plan_ids(
     assert template_goal_id not in calendar_source_ids
     assert template_task_id not in calendar_source_ids
     assert task_clone_id in calendar_source_ids
+
+
+@pytest.mark.integration
+def test_assign_tasks_with_explicit_calendar_run_id_adds_task_rows_to_block_run(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    block = GoalService(service_db_session, _clock()).create_child(
+        master_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload("focus", 30, False, None, "focus"),
+        is_critical=False,
+    )
+    assert block.success and block.value is not None
+    _create_task(service_db_session, master_id)
+
+    block_resolved = BlockResolutionService(service_db_session, _clock()).resolve_blocks(RUN_AT)
+    assert block_resolved.success and block_resolved.value is not None
+    block_assigned = BlockAssignmentService(service_db_session, _clock()).assign_blocks(
+        block_resolved.value,
+        RUN_AT,
+    )
+    assert block_assigned.success and block_assigned.value is not None
+    shared_run_id = block_assigned.value.calendar_run_id
+    assert shared_run_id is not None
+
+    task_result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+        calendar_run_id=shared_run_id,
+    )
+
+    assert task_result.success and task_result.value is not None
+    assert task_result.value.calendar_run_id == shared_run_id
+    state = _active_state(service_db_session)
+    assert state is not None
+    assert state.active_calendar_run_id == shared_run_id
+    block_entry = service_db_session.scalars(select(BlockCalendarEntry)).one()
+    assert block_entry.calendar_run_id == shared_run_id
+    task_entry = service_db_session.scalars(
+        select(CalendarEntry).where(CalendarEntry.entry_type == CalendarEntryType.TASK)
+    ).one()
+    assert task_entry.calendar_run_id == shared_run_id

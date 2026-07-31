@@ -8,9 +8,9 @@ from datetime import UTC, datetime
 import pytest
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.block_resolution import ResolveBlocksResult, ResolvedBlock
-from calendar_backend.domain.enums import PlanKind, SolverStatus
+from calendar_backend.domain.enums import CalendarRunStatus, PlanKind, SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.ids import CalendarRunID, PlanID
 from calendar_backend.domain.plan_create import BlockCreatePayload
 from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
@@ -264,3 +264,39 @@ def test_resolve_and_assign_with_immediate_precedence(service_db_session: Sessio
     assert len(entries) == 2
     starts = sorted(entry.start_time for entry in entries)
     assert starts[0] < starts[1]
+
+
+@pytest.mark.integration
+def test_assign_blocks_with_explicit_calendar_run_id_reuses_run(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    _create_block(service_db_session, master_id)
+    existing_run_id = uuid.uuid4()
+    with transaction(service_db_session) as txn:
+        txn.add(
+            CalendarRun(
+                calendar_run_id=existing_run_id,
+                run_started_at=RUN_AT,
+                run_finished_at=RUN_AT,
+                status=CalendarRunStatus.SUCCESS,
+                solver_status=SolverStatus.FEASIBLE,
+                conflict_count=0,
+                warning_count=0,
+                runtime_ms=1,
+                created_at=RUN_AT,
+            )
+        )
+        txn.flush()
+
+    result = _assignment_service(service_db_session).assign_blocks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+        calendar_run_id=CalendarRunID(existing_run_id),
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.calendar_run_id == CalendarRunID(existing_run_id)
+    assert _calendar_run_count(service_db_session) == 1
+    entry = service_db_session.scalars(select(BlockCalendarEntry)).one()
+    assert entry.calendar_run_id == existing_run_id

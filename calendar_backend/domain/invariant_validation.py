@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from calendar_backend.domain.constraints import merge_or_windows
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind
@@ -593,7 +593,25 @@ def _check_repetition_instance_windows(plans: tuple[Plan, ...]) -> list[ServiceM
                 continue
 
             window = group.windows[0]
-            if window.start_time != window_start or window.end_time != window_end:
+            normalized_start = (
+                window_start
+                if window_start.tzinfo is not None
+                else window_start.replace(tzinfo=UTC)
+            )
+            normalized_end = (
+                window_end if window_end.tzinfo is not None else window_end.replace(tzinfo=UTC)
+            )
+            actual_start = (
+                window.start_time
+                if window.start_time.tzinfo is not None
+                else window.start_time.replace(tzinfo=UTC)
+            )
+            actual_end = (
+                window.end_time
+                if window.end_time.tzinfo is not None
+                else window.end_time.replace(tzinfo=UTC)
+            )
+            if actual_start != normalized_start or actual_end != normalized_end:
                 violations.append(
                     ServiceMessage(
                         code=MessageCode.CONSTRAINT_INVARIANT_VIOLATION,

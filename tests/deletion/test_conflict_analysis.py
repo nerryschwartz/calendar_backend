@@ -9,9 +9,13 @@ from calendar_backend.deletion.conflict_analysis import ConflictAnalysisService
 from calendar_backend.domain.enums import SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
-from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
+from calendar_backend.domain.resolution import (
+    ResolvedPrecedenceConstraint,
+    ResolvedTask,
+    ResolveTasksResult,
+)
 from calendar_backend.domain.time import TimeWindow
-from calendar_backend.scheduling.input import AssignmentInput, SchedulableTask
+from calendar_backend.scheduling.input import AssignmentInput, PrecedenceEdge, SchedulableTask
 from calendar_backend.scheduling.types import AssignmentSolverResult, infeasible_result
 
 RUN_AT = datetime(2026, 6, 7, 10, 0, tzinfo=UTC)
@@ -219,3 +223,73 @@ def test_analyze_returns_empty_tuple_for_feasible_solver() -> None:
     )
 
     assert result.success and result.value == ()
+
+
+def test_analyze_precedence_impossible_includes_plan_prerequisite_blockers() -> None:
+    predecessor_id = PlanID(uuid.uuid4())
+    successor_id = PlanID(uuid.uuid4())
+    morning = _window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 10, 0))
+    afternoon = _window(_utc(2026, 6, 7, 14, 0), _utc(2026, 6, 7, 15, 0))
+    resolved = ResolveTasksResult(
+        run_started_at=RUN_AT,
+        valid_incomplete=(
+            _resolved_task(predecessor_id, name="predecessor"),
+            _resolved_task(successor_id, name="successor"),
+        ),
+        valid_completed=(),
+        invalid_incomplete=(),
+        invalid_completed=(),
+        precedence_constraints=(
+            ResolvedPrecedenceConstraint(
+                predecessor_task_id=predecessor_id,
+                successor_task_id=successor_id,
+                reason="plan_prerequisite",
+            ),
+        ),
+        warnings=(),
+    )
+    assignment_input = AssignmentInput(
+        run_started_at=RUN_AT,
+        tasks=(
+            SchedulableTask(
+                plan_id=predecessor_id,
+                duration_minutes=30,
+                divisible=False,
+                minimum_chunk_size_minutes=None,
+                effective_time_windows=(afternoon,),
+                priority_path=(0,),
+            ),
+            SchedulableTask(
+                plan_id=successor_id,
+                duration_minutes=30,
+                divisible=False,
+                minimum_chunk_size_minutes=None,
+                effective_time_windows=(morning,),
+                priority_path=(0,),
+            ),
+        ),
+        precedence_edges=(
+            PrecedenceEdge(
+                predecessor_plan_id=predecessor_id,
+                successor_plan_id=successor_id,
+            ),
+        ),
+        occupied_intervals=(),
+    )
+    failure = ServiceMessage(
+        code=MessageCode.PRECEDENCE_IMPOSSIBLE,
+        message="Assignment violates precedence constraints",
+        details={},
+    )
+
+    result = ConflictAnalysisService().analyze(
+        assignment_input,
+        resolved,
+        infeasible_result(failure),
+    )
+
+    assert result.success and result.value is not None
+    assert len(result.value) == 1
+    conflict = result.value[0]
+    assert conflict.conflicting_plan_ids == tuple(sorted((predecessor_id, successor_id), key=str))
+    assert "plan_prerequisite" in conflict.explanation

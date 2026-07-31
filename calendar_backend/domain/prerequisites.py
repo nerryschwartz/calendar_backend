@@ -9,10 +9,11 @@ from collections.abc import Iterable
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import NoInspectionAvailable
 
-from calendar_backend.domain.enums import PlanKind
+from calendar_backend.domain.enums import CloneStatus, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_traversal import (
+    collect_descendant_ids,
     ordered_goal_children,
     ordered_repetition_instances,
 )
@@ -26,13 +27,82 @@ PlanPrerequisiteEdge = tuple[PlanID, PlanID]
 
 
 def _iter_plan_prerequisite_rows(plan: Plan) -> Iterable[PlanPrerequisite]:
+    manual_edges = getattr(plan, "prerequisite_edges", None)
+    if manual_edges is not None:
+        return manual_edges
     try:
         insp = sa_inspect(plan)
     except NoInspectionAvailable:
-        return getattr(plan, "prerequisite_edges", ()) or ()
+        return ()
     if insp.session is not None and "prerequisite_edges" in insp.unloaded:
         return ()
     return plan.prerequisite_edges
+
+
+def template_subtree_ids_from_plans(plans: Iterable[Plan]) -> frozenset[uuid.UUID]:
+    plans_by_id = {plan.plan_id: plan for plan in plans}
+    children_by_parent: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
+    for plan in plans_by_id.values():
+        if plan.parent_id is not None:
+            children_by_parent[plan.parent_id].append(plan.plan_id)
+
+    template_subtree_ids: set[uuid.UUID] = set()
+    for plan in plans_by_id.values():
+        repetition_plan = plan.repetition_plan
+        if repetition_plan is not None:
+            template_subtree_ids.update(
+                collect_descendant_ids(
+                    repetition_plan.template_root_id,
+                    children_by_parent,
+                    include_root=True,
+                )
+            )
+
+    for plan in plans_by_id.values():
+        if plan.clone_status != CloneStatus.TEMPLATE:
+            continue
+        parent = plans_by_id.get(plan.parent_id) if plan.parent_id is not None else None
+        if parent is not None and parent.clone_status == CloneStatus.TEMPLATE:
+            continue
+        template_subtree_ids.update(
+            collect_descendant_ids(
+                plan.plan_id,
+                children_by_parent,
+                include_root=True,
+            )
+        )
+
+    return frozenset(template_subtree_ids)
+
+
+def find_missing_prerequisite_clone_targets(
+    plans: tuple[Plan, ...],
+) -> tuple[PlanID, ...]:
+    """Return template-local prerequisite targets referenced from instance/master plans."""
+    template_subtree_ids = template_subtree_ids_from_plans(plans)
+    missing: set[PlanID] = set()
+    for dependent_id, prerequisite_id in plan_prerequisite_edges_from_plans(plans):
+        if prerequisite_id not in template_subtree_ids:
+            continue
+        if dependent_id in template_subtree_ids:
+            continue
+        missing.add(prerequisite_id)
+    return tuple(sorted(missing, key=str))
+
+
+def validate_prerequisite_clones_for_refresh(
+    plans: tuple[Plan, ...],
+) -> ServiceMessage | None:
+    missing_targets = find_missing_prerequisite_clone_targets(plans)
+    if not missing_targets:
+        return None
+    return ServiceMessage(
+        code=MessageCode.PREREQUISITE_CLONES_NOT_GENERATED,
+        message="Plan prerequisite targets require instance clones that are not generated",
+        details={
+            "missing_prerequisite_plan_ids": ", ".join(str(plan_id) for plan_id in missing_targets),
+        },
+    )
 
 
 def plan_prerequisite_edges_from_plans(plans: Iterable[Plan]) -> tuple[PlanPrerequisiteEdge, ...]:

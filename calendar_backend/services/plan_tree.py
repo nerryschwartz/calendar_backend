@@ -105,7 +105,10 @@ class PlanTreeService:
             PlanDeletionPreviewDTO(
                 root_plan_id=preview.root_plan_id,
                 affected_plan_ids=preview.affected_plan_ids,
+                affected_task_ids=preview.affected_task_ids,
+                affected_block_ids=preview.affected_block_ids,
                 affected_calendar_entry_ids=preview.affected_calendar_entry_ids,
+                affected_block_calendar_entry_ids=preview.affected_block_calendar_entry_ids,
                 warnings=preview.warnings,
             )
         )
@@ -130,7 +133,7 @@ class PlanTreeService:
                     )
                 )
 
-            plans, _calendar_entries = _load_deletion_graph(txn)
+            plans, _calendar_entries, _block_calendar_entries = _load_deletion_graph(txn)
             _execute_plan_deletes(txn, preview, plans, updated_at=self._clock.now_utc())
             txn.flush()
             return ok(None)

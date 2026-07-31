@@ -19,12 +19,14 @@ from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.orchestration import RefreshScheduleResult
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
 from calendar_backend.domain.resolution import ResolvedTask
 from calendar_backend.domain.time import TimeWindow
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
@@ -104,6 +106,27 @@ def create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> P
     )
     assert result.success and result.value is not None
     return result.value.plan_id
+
+
+def create_block(
+    session: Session,
+    parent_id: PlanID,
+    *,
+    name: str = "block",
+    block_family: str = "focus",
+) -> PlanID:
+    result = goal_service(session).create_child(
+        parent_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload(name, 30, False, None, block_family),
+        is_critical=False,
+    )
+    assert result.success and result.value is not None
+    return result.value.plan_id
+
+
+def block_calendar_entry_count(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(BlockCalendarEntry)) or 0
 
 
 def create_enabled_activity(session: Session, *, name: str = "reading") -> uuid.UUID:

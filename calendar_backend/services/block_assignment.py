@@ -17,7 +17,12 @@ from calendar_backend.domain.block_assignment import (
     occupied_intervals_from_task_calendar_entries_for_blocks,
 )
 from calendar_backend.domain.block_resolution import ResolveBlocksResult
-from calendar_backend.domain.enums import CalendarEntryType, CalendarRunStatus, SolverStatus
+from calendar_backend.domain.enums import (
+    CalendarEntryType,
+    CalendarRunStatus,
+    LastFailureReason,
+    SolverStatus,
+)
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import BlockCalendarEntryID, CalendarRunID, new_id
 from calendar_backend.domain.resolution import resolve_tasks_from_graph
@@ -56,6 +61,8 @@ class BlockAssignmentService:
         self,
         resolved: ResolveBlocksResult,
         run_started_at: datetime,
+        *,
+        calendar_run_id: CalendarRunID | None = None,
     ) -> ServiceResult[BlockAssignmentResult]:
         """Assign valid incomplete blocks and persist block calendar entries."""
         precondition_error = _assign_blocks_precondition_error(resolved, run_started_at)
@@ -111,6 +118,7 @@ class BlockAssignmentService:
                     run_started_at=run_started_at,
                     solver_result=solver_result,
                     runtime_ms=runtime_ms,
+                    calendar_run_id=calendar_run_id,
                 )
             return fail(solver_result.failure, _value=assignment_result)
 
@@ -122,6 +130,7 @@ class BlockAssignmentService:
                 resolved=resolved,
                 solver_result=solver_result,
                 runtime_ms=runtime_ms,
+                calendar_run_id=calendar_run_id,
             )
         return ok(assignment_result)
 
@@ -202,24 +211,31 @@ def _persist_failed_block_assignment(
     run_started_at: datetime,
     solver_result: AssignmentSolverResult,
     runtime_ms: int,
+    calendar_run_id: CalendarRunID | None = None,
 ) -> BlockAssignmentResult:
     now = clock.now_utc()
-    calendar_run = _new_calendar_run(
-        run_started_at=run_started_at,
-        clock=clock,
-        status=CalendarRunStatus.FAILED,
-        solver_status=SolverStatus.INFEASIBLE,
-        conflict_count=0,
-        warning_count=len(solver_result.warnings),
-        runtime_ms=runtime_ms,
-        run_finished_at=now,
-    )
-    session.add(calendar_run)
-    session.flush()
+
+    if calendar_run_id is None:
+        calendar_run = _new_calendar_run(
+            run_started_at=run_started_at,
+            clock=clock,
+            status=CalendarRunStatus.FAILED,
+            solver_status=SolverStatus.INFEASIBLE,
+            conflict_count=0,
+            warning_count=len(solver_result.warnings),
+            runtime_ms=runtime_ms,
+            run_finished_at=now,
+        )
+        session.add(calendar_run)
+        session.flush()
+        result_run_id = CalendarRunID(calendar_run.calendar_run_id)
+    else:
+        result_run_id = calendar_run_id
 
     active_state = load_or_create_active_calendar_state(session, clock)
     active_state.last_refresh_failed = True
     active_state.last_failure_at = now
+    active_state.last_failure_reason = LastFailureReason.ASSIGNMENT_FAILED
     active_state.updated_at = now
     session.flush()
 
@@ -229,7 +245,7 @@ def _persist_failed_block_assignment(
         block_calendar_entries=(),
         warnings=solver_result.warnings,
         runtime_ms=runtime_ms,
-        calendar_run_id=CalendarRunID(calendar_run.calendar_run_id),
+        calendar_run_id=result_run_id,
     )
 
 
@@ -241,6 +257,7 @@ def _persist_successful_block_assignment(
     resolved: ResolveBlocksResult,
     solver_result: AssignmentSolverResult,
     runtime_ms: int,
+    calendar_run_id: CalendarRunID | None = None,
 ) -> BlockAssignmentResult:
     resolved_blocks_by_id = {block.plan_id: block for block in resolved.valid_incomplete}
     insert_specs = block_calendar_entry_insert_specs_from_assignments(
@@ -254,28 +271,32 @@ def _persist_successful_block_assignment(
         execution_options={"synchronize_session": False},
     )
 
-    calendar_run = _new_calendar_run(
-        run_started_at=run_started_at,
-        clock=clock,
-        status=CalendarRunStatus.SUCCESS,
-        solver_status=solver_result.status,
-        conflict_count=0,
-        warning_count=len(solver_result.warnings),
-        runtime_ms=runtime_ms,
-        run_finished_at=now,
-    )
-    session.add(calendar_run)
-    session.flush()
+    if calendar_run_id is None:
+        calendar_run = _new_calendar_run(
+            run_started_at=run_started_at,
+            clock=clock,
+            status=CalendarRunStatus.SUCCESS,
+            solver_status=solver_result.status,
+            conflict_count=0,
+            warning_count=len(solver_result.warnings),
+            runtime_ms=runtime_ms,
+            run_finished_at=now,
+        )
+        session.add(calendar_run)
+        session.flush()
+        result_run_id = calendar_run.calendar_run_id
+    else:
+        result_run_id = calendar_run_id
 
     inserted_entries = _insert_block_calendar_entries(
         session,
         insert_specs=insert_specs,
-        calendar_run_id=calendar_run.calendar_run_id,
+        calendar_run_id=result_run_id,
         now=now,
     )
 
     active_state = load_or_create_active_calendar_state(session, clock)
-    active_state.active_calendar_run_id = calendar_run.calendar_run_id
+    active_state.active_calendar_run_id = result_run_id
     active_state.last_refresh_failed = False
     active_state.last_failure_at = None
     active_state.last_failure_reason = None
@@ -290,7 +311,7 @@ def _persist_successful_block_assignment(
         ),
         warnings=solver_result.warnings,
         runtime_ms=runtime_ms,
-        calendar_run_id=CalendarRunID(calendar_run.calendar_run_id),
+        calendar_run_id=CalendarRunID(result_run_id),
     )
 
 

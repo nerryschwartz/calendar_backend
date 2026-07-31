@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
 import pytest
+from calendar_backend.db.session import transaction
 from calendar_backend.deletion.preview_service import DeletionPreviewService
 from calendar_backend.domain.enums import PlanKind, RepeatMode
-from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.ids import BlockCalendarEntryID, PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.plans import RepetitionPlan
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
@@ -154,3 +158,40 @@ def test_preview_delete_plan_template_root_metadata(
     assert template_task_id in preview.affected_task_ids
     assert preview.affected_depth_counts_from_master[0] == 0
     assert sum(preview.affected_depth_counts_from_master) == len(preview.affected_plan_ids)
+
+
+@pytest.mark.integration
+def test_preview_delete_block_plan_includes_block_calendar_entries(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    block = _goal_service(service_db_session).create_child(
+        master_plan_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload("focus block", 30, False, None, "focus"),
+        is_critical=False,
+    )
+    assert block.success and block.value is not None
+    block_id = block.value.plan_id
+    entry_id = uuid.uuid4()
+    with transaction(service_db_session) as txn:
+        txn.add(
+            BlockCalendarEntry(
+                block_calendar_entry_id=entry_id,
+                start_time=RUN_AT,
+                end_time=RUN_AT.replace(hour=11),
+                source_plan_id=block_id,
+                calendar_run_id=None,
+                display_label="block",
+                created_at=RUN_AT,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.flush()
+
+    result = _preview_service(service_db_session).preview_delete_plan(block_id)
+
+    assert result.success and result.value is not None
+    assert result.value.affected_block_ids == (block_id,)
+    assert result.value.affected_block_calendar_entry_ids == (BlockCalendarEntryID(entry_id),)
+    assert result.value.affected_task_ids == ()

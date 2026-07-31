@@ -166,6 +166,13 @@ def print_refresh_schedule_summary(result: ServiceResult[RefreshScheduleResult])
 
     payload = result.value
     print(f"run_started_at: {payload.run_started_at.isoformat()}")
+    if payload.resolved_blocks is not None:
+        print(f"block_valid_incomplete_count: {len(payload.resolved_blocks.valid_incomplete)}")
+        print(f"block_invalid_incomplete_count: {len(payload.resolved_blocks.invalid_incomplete)}")
+        _print_warnings("resolved_blocks", payload.resolved_blocks.warnings)
+    if payload.block_assignment is not None:
+        print(f"block_entry_count: {len(payload.block_assignment.block_calendar_entries)}")
+        _print_warnings("block_assignment", payload.block_assignment.warnings)
     if payload.resolved is not None:
         print(f"valid_incomplete_count: {len(payload.resolved.valid_incomplete)}")
         print(f"invalid_incomplete_count: {len(payload.resolved.invalid_incomplete)}")

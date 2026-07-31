@@ -143,13 +143,22 @@ def analyze_assignment_conflicts(
             return
         seen_keys.add(dedupe_key)
 
-        conflicting_plan_ids = _conflicting_plan_ids_from_failure(failure, resolved)
+        conflicting_plan_ids = _conflicting_plan_ids_from_failure(
+            failure,
+            resolved,
+            assignment_input=assignment_input,
+        )
+        explanation = _conflict_explanation_from_failure(
+            failure,
+            resolved=resolved,
+            assignment_input=assignment_input,
+        )
         conflicts.append(
             build_assignment_conflict(
                 reason_code=failure.code,
                 conflicting_plan_ids=conflicting_plan_ids,
                 task_ids=conflicting_plan_ids,
-                explanation=_conflict_explanation_from_failure(failure),
+                explanation=explanation,
                 affected_priority_by_plan_id=_affected_priority_by_plan_id(
                     conflicting_plan_ids,
                     resolved_tasks_by_id,
@@ -168,11 +177,53 @@ def analyze_assignment_conflicts(
 def _conflicting_plan_ids_from_failure(
     failure: ServiceMessage,
     resolved: ResolveTasksResult,
+    *,
+    assignment_input: AssignmentInput | None = None,
 ) -> tuple[PlanID, ...]:
+    if failure.code == MessageCode.PRECEDENCE_IMPOSSIBLE and assignment_input is not None:
+        precedence_ids = _precedence_blocking_plan_ids(assignment_input, resolved)
+        if precedence_ids:
+            return precedence_ids
+
     plan_id_value = failure.details.get("plan_id")
     if plan_id_value is not None:
         return (PlanID(UUID(plan_id_value)),)
     return tuple(sorted((task.plan_id for task in resolved.valid_incomplete), key=str))
+
+
+def _precedence_blocking_plan_ids(
+    assignment_input: AssignmentInput,
+    resolved: ResolveTasksResult,
+) -> tuple[PlanID, ...]:
+    has_precedence_failure = any(
+        failure.code == MessageCode.PRECEDENCE_IMPOSSIBLE
+        for failure in diagnose_assignment_input(assignment_input)
+    )
+    if not has_precedence_failure:
+        return ()
+
+    tasks_by_plan_id = {task.plan_id: task for task in assignment_input.tasks}
+    constraint_by_pair = {
+        (edge.predecessor_task_id, edge.successor_task_id): edge.reason
+        for edge in resolved.precedence_constraints
+    }
+    for edge in sorted(
+        assignment_input.precedence_edges,
+        key=lambda item: (str(item.predecessor_plan_id), str(item.successor_plan_id)),
+    ):
+        predecessor = tasks_by_plan_id.get(edge.predecessor_plan_id)
+        successor = tasks_by_plan_id.get(edge.successor_plan_id)
+        if predecessor is None or successor is None:
+            continue
+        reason = constraint_by_pair.get((edge.predecessor_plan_id, edge.successor_plan_id), "")
+        if reason == "plan_prerequisite":
+            return tuple(sorted((edge.predecessor_plan_id, edge.successor_plan_id), key=str))
+    for edge in assignment_input.precedence_edges:
+        predecessor = tasks_by_plan_id.get(edge.predecessor_plan_id)
+        successor = tasks_by_plan_id.get(edge.successor_plan_id)
+        if predecessor is not None and successor is not None:
+            return tuple(sorted((edge.predecessor_plan_id, edge.successor_plan_id), key=str))
+    return ()
 
 
 def _affected_priority_by_plan_id(
@@ -189,7 +240,30 @@ def _affected_priority_by_plan_id(
     return tuple(sorted(priorities, key=lambda item: str(item[0])))
 
 
-def _conflict_explanation_from_failure(failure: ServiceMessage) -> str:
+def _conflict_explanation_from_failure(
+    failure: ServiceMessage,
+    *,
+    resolved: ResolveTasksResult | None = None,
+    assignment_input: AssignmentInput | None = None,
+) -> str:
+    if (
+        failure.code == MessageCode.PRECEDENCE_IMPOSSIBLE
+        and resolved is not None
+        and assignment_input is not None
+    ):
+        blocking_ids = _precedence_blocking_plan_ids(assignment_input, resolved)
+        if blocking_ids:
+            constraint_by_pair = {
+                (edge.predecessor_task_id, edge.successor_task_id): edge.reason
+                for edge in resolved.precedence_constraints
+            }
+            reason = constraint_by_pair.get((blocking_ids[0], blocking_ids[1]), "")
+            if reason == "plan_prerequisite":
+                return (
+                    f"{failure.message}: plan_prerequisite blocks "
+                    f"{blocking_ids[0]} -> {blocking_ids[1]}"
+                )
+
     plan_id_value = failure.details.get("plan_id")
     if plan_id_value is None:
         return failure.message
