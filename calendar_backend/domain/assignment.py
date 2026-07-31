@@ -257,7 +257,9 @@ def _conflict_explanation_from_failure(
                 (edge.predecessor_task_id, edge.successor_task_id): edge.reason
                 for edge in resolved.precedence_constraints
             }
-            reason = constraint_by_pair.get((blocking_ids[0], blocking_ids[1]), "")
+            reason = constraint_by_pair.get((blocking_ids[0], blocking_ids[1]))
+            if reason is None:
+                reason = constraint_by_pair.get((blocking_ids[1], blocking_ids[0]), "")
             if reason == "plan_prerequisite":
                 return (
                     f"{failure.message}: plan_prerequisite blocks "
