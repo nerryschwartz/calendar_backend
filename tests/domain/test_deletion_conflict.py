@@ -28,7 +28,9 @@ def _fabricated_candidate(
         legal_operation=operation,
         affected_plan_ids=(root_plan_id,),
         affected_task_ids=(),
+        affected_block_ids=(),
         affected_calendar_entry_ids=(),
+        affected_block_calendar_entry_ids=(),
         affected_depth_counts_from_master=(),
     )
     return DeletionCandidate(
@@ -51,7 +53,9 @@ def _fabricated_preview(
         legal_operation=operation,
         affected_plan_ids=affected_plan_ids,
         affected_task_ids=(),
+        affected_block_ids=(),
         affected_calendar_entry_ids=(),
+        affected_block_calendar_entry_ids=(),
         affected_depth_counts_from_master=depth_counts,
     )
 

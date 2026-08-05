@@ -2,31 +2,44 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from calendar_backend.db.session import transaction
-from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
+from calendar_backend.domain.enums import (
+    CalendarRunStatus,
+    CloneStatus,
+    ConstraintKind,
+    PlanKind,
+    RepeatMode,
+    SolverStatus,
+)
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
 from calendar_backend.domain.resolution import (
+    ResolvedPrecedenceConstraint,
     ResolvedTask,
     ResolveTasksResult,
     is_invalid_incomplete_task,
 )
 from calendar_backend.domain.time import TimeWindow
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as OrmTimeWindow
 from calendar_backend.models.plans import Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_plan import MasterPlanService
+from calendar_backend.services.plan_tree import PlanTreeService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
 from calendar_backend.services.task_resolution import (
@@ -66,6 +79,10 @@ def _repetition_service(session: Session) -> RepetitionService:
 
 def _resolution_service(session: Session) -> TaskResolutionService:
     return TaskResolutionService(session, FakeClock(RUN_AT))
+
+
+def _plan_tree_service(session: Session) -> PlanTreeService:
+    return PlanTreeService(session, FakeClock(RUN_AT))
 
 
 def _create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> PlanID:
@@ -146,15 +163,15 @@ def _create_goal_template_repetition_with_task_child(
     )
 
 
-def _three_tasks_in_master_chain(
+def _three_ordered_tasks_under_master(
     session: Session, master_plan_id: PlanID
 ) -> tuple[PlanID, PlanID, PlanID]:
     first_id = _create_task(session, master_plan_id, name="first")
     second_id = _create_task(session, master_plan_id, name="second")
     third_id = _create_task(session, master_plan_id, name="third")
     goal_service = _goal_service(session)
-    assert goal_service.move_plan(second_id, 0, 1).success
-    assert goal_service.move_plan(third_id, 0, 2).success
+    assert goal_service.move_plan(second_id, 1).success
+    assert goal_service.move_plan(third_id, 2).success
     return first_id, second_id, third_id
 
 
@@ -213,6 +230,23 @@ def _normalize_plan_window_timezones(plans: tuple[Plan, ...]) -> tuple[Plan, ...
 
 def _load_plans_with_utc_windows(session: Session) -> tuple[Plan, ...]:
     return _normalize_plan_window_timezones(load_plan_graph(session))
+
+
+def _create_block(
+    session: Session,
+    parent_id: PlanID,
+    *,
+    name: str = "block",
+    block_family: str = "focus",
+) -> PlanID:
+    result = _goal_service(session).create_child(
+        parent_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload(name, 30, False, None, block_family),
+        is_critical=False,
+    )
+    assert result.success and result.value is not None
+    return result.value.plan_id
 
 
 def _resolve_seam(session: Session, run_at: datetime = RUN_AT) -> ResolveTasksResult:
@@ -384,19 +418,74 @@ def test_resolve_tasks_populates_effective_windows_and_constraint_sources(
 
 
 @pytest.mark.integration
-def test_resolve_tasks_emits_precedence_for_chain_order(service_db_session: Session) -> None:
+def test_resolve_tasks_flat_goal_order_emits_no_chain_precedence(
+    service_db_session: Session,
+) -> None:
     master_id = _bootstrap_master(service_db_session)
     first_id = _create_task(service_db_session, master_id, name="first")
     second_id = _create_task(service_db_session, master_id, name="second")
     goal_service = _goal_service(service_db_session)
-    assert goal_service.move_plan(second_id, 0, 0).success
+    assert goal_service.move_plan(second_id, 0).success
     assert goal_service.move_plan(second_id, 1).success
 
     result = _resolve_seam(service_db_session)
 
-    assert any(
-        edge.predecessor_task_id == first_id and edge.successor_task_id == second_id
-        for edge in result.precedence_constraints
+    assert result.precedence_constraints == ()
+    ordered_ids = [task.plan_id for task in result.valid_incomplete]
+    assert ordered_ids.index(first_id) < ordered_ids.index(second_id)
+
+
+@pytest.mark.integration
+def test_resolve_tasks_emits_plan_prerequisite_precedence(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    prereq_id = _create_task(service_db_session, master_id, name="prereq")
+    dependent_id = _create_task(service_db_session, master_id, name="dependent")
+    assert (
+        _plan_tree_service(service_db_session)
+        .add_plan_prerequisite(
+            dependent_id,
+            prereq_id,
+        )
+        .success
+    )
+
+    result = _resolve_seam(service_db_session)
+
+    assert result.precedence_constraints == (
+        ResolvedPrecedenceConstraint(
+            predecessor_task_id=prereq_id,
+            successor_task_id=dependent_id,
+            reason="plan_prerequisite",
+        ),
+    )
+
+
+@pytest.mark.integration
+def test_resolve_tasks_emits_immediate_prerequisite_precedence(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    predecessor_id = _create_task(service_db_session, master_id, name="predecessor")
+    successor_id = _create_task(service_db_session, master_id, name="successor")
+    assert (
+        _task_service(service_db_session)
+        .set_immediate_prerequisite(
+            successor_id,
+            predecessor_id,
+        )
+        .success
+    )
+
+    result = _resolve_seam(service_db_session)
+
+    assert result.precedence_constraints == (
+        ResolvedPrecedenceConstraint(
+            predecessor_task_id=predecessor_id,
+            successor_task_id=successor_id,
+            reason="immediate_prerequisite",
+        ),
     )
 
 
@@ -443,22 +532,20 @@ def test_resolve_tasks_warnings_empty_in_v1(service_db_session: Session) -> None
 
 
 @pytest.mark.integration
-def test_resolve_tasks_skips_completed_predecessor_in_precedence(
+def test_resolve_tasks_excludes_completed_task_from_valid_incomplete(
     service_db_session: Session,
 ) -> None:
     master_id = _bootstrap_master(service_db_session)
-    first_id, second_id, third_id = _three_tasks_in_master_chain(service_db_session, master_id)
+    first_id, second_id, third_id = _three_ordered_tasks_under_master(service_db_session, master_id)
     assert _task_service(service_db_session).mark_complete(second_id).success
 
     result = _resolve_seam(service_db_session)
 
-    assert (
-        first_id,
-        third_id,
-    ) in {
-        (edge.predecessor_task_id, edge.successor_task_id) for edge in result.precedence_constraints
-    }
-    assert not any(edge.predecessor_task_id == second_id for edge in result.precedence_constraints)
+    valid_ids = {task.plan_id for task in result.valid_incomplete}
+    assert first_id in valid_ids
+    assert third_id in valid_ids
+    assert second_id not in valid_ids
+    assert result.precedence_constraints == ()
 
 
 @pytest.mark.integration
@@ -559,4 +646,123 @@ def test_resolve_tasks_orders_instances_by_sort_order_within_critical_bucket(
     assert (
         task_by_root[lower_sort_order_task_id].priority_path
         < task_by_root[higher_sort_order_task_id].priority_path
+    )
+
+
+def _seed_minimal_active_calendar_state(session: Session) -> uuid.UUID:
+    run_id = uuid.uuid4()
+    with transaction(session) as txn:
+        txn.add(
+            CalendarRun(
+                calendar_run_id=run_id,
+                run_started_at=RUN_AT,
+                run_finished_at=RUN_AT,
+                status=CalendarRunStatus.SUCCESS,
+                solver_status=SolverStatus.FEASIBLE,
+                conflict_count=0,
+                warning_count=0,
+                runtime_ms=1,
+                created_at=RUN_AT,
+            )
+        )
+        txn.add(
+            ActiveCalendarState(
+                singleton_id=1,
+                active_calendar_run_id=run_id,
+                last_refresh_failed=False,
+                last_failure_at=None,
+                last_failure_reason=None,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.flush()
+    return run_id
+
+
+@pytest.mark.integration
+def test_resolve_tasks_narrows_effective_windows_from_block_calendar(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    assert (
+        _task_service(service_db_session).set_allowed_block_families(task_id, ("transit",)).success
+    )
+    user_window = TimeWindow(
+        start_time=RUN_AT - timedelta(hours=1),
+        end_time=RUN_AT + timedelta(hours=3),
+    )
+    TimeConstraintService(service_db_session, FakeClock(RUN_AT)).add_user_group(
+        master_id,
+        (user_window,),
+    )
+    block_id = _create_block(
+        service_db_session,
+        master_id,
+        block_family="transit",
+    )
+    transit_window = TimeWindow(
+        start_time=RUN_AT - timedelta(minutes=15),
+        end_time=RUN_AT + timedelta(minutes=15),
+    )
+    _seed_minimal_active_calendar_state(service_db_session)
+    with transaction(service_db_session) as txn:
+        txn.add(
+            BlockCalendarEntry(
+                block_calendar_entry_id=uuid.uuid4(),
+                start_time=transit_window.start_time.replace(tzinfo=None),
+                end_time=transit_window.end_time.replace(tzinfo=None),
+                source_plan_id=block_id,
+                calendar_run_id=None,
+                display_label="transit",
+                created_at=RUN_AT.replace(tzinfo=None),
+                updated_at=RUN_AT.replace(tzinfo=None),
+            )
+        )
+        txn.flush()
+
+    result = _resolution_service(service_db_session).resolve_tasks(RUN_AT)
+    assert result.success and result.value is not None
+    task = next(task for task in result.value.valid_incomplete if task.plan_id == task_id)
+    assert task.allowed_block_families == ("transit",)
+    assert task.effective_time_windows == (
+        TimeWindow(start_time=RUN_AT, end_time=RUN_AT + timedelta(minutes=15)),
+    )
+
+
+@pytest.mark.integration
+def test_resolve_tasks_family_mismatch_marks_task_invalid_incomplete(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    assert (
+        _task_service(service_db_session).set_allowed_block_families(task_id, ("transit",)).success
+    )
+    block_id = _create_block(
+        service_db_session,
+        master_id,
+        block_family="focus",
+    )
+    _seed_minimal_active_calendar_state(service_db_session)
+    with transaction(service_db_session) as txn:
+        txn.add(
+            BlockCalendarEntry(
+                block_calendar_entry_id=uuid.uuid4(),
+                start_time=(RUN_AT - timedelta(minutes=30)).replace(tzinfo=None),
+                end_time=(RUN_AT - timedelta(minutes=15)).replace(tzinfo=None),
+                source_plan_id=block_id,
+                calendar_run_id=None,
+                display_label="focus",
+                created_at=RUN_AT.replace(tzinfo=None),
+                updated_at=RUN_AT.replace(tzinfo=None),
+            )
+        )
+        txn.flush()
+
+    result = _resolution_service(service_db_session).resolve_tasks(RUN_AT)
+    assert result.success and result.value is not None
+    invalid = next(task for task in result.value.invalid_incomplete if task.plan_id == task_id)
+    assert any(
+        error.code == MessageCode.NO_VALID_WINDOW_FOR_TASK for error in invalid.validation_errors
     )

@@ -11,11 +11,12 @@ from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
+from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import AppSettingsService
@@ -69,32 +70,37 @@ def _assert_tree_invariant(session: Session) -> None:
     assert result.success, result.errors
 
 
-def _chain_sort_orders(session: Session, parent_goal_id: PlanID) -> list[int]:
+def _goal_sort_orders(
+    session: Session,
+    parent_goal_id: PlanID,
+    *,
+    is_critical: bool,
+) -> list[int]:
+    rows = session.scalars(
+        select(Plan.goal_sort_order)
+        .where(
+            Plan.parent_id == parent_goal_id,
+            Plan.goal_is_critical == is_critical,
+        )
+        .order_by(Plan.goal_sort_order)
+    ).all()
+    return [order for order in rows if order is not None]
+
+
+def _ordered_child_plan_ids(
+    session: Session,
+    parent_goal_id: PlanID,
+    *,
+    is_critical: bool,
+) -> list[uuid.UUID]:
     return list(
         session.scalars(
-            select(GoalChildChain.sort_order)
-            .where(GoalChildChain.parent_goal_id == parent_goal_id)
-            .order_by(GoalChildChain.sort_order)
-        ).all()
-    )
-
-
-def _chain_positions(session: Session, chain_id: uuid.UUID) -> list[int]:
-    return list(
-        session.scalars(
-            select(GoalChildChainItem.position)
-            .where(GoalChildChainItem.chain_id == chain_id)
-            .order_by(GoalChildChainItem.position)
-        ).all()
-    )
-
-
-def _child_plan_ids_in_chain_order(session: Session, chain_id: uuid.UUID) -> list[uuid.UUID]:
-    return list(
-        session.scalars(
-            select(GoalChildChainItem.child_plan_id)
-            .where(GoalChildChainItem.chain_id == chain_id)
-            .order_by(GoalChildChainItem.position)
+            select(Plan.plan_id)
+            .where(
+                Plan.parent_id == parent_goal_id,
+                Plan.goal_is_critical == is_critical,
+            )
+            .order_by(Plan.goal_sort_order, Plan.plan_id)
         ).all()
     )
 
@@ -182,7 +188,7 @@ def _seed_linked_goals_in_same_chain(
     )
     assert first.success and first.value is not None
     assert second.success and second.value is not None
-    assert service.move_plan(second.value.plan_id, 0, 0).success
+    assert service.move_plan(second.value.plan_id, 0).success
 
     first_id = first.value.plan_id
     second_id = second.value.plan_id
@@ -202,7 +208,7 @@ def _seed_linked_goals_in_same_chain(
 
 
 @pytest.mark.integration
-def test_create_child_goal_under_master_persists_chain_and_parent(
+def test_create_child_goal_under_master_persists_ordering_and_parent(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
@@ -220,17 +226,8 @@ def test_create_child_goal_under_master_persists_chain_and_parent(
     assert plan is not None
     assert plan.parent_id == master_plan_id
     assert plan.plan_kind == PlanKind.GOAL
-
-    chain = service_db_session.scalar(
-        select(GoalChildChain).where(GoalChildChain.parent_goal_id == master_plan_id)
-    )
-    assert chain is not None
-    assert chain.sort_order == 0
-    item = service_db_session.scalar(
-        select(GoalChildChainItem).where(GoalChildChainItem.child_plan_id == child_id)
-    )
-    assert item is not None
-    assert item.position == 0
+    assert plan.goal_is_critical is False
+    assert plan.goal_sort_order == 0
     _assert_tree_invariant(service_db_session)
 
 
@@ -249,6 +246,40 @@ def test_create_child_task_under_master(
     assert result.success and result.value is not None
     assert service_db_session.get(TaskPlan, result.value.plan_id) is not None
     _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_create_child_block_under_master(
+    service_db_session: Session, master_plan_id: PlanID
+) -> None:
+    service = _goal_service(service_db_session)
+    result = service.create_child(
+        master_plan_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload("focus block", 45, False, None, "focus"),
+        is_critical=False,
+    )
+
+    assert result.success and result.value is not None
+    assert result.value.block_family == "focus"
+    assert service_db_session.get(BlockPlan, result.value.plan_id) is not None
+    _assert_tree_invariant(service_db_session)
+
+
+@pytest.mark.integration
+def test_create_child_block_rejects_empty_family(
+    service_db_session: Session, master_plan_id: PlanID
+) -> None:
+    service = _goal_service(service_db_session)
+    result = service.create_child(
+        master_plan_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload("focus block", 45, False, None, "   "),
+        is_critical=False,
+    )
+
+    assert not result.success
+    assert result.errors[0].code == MessageCode.INVALID_CREATE_PAYLOAD
 
 
 @pytest.mark.integration
@@ -319,7 +350,7 @@ def test_create_child_repetition_task_template_root(
 
 
 @pytest.mark.integration
-def test_create_child_under_template_goal_uses_goal_chain(
+def test_create_child_under_template_goal_sets_goal_ordering(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
@@ -343,16 +374,11 @@ def test_create_child_under_template_goal_uses_goal_chain(
     )
     assert child_result.success and child_result.value is not None
 
-    chain_item = service_db_session.scalar(
-        select(GoalChildChainItem).where(
-            GoalChildChainItem.child_plan_id == child_result.value.plan_id
-        )
-    )
-    assert chain_item is not None
-    chain = service_db_session.get(GoalChildChain, chain_item.chain_id)
-    assert chain is not None
-    assert chain.parent_goal_id == repetition.template_root_id
-    assert chain.is_critical is True
+    child = service_db_session.get(Plan, child_result.value.plan_id)
+    assert child is not None
+    assert child.parent_id == repetition.template_root_id
+    assert child.goal_is_critical is True
+    assert child.goal_sort_order == 0
     _assert_tree_invariant(service_db_session)
 
 
@@ -383,7 +409,7 @@ def test_create_child_under_nested_goal(
 
 
 @pytest.mark.integration
-def test_sequential_creates_increment_chain_sort_order(
+def test_sequential_creates_increment_goal_sort_order(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
@@ -397,7 +423,7 @@ def test_sequential_creates_increment_chain_sort_order(
         )
         assert result.success
 
-    assert _chain_sort_orders(service_db_session, master_plan_id) == [0, 1, 2]
+    assert _goal_sort_orders(service_db_session, master_plan_id, is_critical=False) == [0, 1, 2]
     _assert_tree_invariant(service_db_session)
 
 
@@ -495,7 +521,7 @@ def test_create_child_kind_payload_mismatch_rejected(
 
 
 @pytest.mark.integration
-def test_move_plan_reorders_within_chain(
+def test_move_plan_reorders_within_bucket(
     service_db_session: Session, master_plan_id: PlanID
 ) -> None:
     service = _goal_service(service_db_session)
@@ -514,23 +540,16 @@ def test_move_plan_reorders_within_chain(
     assert first.success and first.value is not None
     assert second.success and second.value is not None
 
-    move_into_chain = service.move_plan(second.value.plan_id, 0, 0)
-    assert move_into_chain.success
-
-    chain_id = service_db_session.scalar(
-        select(GoalChildChainItem.chain_id).where(
-            GoalChildChainItem.child_plan_id == first.value.plan_id
-        )
-    )
-    assert chain_id is not None
-    assert _child_plan_ids_in_chain_order(service_db_session, chain_id) == [
+    move_to_front = service.move_plan(second.value.plan_id, 0)
+    assert move_to_front.success
+    assert _ordered_child_plan_ids(service_db_session, master_plan_id, is_critical=False) == [
         second.value.plan_id,
         first.value.plan_id,
     ]
 
     reorder = service.move_plan(second.value.plan_id, 1)
     assert reorder.success
-    assert _child_plan_ids_in_chain_order(service_db_session, chain_id) == [
+    assert _ordered_child_plan_ids(service_db_session, master_plan_id, is_critical=False) == [
         first.value.plan_id,
         second.value.plan_id,
     ]
@@ -538,7 +557,7 @@ def test_move_plan_reorders_within_chain(
 
 
 @pytest.mark.integration
-def test_move_plan_cross_chain_moves_item(
+def test_move_plan_moves_item_to_front_of_bucket(
     service_db_session: Session, master_plan_id: PlanID
 ) -> None:
     service = _goal_service(service_db_session)
@@ -557,16 +576,9 @@ def test_move_plan_cross_chain_moves_item(
     assert left.success and left.value is not None
     assert right.success and right.value is not None
 
-    result = service.move_plan(right.value.plan_id, 0, 0)
+    result = service.move_plan(right.value.plan_id, 0)
     assert result.success
-
-    chain_id = service_db_session.scalar(
-        select(GoalChildChainItem.chain_id).where(
-            GoalChildChainItem.child_plan_id == left.value.plan_id
-        )
-    )
-    assert chain_id is not None
-    assert _child_plan_ids_in_chain_order(service_db_session, chain_id) == [
+    assert _ordered_child_plan_ids(service_db_session, master_plan_id, is_critical=False) == [
         right.value.plan_id,
         left.value.plan_id,
     ]
@@ -574,7 +586,7 @@ def test_move_plan_cross_chain_moves_item(
 
 
 @pytest.mark.integration
-def test_move_plan_position_minus_one_appends_in_chain(
+def test_move_plan_position_minus_one_appends_in_bucket(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
@@ -593,18 +605,11 @@ def test_move_plan_position_minus_one_appends_in_chain(
     )
     assert first.success and first.value is not None
     assert second.success and second.value is not None
-    assert service.move_plan(second.value.plan_id, 0, 0).success
+    assert service.move_plan(second.value.plan_id, 0).success
 
     result = service.move_plan(first.value.plan_id, -1)
     assert result.success
-
-    chain_id = service_db_session.scalar(
-        select(GoalChildChainItem.chain_id).where(
-            GoalChildChainItem.child_plan_id == first.value.plan_id
-        )
-    )
-    assert chain_id is not None
-    assert _child_plan_ids_in_chain_order(service_db_session, chain_id) == [
+    assert _ordered_child_plan_ids(service_db_session, master_plan_id, is_critical=False) == [
         second.value.plan_id,
         first.value.plan_id,
     ]
@@ -612,7 +617,7 @@ def test_move_plan_position_minus_one_appends_in_chain(
 
 
 @pytest.mark.integration
-def test_move_plan_chain_index_minus_one_creates_new_chain(
+def test_move_plan_cross_bucket_move(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
@@ -640,55 +645,55 @@ def test_move_plan_chain_index_minus_one_creates_new_chain(
     )
     assert first.success and first.value is not None
     assert second.success and second.value is not None
-    assert service.move_plan(second.value.plan_id, 0, 0).success
+    assert service.move_plan(second.value.plan_id, 0).success
 
-    result = service.move_plan(first.value.plan_id, -1, 0)
+    result = service.move_plan(first.value.plan_id, False, 0)
     assert result.success
 
-    chains = list(
-        service_db_session.scalars(
-            select(GoalChildChain)
-            .where(GoalChildChain.parent_goal_id == parent_id)
-            .order_by(GoalChildChain.sort_order)
-        ).all()
-    )
-    assert len(chains) == 2
-    assert chains[0].is_critical is True
-    assert chains[1].is_critical is True
-    assert _chain_positions(service_db_session, chains[1].goal_child_chain_id) == [0]
+    assert _ordered_child_plan_ids(service_db_session, parent_id, is_critical=True) == [
+        second.value.plan_id,
+    ]
+    assert _ordered_child_plan_ids(service_db_session, parent_id, is_critical=False) == [
+        first.value.plan_id,
+    ]
     _assert_tree_invariant(service_db_session)
 
 
 @pytest.mark.integration
-def test_move_plan_deletes_empty_source_chain(
+def test_move_plan_cross_bucket_leaves_dense_source_bucket(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
     service = _goal_service(service_db_session)
-    left = service.create_child(
+    nested_goal = service.create_child(
         master_plan_id,
-        PlanKind.TASK,
-        TaskCreatePayload("left", 30, False, None),
+        PlanKind.GOAL,
+        GoalCreatePayload(name="nested"),
         is_critical=False,
     )
+    assert nested_goal.success and nested_goal.value is not None
+    parent_id = nested_goal.value.plan_id
+
+    left = service.create_child(
+        parent_id,
+        PlanKind.TASK,
+        TaskCreatePayload("left", 30, False, None),
+        is_critical=True,
+    )
     right = service.create_child(
-        master_plan_id,
+        parent_id,
         PlanKind.TASK,
         TaskCreatePayload("right", 30, False, None),
-        is_critical=False,
+        is_critical=True,
     )
     assert left.success and left.value is not None
     assert right.success and right.value is not None
 
-    source_chain_id = service_db_session.scalar(
-        select(GoalChildChainItem.chain_id).where(
-            GoalChildChainItem.child_plan_id == right.value.plan_id
-        )
-    )
-    assert source_chain_id is not None
-    assert service.move_plan(right.value.plan_id, 0, -1).success
+    result = service.move_plan(right.value.plan_id, False, -1)
+    assert result.success
 
-    assert service_db_session.get(GoalChildChain, source_chain_id) is None
+    assert _goal_sort_orders(service_db_session, parent_id, is_critical=True) == [0]
+    assert _goal_sort_orders(service_db_session, parent_id, is_critical=False) == [0]
     _assert_tree_invariant(service_db_session)
 
 
@@ -754,17 +759,48 @@ def test_move_plan_detaches_linked_clone_within_chain(
 
 
 @pytest.mark.integration
-def test_move_plan_detaches_linked_clone_cross_chain(
+def test_move_plan_detaches_linked_clone_cross_bucket(
     service_db_session: Session,
     master_plan_id: PlanID,
 ) -> None:
-    seeded = _seed_linked_goals_in_same_chain(service_db_session, master_plan_id)
-    first_id = seeded["first_id"]
-    second_id = seeded["second_id"]
-    child_id = seeded["child_id"]
     service = _goal_service(service_db_session)
+    nested = service.create_child(
+        master_plan_id,
+        PlanKind.GOAL,
+        GoalCreatePayload(name="nested"),
+        is_critical=False,
+    )
+    assert nested.success and nested.value is not None
+    parent_id = nested.value.plan_id
 
-    result = service.move_plan(first_id, -1, 0)
+    cloned_from_id = _create_clone_source_plan(service_db_session, parent_id)
+    first = service.create_child(
+        parent_id,
+        PlanKind.GOAL,
+        GoalCreatePayload(name="first linked"),
+        is_critical=False,
+    )
+    second = service.create_child(
+        parent_id,
+        PlanKind.GOAL,
+        GoalCreatePayload(name="second linked"),
+        is_critical=False,
+    )
+    assert first.success and first.value is not None
+    assert second.success and second.value is not None
+    assert service.move_plan(second.value.plan_id, 0).success
+
+    first_id = first.value.plan_id
+    second_id = second.value.plan_id
+    _mark_plan_linked(service_db_session, first_id, cloned_from_id)
+    _mark_plan_linked(service_db_session, second_id, cloned_from_id)
+    child_id = _add_linked_child_goal(
+        service_db_session,
+        first_id,
+        cloned_from_id=cloned_from_id,
+    )
+
+    result = service.move_plan(first_id, True, 0)
 
     assert result.success
     assert _clone_status(service_db_session, first_id) == CloneStatus.DETACHED

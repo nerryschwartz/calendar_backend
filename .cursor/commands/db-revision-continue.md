@@ -15,8 +15,8 @@ If checks fail, report failures and stop. Do not fix failing tests during this c
 
 Then run the `/commit-changes` workflow with these invocation-local overrides:
 - First run `/review-abstractions` on the current diff (required; not part of the db-revision preview/continue checks above).
-- Run the commit script with checks skipped because preview/continue already ran them:
-  python scripts/cursor/commit_changes.py --skip-checks
+- Run the commit script with tests skipped because continue already ran pytest:
+  python scripts/cursor/commit_changes.py --skip-tests
 - Follow all other `/commit-changes` rules: review the full diff, use patch-level staging where practical, show included/excluded hunks and proposed commit message before each commit, prefer atomic commits.
 
 Typical schema commit scope:
@@ -25,8 +25,23 @@ Typical schema commit scope:
 - related schema/migration tests (including removal of `failure_expected` per [repo convention §13](../repo_conventions.md))
 
 Do not re-run before commit:
-- ruff format/check
-- pyright
 - pytest
 
 Do not run autogenerate again in this command.
+
+## When called from `/run-v2-implementation` (loop context)
+
+Maps to `phase_N_slice_<id>_alembic_continue`.
+
+**Ignore for loop steps:**
+
+- **“If approval is unclear, ask one focused question and stop.”** — preview and `migration_manual_edit` already applied edits; proceed with apply and verify.
+- Interactive **`/commit-changes`** staging prompts — the loop handler commits with:
+  ```bash
+  python scripts/cursor/commit_changes.py --non-interactive --skip-tests --message "Apply V2 phase N migration: <revision-summary>"
+  ```
+- **`/review-abstractions`** before commit — run audit-commit-readiness and review-abstractions per [run-v2-implementation.md](run-v2-implementation.md) commit policy instead.
+
+**Still apply:** `alembic upgrade head`, remove `failure_expected` markers, pytest, and the single non-interactive commit. If checks fail, stop the batch without advancing state.
+
+Standalone `/db-revision-continue` (outside the loop) keeps approval prompts and interactive commit behavior.

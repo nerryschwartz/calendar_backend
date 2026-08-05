@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.task_families import DownstreamTaskFeasibilitySummary
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.scheduling.input import (
     AssignmentInput,
@@ -43,6 +44,7 @@ class AssignmentComponent:
     occupied_intervals: tuple[OccupiedInterval, ...]
     previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...]
     solver_limits: SolverLimits | None = None
+    downstream_task_feasibility_summaries: tuple[DownstreamTaskFeasibilitySummary, ...] = ()
 
 
 def decompose_assignment_input(
@@ -118,6 +120,7 @@ def iter_component_sub_inputs(
                 occupied_intervals=tuple(accumulated_occupied),
                 previous_placements_by_task_id=component.previous_placements_by_task_id,
                 solver_limits=component.solver_limits,
+                downstream_task_feasibility_summaries=component.downstream_task_feasibility_summaries,
             )
         )
 
@@ -133,6 +136,7 @@ def assignment_input_from_component(component: AssignmentComponent) -> Assignmen
         occupied_intervals=component.occupied_intervals,
         previous_placements_by_task_id=component.previous_placements_by_task_id,
         solver_limits=component.solver_limits,
+        downstream_task_feasibility_summaries=component.downstream_task_feasibility_summaries,
     )
 
 
@@ -215,6 +219,7 @@ def _component_from_plan_ids(
         occupied_intervals=occupied_intervals,
         previous_placements_by_task_id=previous_placements,
         solver_limits=assignment_input.solver_limits,
+        downstream_task_feasibility_summaries=assignment_input.downstream_task_feasibility_summaries,
     )
 
 

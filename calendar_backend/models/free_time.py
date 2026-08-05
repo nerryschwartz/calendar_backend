@@ -39,6 +39,7 @@ class FreeTimeActivity(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     real_fraction: Mapped[Decimal] = mapped_column(Numeric(18, 9), nullable=False)
     minimum_block_size_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    allowed_block_families: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

@@ -10,18 +10,22 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.assignment import sqlite_utc
+from calendar_backend.domain.block_assignment import block_placements_from_block_calendar_entries
 from calendar_backend.domain.errors import ServiceTransactionAborted
+from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.resolution import ResolveTasksResult, resolve_tasks_from_graph
 from calendar_backend.domain.results import ServiceResult, fail, ok
+from calendar_backend.domain.task_families import BlockPlacementSnapshot
 from calendar_backend.domain.time import Clock, SystemClock
-from calendar_backend.models.chains import GoalChildChain
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.constraints import TimeConstraintGroup
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
+from calendar_backend.models.plans import Plan, RepetitionPlan
+from calendar_backend.models.runs import ActiveCalendarState
 from calendar_backend.services.master_horizon import (
     MasterHorizonService,
     validate_run_started_at,
@@ -65,7 +69,21 @@ class TaskResolutionService:
                     raise ServiceTransactionAborted(invariant_result.errors)
 
                 plans = load_plan_graph(txn)
-                result = _resolve_from_current_tree(run_started_at, plans=plans)
+                block_entries = _load_block_calendar_entries(txn, run_started_at=run_started_at)
+                block_family_by_plan_id = {
+                    PlanID(plan.plan_id): plan.block_plan.block_family
+                    for plan in plans
+                    if plan.block_plan is not None
+                }
+                block_placements = block_placements_from_block_calendar_entries(
+                    block_entries,
+                    block_family_by_plan_id=block_family_by_plan_id,
+                )
+                result = _resolve_from_current_tree(
+                    run_started_at,
+                    plans=plans,
+                    block_placements=block_placements,
+                )
                 return ok(result)
         except ServiceTransactionAborted as exc:
             return fail(*exc.errors)
@@ -79,19 +97,46 @@ def _resolve_from_current_tree(
     run_started_at: datetime,
     *,
     plans: tuple[Plan, ...],
+    block_placements: tuple[BlockPlacementSnapshot, ...] = (),
 ) -> ResolveTasksResult:
     """Read-only resolution test seam: graph load without refresh side effects."""
-    return resolve_tasks_from_graph(run_started_at, plans)
+    return resolve_tasks_from_graph(
+        run_started_at,
+        plans,
+        block_placements=block_placements,
+    )
+
+
+def _load_block_calendar_entries(
+    session: Session,
+    *,
+    run_started_at: datetime,
+) -> tuple[BlockCalendarEntry, ...]:
+    state = session.get(ActiveCalendarState, 1)
+    if state is None or state.active_calendar_run_id is None:
+        return ()
+
+    active_calendar_run_id = state.active_calendar_run_id
+    return tuple(
+        session.scalars(
+            select(BlockCalendarEntry).where(
+                or_(
+                    BlockCalendarEntry.start_time < run_started_at,
+                    BlockCalendarEntry.calendar_run_id == active_calendar_run_id,
+                ),
+            )
+        ).all()
+    )
 
 
 def load_plan_graph(session: Session) -> tuple[Plan, ...]:
     plans = tuple(
         session.scalars(
             select(Plan).options(
-                selectinload(Plan.goal_plan)
-                .selectinload(GoalPlan.chains)
-                .selectinload(GoalChildChain.items),
+                selectinload(Plan.goal_plan),
                 selectinload(Plan.task_plan),
+                selectinload(Plan.block_plan),
+                selectinload(Plan.prerequisite_edges),
                 selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
                 selectinload(Plan.constraint_groups).selectinload(TimeConstraintGroup.windows),
             )

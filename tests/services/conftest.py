@@ -8,17 +8,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import calendar_backend.models.calendar  # pyright: ignore[reportUnusedImport]
-import calendar_backend.models.chains  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.constraints  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.free_time  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.plans  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.repetitions  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.runs  # pyright: ignore[reportUnusedImport]
 import calendar_backend.models.settings  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import calendar_backend.services.task_assignment as task_assignment_module
 import pytest
 from calendar_backend.db.base import Base
 from calendar_backend.db.session import create_engine_for_url, create_session_factory, transaction
 from calendar_backend.domain.time import Clock
+from calendar_backend.scheduling.exact_cp_sat import solve_exact_component
+from sqlalchemy import delete
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -28,8 +30,6 @@ SERVICE_SCHEMA_TABLE_NAMES = frozenset(
         "goal_plan",
         "task_plan",
         "repetition_plan",
-        "goal_child_chain",
-        "goal_child_chain_item",
         "time_constraint_group",
         "time_window",
         "repetition_instance",
@@ -74,11 +74,20 @@ def service_db_session(service_db_engine: Engine) -> Generator[Session]:
         yield session
     finally:
         session.close()
+        with service_db_engine.begin() as conn:
+            for table in reversed(Base.metadata.sorted_tables):
+                conn.execute(delete(table))
 
 
 @pytest.fixture
 def fake_clock() -> Clock:
     return FakeClock(datetime(2026, 6, 7, 12, 0, tzinfo=UTC))
+
+
+@pytest.fixture(autouse=True)
+def _reset_task_assignment_exact_solver() -> None:  # pyright: ignore[reportUnusedFunction]
+    """Prevent monkeypatch leaks from task assignment tests affecting other service tests."""
+    task_assignment_module.solve_exact_component = solve_exact_component
 
 
 @contextmanager

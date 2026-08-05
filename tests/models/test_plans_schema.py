@@ -14,12 +14,10 @@ from alembic.config import Config
 from calendar_backend.db.base import Base
 from calendar_backend.db.session import create_engine_for_url, create_session_factory, transaction
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
-from sqlalchemy import CheckConstraint, DateTime, UniqueConstraint, insert, inspect
+from sqlalchemy import CheckConstraint, DateTime, insert, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
 
 PLAN_TABLE_NAMES = frozenset(
     {
@@ -27,6 +25,11 @@ PLAN_TABLE_NAMES = frozenset(
         "goal_plan",
         "task_plan",
         "repetition_plan",
+    }
+)
+
+CHAIN_TABLE_NAMES = frozenset(
+    {
         "goal_child_chain",
         "goal_child_chain_item",
     }
@@ -39,8 +42,6 @@ TIMEZONE_AWARE_COLUMNS = (
     Base.metadata.tables["repetition_plan"].c.start_time,
     Base.metadata.tables["repetition_plan"].c.end_time,
     Base.metadata.tables["repetition_plan"].c.generated_at,
-    Base.metadata.tables["goal_child_chain"].c.created_at,
-    Base.metadata.tables["goal_child_chain"].c.updated_at,
 )
 
 
@@ -71,8 +72,10 @@ def _plan_row(
     is_master: bool = False,
     parent_id: uuid.UUID | None = None,
     cloned_from_id: uuid.UUID | None = None,
+    goal_is_critical: bool | None = None,
+    goal_sort_order: int | None = None,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "plan_id": plan_id,
         "plan_kind": plan_kind,
         "name": "test plan",
@@ -83,6 +86,10 @@ def _plan_row(
         "created_at": _now(),
         "updated_at": _now(),
     }
+    if goal_is_critical is not None or goal_sort_order is not None:
+        row["goal_is_critical"] = goal_is_critical
+        row["goal_sort_order"] = goal_sort_order
+    return row
 
 
 def _goal_plan_row(plan_id: uuid.UUID) -> dict[str, object]:
@@ -114,59 +121,22 @@ def _repetition_plan_row(plan_id: uuid.UUID, template_root_id: uuid.UUID) -> dic
     }
 
 
-def _goal_child_chain_row(
-    chain_id: uuid.UUID,
-    parent_goal_id: uuid.UUID,
-    *,
-    sort_order: int = 0,
-) -> dict[str, object]:
-    return {
-        "goal_child_chain_id": chain_id,
-        "parent_goal_id": parent_goal_id,
-        "is_critical": False,
-        "sort_order": sort_order,
-        "created_at": _now(),
-        "updated_at": _now(),
-    }
-
-
-def _goal_child_chain_item_row(
-    item_id: uuid.UUID,
-    chain_id: uuid.UUID,
-    child_plan_id: uuid.UUID,
-    *,
-    position: int = 0,
-) -> dict[str, object]:
-    return {
-        "goal_child_chain_item_id": item_id,
-        "chain_id": chain_id,
-        "child_plan_id": child_plan_id,
-        "position": position,
-    }
-
-
-def _insert_master_goal(txn: Session, plan_id: uuid.UUID | None = None) -> uuid.UUID:
-    plan_id = plan_id or uuid.uuid4()
-    plan = Base.metadata.tables["plan"]
-    goal_plan = Base.metadata.tables["goal_plan"]
-    txn.execute(insert(plan).values(_plan_row(plan_id, is_master=True)))
-    txn.execute(insert(goal_plan).values(_goal_plan_row(plan_id)))
-    return plan_id
-
-
-def test_plan_metadata_includes_all_six_tables() -> None:
+def test_plan_metadata_includes_all_plan_tables() -> None:
     table_names = set(Base.metadata.tables)
     assert table_names >= PLAN_TABLE_NAMES
+    assert CHAIN_TABLE_NAMES.isdisjoint(table_names)
 
 
 def test_plan_metadata_key_columns_present() -> None:
     plan = Base.metadata.tables["plan"]
     task_plan = Base.metadata.tables["task_plan"]
-    chain_item = Base.metadata.tables["goal_child_chain_item"]
 
     assert "is_master" in plan.c
+    assert "goal_is_critical" in plan.c
+    assert "goal_sort_order" in plan.c
+    assert plan.c.goal_is_critical.nullable is True
+    assert plan.c.goal_sort_order.nullable is True
     assert "duration_minutes" in task_plan.c
-    assert "child_plan_id" in chain_item.c
 
 
 def test_plan_metadata_foreign_keys() -> None:
@@ -177,9 +147,6 @@ def test_plan_metadata_foreign_keys() -> None:
         ("task_plan", "plan_id"): "plan.plan_id",
         ("repetition_plan", "plan_id"): "plan.plan_id",
         ("repetition_plan", "template_root_id"): "plan.plan_id",
-        ("goal_child_chain", "parent_goal_id"): "goal_plan.plan_id",
-        ("goal_child_chain_item", "chain_id"): "goal_child_chain.goal_child_chain_id",
-        ("goal_child_chain_item", "child_plan_id"): "plan.plan_id",
     }
 
     for (table_name, column_name), target in expected_fks.items():
@@ -200,8 +167,6 @@ def test_plan_metadata_partial_unique_master_index() -> None:
 def test_plan_metadata_table_check_constraints() -> None:
     expected = {
         "plan": "ck_plan_master_is_goal",
-        "goal_child_chain": "ck_goal_child_chain_sort_order_non_negative",
-        "goal_child_chain_item": "ck_goal_child_chain_item_position_non_negative",
         "repetition_plan": "ck_repetition_plan_repeat_interval_positive",
         "task_plan": "ck_task_plan_duration_positive",
     }
@@ -214,6 +179,13 @@ def test_plan_metadata_table_check_constraints() -> None:
             if isinstance(constraint, CheckConstraint)
         }
         assert check_name in check_names
+
+    plan_checks = {
+        constraint.name
+        for constraint in Base.metadata.tables["plan"].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert "ck_plan_goal_child_ordering_fields_paired" in plan_checks
 
     repetition_plan_checks = {
         constraint.name
@@ -233,17 +205,6 @@ def test_plan_metadata_table_check_constraints() -> None:
     assert "ck_task_plan_task_chunk_matches_divisibility" in task_plan_checks
     assert "ck_task_plan_minimum_chunk_positive_when_set" in task_plan_checks
     assert "ck_task_plan_minimum_chunk_lte_duration" in task_plan_checks
-
-
-def test_plan_metadata_unique_child_plan_id_constraint() -> None:
-    table = Base.metadata.tables["goal_child_chain_item"]
-    child_plan_uniques = [
-        constraint
-        for constraint in table.constraints
-        if isinstance(constraint, UniqueConstraint)
-        and {column.name for column in constraint.columns} == {"child_plan_id"}
-    ]
-    assert len(child_plan_uniques) == 1
 
 
 def test_plan_metadata_timezone_aware_datetime_columns() -> None:
@@ -283,85 +244,6 @@ def test_check_master_must_be_goal(plan_schema_engine: Engine) -> None:
             txn.execute(
                 insert(plan).values(
                     _plan_row(uuid.uuid4(), plan_kind=PlanKind.TASK, is_master=True)
-                )
-            )
-    finally:
-        session.close()
-
-
-@pytest.mark.integration
-def test_check_sort_order_non_negative(plan_schema_engine: Engine) -> None:
-    chain = Base.metadata.tables["goal_child_chain"]
-    session = create_session_factory(plan_schema_engine)()
-
-    try:
-        with transaction(session) as txn:
-            parent_id = _insert_master_goal(txn)
-
-        with pytest.raises(IntegrityError), transaction(session) as txn:
-            txn.execute(
-                insert(chain).values(_goal_child_chain_row(uuid.uuid4(), parent_id, sort_order=-1))
-            )
-    finally:
-        session.close()
-
-
-@pytest.mark.integration
-def test_check_position_non_negative(plan_schema_engine: Engine) -> None:
-    plan = Base.metadata.tables["plan"]
-    chain = Base.metadata.tables["goal_child_chain"]
-    chain_item = Base.metadata.tables["goal_child_chain_item"]
-    session = create_session_factory(plan_schema_engine)()
-
-    parent_id = uuid.uuid4()
-    child_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
-
-    try:
-        with transaction(session) as txn:
-            txn.execute(insert(plan).values(_plan_row(parent_id, is_master=True)))
-            txn.execute(insert(Base.metadata.tables["goal_plan"]).values(_goal_plan_row(parent_id)))
-            txn.execute(insert(plan).values(_plan_row(child_id, plan_kind=PlanKind.TASK)))
-            txn.execute(insert(chain).values(_goal_child_chain_row(chain_id, parent_id)))
-
-        with pytest.raises(IntegrityError), transaction(session) as txn:
-            txn.execute(
-                insert(chain_item).values(
-                    _goal_child_chain_item_row(uuid.uuid4(), chain_id, child_id, position=-1)
-                )
-            )
-    finally:
-        session.close()
-
-
-@pytest.mark.integration
-def test_unique_child_plan_id_in_chain_items(plan_schema_engine: Engine) -> None:
-    plan = Base.metadata.tables["plan"]
-    goal_plan = Base.metadata.tables["goal_plan"]
-    chain = Base.metadata.tables["goal_child_chain"]
-    chain_item = Base.metadata.tables["goal_child_chain_item"]
-    session = create_session_factory(plan_schema_engine)()
-
-    parent_id = uuid.uuid4()
-    child_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
-
-    try:
-        with transaction(session) as txn:
-            txn.execute(insert(plan).values(_plan_row(parent_id, is_master=True)))
-            txn.execute(insert(goal_plan).values(_goal_plan_row(parent_id)))
-            txn.execute(insert(plan).values(_plan_row(child_id, plan_kind=PlanKind.TASK)))
-            txn.execute(insert(chain).values(_goal_child_chain_row(chain_id, parent_id)))
-            txn.execute(
-                insert(chain_item).values(
-                    _goal_child_chain_item_row(uuid.uuid4(), chain_id, child_id)
-                )
-            )
-
-        with pytest.raises(IntegrityError), transaction(session) as txn:
-            txn.execute(
-                insert(chain_item).values(
-                    _goal_child_chain_item_row(uuid.uuid4(), chain_id, child_id, position=1)
                 )
             )
     finally:
@@ -449,59 +331,6 @@ def test_foreign_key_invalid_repetition_template_root_id_rejected(
         with pytest.raises(IntegrityError), transaction(session) as txn:
             txn.execute(
                 insert(repetition_plan).values(_repetition_plan_row(repetition_id, uuid.uuid4()))
-            )
-    finally:
-        session.close()
-
-
-@pytest.mark.integration
-def test_foreign_key_invalid_chain_parent_goal_id_rejected(plan_schema_engine: Engine) -> None:
-    chain = Base.metadata.tables["goal_child_chain"]
-    session = create_session_factory(plan_schema_engine)()
-
-    try:
-        with pytest.raises(IntegrityError), transaction(session) as txn:
-            txn.execute(insert(chain).values(_goal_child_chain_row(uuid.uuid4(), uuid.uuid4())))
-    finally:
-        session.close()
-
-
-@pytest.mark.integration
-def test_foreign_key_invalid_chain_item_chain_id_rejected(plan_schema_engine: Engine) -> None:
-    chain_item = Base.metadata.tables["goal_child_chain_item"]
-    session = create_session_factory(plan_schema_engine)()
-
-    try:
-        with pytest.raises(IntegrityError), transaction(session) as txn:
-            txn.execute(
-                insert(chain_item).values(
-                    _goal_child_chain_item_row(uuid.uuid4(), uuid.uuid4(), uuid.uuid4())
-                )
-            )
-    finally:
-        session.close()
-
-
-@pytest.mark.integration
-def test_foreign_key_invalid_chain_item_child_plan_id_rejected(
-    plan_schema_engine: Engine,
-) -> None:
-    chain = Base.metadata.tables["goal_child_chain"]
-    chain_item = Base.metadata.tables["goal_child_chain_item"]
-    session = create_session_factory(plan_schema_engine)()
-
-    chain_id = uuid.uuid4()
-
-    try:
-        with transaction(session) as txn:
-            parent_id = _insert_master_goal(txn)
-            txn.execute(insert(chain).values(_goal_child_chain_row(chain_id, parent_id)))
-
-        with pytest.raises(IntegrityError), transaction(session) as txn:
-            txn.execute(
-                insert(chain_item).values(
-                    _goal_child_chain_item_row(uuid.uuid4(), chain_id, uuid.uuid4())
-                )
             )
     finally:
         session.close()
@@ -669,6 +498,256 @@ def test_check_task_plan_minimum_chunk_lte_duration(plan_schema_engine: Engine) 
 
 
 @pytest.mark.integration
+def test_plan_goal_ordering_fields_null_by_default(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    session = create_session_factory(plan_schema_engine)()
+    plan_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(plan_id, is_master=True)))
+            txn.execute(insert(Base.metadata.tables["goal_plan"]).values(_goal_plan_row(plan_id)))
+
+        loaded = session.get(Plan, plan_id)
+        assert loaded is not None
+        assert loaded.goal_is_critical is None
+        assert loaded.goal_sort_order is None
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_plan_goal_ordering_fields_accepts_paired_values(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    session = create_session_factory(plan_schema_engine)()
+    master_id = uuid.uuid4()
+    child_id = uuid.uuid4()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(master_id, is_master=True)))
+            txn.execute(insert(Base.metadata.tables["goal_plan"]).values(_goal_plan_row(master_id)))
+            txn.execute(
+                insert(plan).values(
+                    _plan_row(
+                        child_id,
+                        plan_kind=PlanKind.TASK,
+                        parent_id=master_id,
+                        goal_is_critical=False,
+                        goal_sort_order=0,
+                    )
+                )
+            )
+
+        loaded = session.get(Plan, child_id)
+        assert loaded is not None
+        assert loaded.goal_is_critical is False
+        assert loaded.goal_sort_order == 0
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_goal_ordering_fields_must_be_paired(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    session = create_session_factory(plan_schema_engine)()
+
+    try:
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _plan_row(uuid.uuid4(), is_master=True)
+            row["goal_is_critical"] = True
+            row["goal_sort_order"] = None
+            txn.execute(insert(plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_check_goal_sort_order_non_negative(plan_schema_engine: Engine) -> None:
+    plan = Base.metadata.tables["plan"]
+    session = create_session_factory(plan_schema_engine)()
+
+    try:
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _plan_row(uuid.uuid4(), is_master=True)
+            row["goal_is_critical"] = False
+            row["goal_sort_order"] = -1
+            txn.execute(insert(plan).values(row))
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
+def test_alembic_upgrade_plan_has_goal_ordering_columns(
+    temp_sqlite_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_create_engine_for_url = create_engine_for_url
+
+    def _engine_for_migration(url: str = temp_sqlite_url) -> Engine:
+        del url
+        return real_create_engine_for_url(temp_sqlite_url)
+
+    monkeypatch.setattr(
+        "calendar_backend.db.session.create_engine_for_url",
+        _engine_for_migration,
+    )
+
+    command.upgrade(Config("alembic.ini"), "head")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("plan")}
+    finally:
+        engine.dispose()
+
+    assert "goal_is_critical" in columns
+    assert "goal_sort_order" in columns
+
+
+@pytest.mark.integration
+def test_alembic_upgrade_enforces_goal_ordering_fields_paired(
+    temp_sqlite_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_create_engine_for_url = create_engine_for_url
+
+    def _engine_for_migration(url: str = temp_sqlite_url) -> Engine:
+        del url
+        return real_create_engine_for_url(temp_sqlite_url)
+
+    monkeypatch.setattr(
+        "calendar_backend.db.session.create_engine_for_url",
+        _engine_for_migration,
+    )
+
+    command.upgrade(Config("alembic.ini"), "head")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    session = create_session_factory(engine)()
+    plan = Base.metadata.tables["plan"]
+
+    try:
+        with pytest.raises(IntegrityError), transaction(session) as txn:
+            row = _plan_row(uuid.uuid4(), is_master=True)
+            row["goal_is_critical"] = True
+            row["goal_sort_order"] = None
+            txn.execute(insert(plan).values(row))
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_alembic_upgrade_copies_chain_ordering_to_flat_fields(
+    temp_sqlite_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_create_engine_for_url = create_engine_for_url
+
+    def _engine_for_migration(url: str = temp_sqlite_url) -> Engine:
+        del url
+        return real_create_engine_for_url(temp_sqlite_url)
+
+    monkeypatch.setattr(
+        "calendar_backend.db.session.create_engine_for_url",
+        _engine_for_migration,
+    )
+
+    command.upgrade(Config("alembic.ini"), "7111454550a7")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    session = create_session_factory(engine)()
+    plan = Base.metadata.tables["plan"]
+    goal_plan = Base.metadata.tables["goal_plan"]
+    task_plan = Base.metadata.tables["task_plan"]
+    master_id = uuid.uuid4()
+    child_id = uuid.uuid4()
+    chain_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    now = _now()
+
+    try:
+        with transaction(session) as txn:
+            txn.execute(insert(plan).values(_plan_row(master_id, is_master=True)))
+            txn.execute(insert(goal_plan).values(_goal_plan_row(master_id)))
+            txn.execute(
+                insert(plan).values(
+                    _plan_row(child_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+                )
+            )
+            txn.execute(insert(task_plan).values(_task_plan_row(child_id)))
+            txn.execute(
+                text(
+                    """
+                    INSERT INTO goal_child_chain (
+                        goal_child_chain_id,
+                        parent_goal_id,
+                        is_critical,
+                        sort_order,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        :chain_id,
+                        :parent_goal_id,
+                        :is_critical,
+                        :sort_order,
+                        :created_at,
+                        :updated_at
+                    )
+                    """
+                ),
+                {
+                    "chain_id": chain_id.hex,
+                    "parent_goal_id": master_id.hex,
+                    "is_critical": False,
+                    "sort_order": 0,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+            txn.execute(
+                text(
+                    """
+                    INSERT INTO goal_child_chain_item (
+                        goal_child_chain_item_id,
+                        chain_id,
+                        child_plan_id,
+                        position
+                    ) VALUES (
+                        :item_id,
+                        :chain_id,
+                        :child_plan_id,
+                        :position
+                    )
+                    """
+                ),
+                {
+                    "item_id": item_id.hex,
+                    "chain_id": chain_id.hex,
+                    "child_plan_id": child_id.hex,
+                    "position": 0,
+                },
+            )
+    finally:
+        session.close()
+        engine.dispose()
+
+    command.upgrade(Config("alembic.ini"), "head")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    session = create_session_factory(engine)()
+    try:
+        loaded = session.get(Plan, child_id)
+        assert loaded is not None
+        assert loaded.goal_is_critical is False
+        assert loaded.goal_sort_order == 0
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.integration
 def test_check_repetition_plan_manual_count_mode_fields(plan_schema_engine: Engine) -> None:
     plan = Base.metadata.tables["plan"]
     repetition_plan = Base.metadata.tables["repetition_plan"]
@@ -717,84 +796,6 @@ def test_check_repetition_plan_date_range_mode_fields(plan_schema_engine: Engine
             row["repeat_mode"] = RepeatMode.DATE_RANGE
             row["manual_count"] = 1
             txn.execute(insert(repetition_plan).values(row))
-    finally:
-        session.close()
-
-
-@pytest.mark.integration
-def test_relationships_navigate_goal_to_chain_item(plan_schema_engine: Engine) -> None:
-    session = create_session_factory(plan_schema_engine)()
-    master_id = uuid.uuid4()
-    child_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
-    item_id = uuid.uuid4()
-    now = _now()
-
-    try:
-        with transaction(session):
-            session.add(
-                Plan(
-                    plan_id=master_id,
-                    plan_kind=PlanKind.GOAL,
-                    name="master",
-                    parent_id=None,
-                    is_master=True,
-                    cloned_from_id=None,
-                    clone_status=CloneStatus.NOT_CLONED,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            session.add(GoalPlan(plan_id=master_id))
-            session.add(
-                Plan(
-                    plan_id=child_id,
-                    plan_kind=PlanKind.TASK,
-                    name="child task",
-                    parent_id=master_id,
-                    is_master=False,
-                    cloned_from_id=None,
-                    clone_status=CloneStatus.NOT_CLONED,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            session.add(
-                TaskPlan(
-                    plan_id=child_id,
-                    duration_minutes=30,
-                    divisible=False,
-                    minimum_chunk_size_minutes=None,
-                    user_completed=False,
-                    completed_at=None,
-                )
-            )
-            session.add(
-                GoalChildChain(
-                    goal_child_chain_id=chain_id,
-                    parent_goal_id=master_id,
-                    is_critical=False,
-                    sort_order=0,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            session.add(
-                GoalChildChainItem(
-                    goal_child_chain_item_id=item_id,
-                    chain_id=chain_id,
-                    child_plan_id=child_id,
-                    position=0,
-                )
-            )
-
-        loaded = session.get(GoalPlan, master_id)
-        assert loaded is not None
-        assert len(loaded.chains) == 1
-        assert loaded.chains[0].goal_child_chain_id == chain_id
-        assert len(loaded.chains[0].items) == 1
-        assert loaded.chains[0].items[0].child_plan.plan_kind == PlanKind.TASK
-        assert loaded.plan.is_master is True
     finally:
         session.close()
 
@@ -952,6 +953,33 @@ def test_alembic_upgrade_creates_plan_tables(
         engine.dispose()
 
     assert table_names >= PLAN_TABLE_NAMES
+
+
+@pytest.mark.integration
+def test_goal_child_chain_tables_absent_after_upgrade(
+    temp_sqlite_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_create_engine_for_url = create_engine_for_url
+
+    def _engine_for_migration(url: str = temp_sqlite_url) -> Engine:
+        del url
+        return real_create_engine_for_url(temp_sqlite_url)
+
+    monkeypatch.setattr(
+        "calendar_backend.db.session.create_engine_for_url",
+        _engine_for_migration,
+    )
+
+    command.upgrade(Config("alembic.ini"), "head")
+
+    engine = create_engine_for_url(temp_sqlite_url)
+    try:
+        table_names = set(inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert CHAIN_TABLE_NAMES.isdisjoint(table_names)
 
 
 @pytest.mark.integration

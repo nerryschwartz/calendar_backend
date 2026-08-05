@@ -3,9 +3,9 @@ description: Project source of truth and implementation boundaries
 alwaysApply: true
 ---
 
-**Precedence:** [`.cursor/repo_conventions.md`](../repo_conventions.md) overrides everything below. Then other `.cursor/rules`, then `docs/cursor_implementation_guide.md` and finalized plans, then the engineering design PDF, then existing code (update code when conventions change).
+**Precedence:** [`.cursor/repo_conventions.md`](../repo_conventions.md) overrides everything below. Then other `.cursor/rules`, then `docs/v2_cursor_implementation_guide.md` and finalized plans, then `docs/v2_engineering_design.md`, then archived V1 guide/PDF, then existing code (update code when conventions change).
 
-The updated calendar_backend V1 engineering design document is the architectural source of truth when no repo convention or guide deviation applies.
+[`docs/v2_engineering_design.md`](../../docs/v2_engineering_design.md) is the architectural source of truth when no repo convention or V2 guide deviation applies.
 
 Project identity:
 - Python service-layer backend named calendar_backend.
@@ -14,15 +14,15 @@ Project identity:
 - ORM models are persistence records, not behavior-heavy domain objects.
 - DTOs/result objects use frozen dataclasses where practical.
 - Scheduling components must be isolated from persistence.
-- V1 prioritizes correctness, readability, deterministic behavior, and explicit invariants.
+- V2 prioritizes correctness, readability, deterministic behavior, and explicit invariants.
 
-Do not implement V1 non-goals unless explicitly asked:
+Do not implement V2 non-goals unless explicitly asked (see V2 design §2):
 - No production HTTP API or mobile frontend.
 - No OS notification scheduler.
 - No external calendar sync.
-- No recurring availability constraints.
+- No recurring availability constraints (beyond repetition instances).
 - No undo/audit/soft-delete/history system.
-- No DAG plan relationships.
 - No orphan active plans.
 - No mutable plan type or plan type conversion.
 - No sub-minute scheduling.
+- No blocks on the user-facing task calendar export.

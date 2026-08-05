@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
@@ -9,15 +10,19 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from calendar_backend.domain.constraints import merge_or_windows
+from calendar_backend.domain.constraints import intersect_time_windows, merge_or_windows
 from calendar_backend.domain.enums import FreeTimeWeekStartDay, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import CalendarRunID, FreeTimeActivityID, PlanID
 from calendar_backend.domain.plan_traversal import (
     collect_descendant_ids,
-    ordered_chains,
+    ordered_goal_children,
     ordered_repetition_instances,
-    sorted_chain_items,
+)
+from calendar_backend.domain.task_families import (
+    DEFAULT_BLOCK_FAMILY,
+    FREE_TIME_BLOCK_FAMILY,
+    BlockPlacementSnapshot,
 )
 from calendar_backend.domain.time import TimeWindow, gaps_in_window
 from calendar_backend.models.free_time import FreeTimeActivity
@@ -47,6 +52,7 @@ class FreeTimeActivityDTO:
     real_fraction: Decimal
     minimum_block_size_minutes: int
     prerequisite_plan_ids: tuple[PlanID, ...]
+    allowed_block_families: tuple[str, ...]
     created_at: datetime
     updated_at: datetime
 
@@ -79,6 +85,265 @@ class FreeTimeAssignmentResult:
 class FreeTimePlanGraph:
     plans_by_id: dict[uuid.UUID, Plan]
     template_subtree_ids: frozenset[uuid.UUID]
+
+
+def effective_activity_block_families(stored: str | None) -> tuple[str, ...]:
+    """Return effective families for assignment; null/empty means free-time + default."""
+    if stored is None or stored.strip() == "":
+        return (FREE_TIME_BLOCK_FAMILY, DEFAULT_BLOCK_FAMILY)
+    parsed = parse_activity_block_families_json(stored)
+    if isinstance(parsed, ServiceMessage):
+        return (FREE_TIME_BLOCK_FAMILY, DEFAULT_BLOCK_FAMILY)
+    return _effective_activity_families_from_stored(parsed)
+
+
+def parse_activity_block_families_json(
+    stored: str | None,
+) -> tuple[str, ...] | ServiceMessage:
+    if stored is None or stored.strip() == "":
+        return ()
+    try:
+        raw = json.loads(stored)
+    except json.JSONDecodeError:
+        return _invalid_activity_families(
+            "allowed_block_families must be a JSON array of strings", stored
+        )
+    if not isinstance(raw, list):
+        return _invalid_activity_families(
+            "allowed_block_families must be a JSON array of strings", stored
+        )
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    error: ServiceMessage | None = None
+    for index, item in enumerate(raw):
+        if not isinstance(item, str):
+            error = _invalid_activity_families(
+                "allowed_block_families entries must be strings",
+                stored,
+                index=index,
+            )
+            break
+        family = item.strip()
+        if not family:
+            error = _invalid_activity_families(
+                "allowed_block_families entries must be non-empty strings",
+                stored,
+                index=index,
+            )
+            break
+        if family not in seen:
+            seen.add(family)
+            normalized.append(family)
+    if error is not None:
+        return error
+    return tuple(
+        sorted(
+            normalized,
+            key=lambda value: (
+                value != FREE_TIME_BLOCK_FAMILY,
+                value != DEFAULT_BLOCK_FAMILY,
+                value,
+            ),
+        )
+    )
+
+
+def _effective_activity_families_from_stored(
+    stored_families: tuple[str, ...],
+) -> tuple[str, ...]:
+    if stored_families == (FREE_TIME_BLOCK_FAMILY,):
+        return (FREE_TIME_BLOCK_FAMILY,)
+    families = list(stored_families)
+    if FREE_TIME_BLOCK_FAMILY not in families:
+        families.append(FREE_TIME_BLOCK_FAMILY)
+    return tuple(
+        sorted(
+            families,
+            key=lambda value: (
+                value != FREE_TIME_BLOCK_FAMILY,
+                value != DEFAULT_BLOCK_FAMILY,
+                value,
+            ),
+        )
+    )
+
+
+def validate_activity_block_families_for_write(
+    families: tuple[str, ...],
+) -> ServiceMessage | None:
+    if not families:
+        return None
+    for index, family in enumerate(families):
+        if not family.strip():
+            return ServiceMessage(
+                code=MessageCode.INVALID_ALLOWED_BLOCK_FAMILIES,
+                message="allowed_block_families entries must be non-empty strings",
+                details={"index": str(index)},
+            )
+    return None
+
+
+def serialize_activity_block_families(families: tuple[str, ...]) -> str | None:
+    validation_error = validate_activity_block_families_for_write(families)
+    if validation_error is not None:
+        raise ValueError(validation_error.message)
+    if not families:
+        return None
+    deduped = tuple(
+        sorted(
+            {family.strip() for family in families},
+            key=lambda value: (
+                value != FREE_TIME_BLOCK_FAMILY,
+                value != DEFAULT_BLOCK_FAMILY,
+                value,
+            ),
+        )
+    )
+    return json.dumps(list(deduped))
+
+
+def combined_gap_blocker_windows(
+    task_blockers: tuple[TimeWindow, ...],
+    block_blockers: tuple[TimeWindow, ...],
+) -> tuple[TimeWindow, ...]:
+    return merge_or_windows(task_blockers + block_blockers)
+
+
+def eligible_free_time_gaps_for_activity(
+    *,
+    run_started_at: datetime,
+    master_horizon_end: datetime,
+    week_start_day: FreeTimeWeekStartDay,
+    local_timezone: str,
+    combined_blockers: tuple[TimeWindow, ...],
+    task_blockers: tuple[TimeWindow, ...],
+    allowed_families: tuple[str, ...],
+    placements: tuple[BlockPlacementSnapshot, ...],
+) -> tuple[FreeTimeGap, ...]:
+    if run_started_at >= master_horizon_end:
+        return ()
+
+    clipped_blockers = merge_or_windows(
+        tuple(
+            TimeWindow(
+                start_time=max(blocker.start_time, run_started_at),
+                end_time=min(blocker.end_time, master_horizon_end),
+            )
+            for blocker in combined_blockers
+            if blocker.start_time < master_horizon_end and blocker.end_time > run_started_at
+        )
+    )
+    clipped_task_blockers = merge_or_windows(
+        tuple(
+            TimeWindow(
+                start_time=max(blocker.start_time, run_started_at),
+                end_time=min(blocker.end_time, master_horizon_end),
+            )
+            for blocker in task_blockers
+            if blocker.start_time < master_horizon_end and blocker.end_time > run_started_at
+        )
+    )
+
+    gaps: list[FreeTimeGap] = []
+    for week_anchor_utc, bucket_start, bucket_end in _week_buckets(
+        run_started_at,
+        master_horizon_end,
+        week_start_day,
+        local_timezone,
+    ):
+        bucket = TimeWindow(start_time=bucket_start, end_time=bucket_end)
+        bucket_blockers = tuple(
+            TimeWindow(
+                start_time=max(blocker.start_time, bucket_start),
+                end_time=min(blocker.end_time, bucket_end),
+            )
+            for blocker in clipped_blockers
+            if blocker.start_time < bucket_end and blocker.end_time > bucket_start
+        )
+        bucket_task_blockers = tuple(
+            TimeWindow(
+                start_time=max(blocker.start_time, bucket_start),
+                end_time=min(blocker.end_time, bucket_end),
+            )
+            for blocker in clipped_task_blockers
+            if blocker.start_time < bucket_end and blocker.end_time > bucket_start
+        )
+        for window in _eligible_regions_in_bucket(
+            bucket,
+            bucket_blockers=bucket_blockers,
+            bucket_task_blockers=bucket_task_blockers,
+            allowed_families=allowed_families,
+            placements=placements,
+        ):
+            gaps.append(
+                FreeTimeGap(
+                    start_time=window.start_time,
+                    end_time=window.end_time,
+                    week_start=week_anchor_utc,
+                )
+            )
+
+    return tuple(sorted(gaps, key=lambda gap: (gap.week_start, gap.start_time, gap.end_time)))
+
+
+def _eligible_regions_in_bucket(
+    bucket: TimeWindow,
+    *,
+    bucket_blockers: tuple[TimeWindow, ...],
+    bucket_task_blockers: tuple[TimeWindow, ...],
+    allowed_families: tuple[str, ...],
+    placements: tuple[BlockPlacementSnapshot, ...],
+) -> tuple[TimeWindow, ...]:
+    regions: list[TimeWindow] = []
+
+    if FREE_TIME_BLOCK_FAMILY in allowed_families:
+        for gap_start, gap_end in gaps_in_window(bucket, bucket_blockers):
+            regions.append(TimeWindow(start_time=gap_start, end_time=gap_end))
+        free_time_placements = tuple(
+            placement.window
+            for placement in placements
+            if placement.family == FREE_TIME_BLOCK_FAMILY
+        )
+        if free_time_placements:
+            regions.extend(
+                intersect_time_windows((bucket,), merge_or_windows(free_time_placements))
+            )
+
+    if DEFAULT_BLOCK_FAMILY in allowed_families:
+        non_default_blockers = tuple(
+            placement.window for placement in placements if placement.family != DEFAULT_BLOCK_FAMILY
+        )
+        default_obstructions = merge_or_windows(non_default_blockers + bucket_task_blockers)
+        for gap_start, gap_end in gaps_in_window(bucket, default_obstructions):
+            regions.append(TimeWindow(start_time=gap_start, end_time=gap_end))
+
+    for family in allowed_families:
+        if family in (DEFAULT_BLOCK_FAMILY, FREE_TIME_BLOCK_FAMILY):
+            continue
+        family_placements = tuple(
+            placement.window for placement in placements if placement.family == family
+        )
+        if family_placements:
+            regions.extend(intersect_time_windows((bucket,), merge_or_windows(family_placements)))
+
+    return merge_or_windows(tuple(regions))
+
+
+def _invalid_activity_families(
+    message: str,
+    stored: str,
+    *,
+    index: int | None = None,
+) -> ServiceMessage:
+    details: dict[str, str] = {"stored": stored}
+    if index is not None:
+        details["index"] = str(index)
+    return ServiceMessage(
+        code=MessageCode.INVALID_ALLOWED_BLOCK_FAMILIES,
+        message=message,
+        details=details,
+    )
 
 
 def free_time_plan_graph_from_plans(plans: tuple[Plan, ...]) -> FreeTimePlanGraph:
@@ -305,13 +570,15 @@ def _goal_is_logically_complete(
     if goal_plan is None:
         return False
 
-    for chain in ordered_chains(goal_plan):
-        if not chain.is_critical:
+    children = tuple(
+        child for child in graph.plans_by_id.values() if child.parent_id == plan.plan_id
+    )
+    for child in ordered_goal_children(plan, children=children):
+        if not child.goal_is_critical:
             continue
-        for item in sorted_chain_items(chain):
-            child_id = PlanID(item.child_plan_id)
-            if not _is_plan_logically_complete(child_id, graph, memo=memo, visiting=visiting):
-                return False
+        child_id = PlanID(child.plan_id)
+        if not _is_plan_logically_complete(child_id, graph, memo=memo, visiting=visiting):
+            return False
     return True
 
 
@@ -349,6 +616,7 @@ def free_time_activity_dto_from_row(activity: FreeTimeActivity) -> FreeTimeActiv
         real_fraction=activity.real_fraction,
         minimum_block_size_minutes=activity.minimum_block_size_minutes,
         prerequisite_plan_ids=prerequisite_plan_ids,
+        allowed_block_families=effective_activity_block_families(activity.allowed_block_families),
         created_at=activity.created_at,
         updated_at=activity.updated_at,
     )
@@ -478,7 +746,7 @@ def _minute_quotas_for_bucket(
     ]
     quotas = {activity_id: int(value) for activity_id, value in exact}
     remainder = bucket_minutes - sum(quotas.values())
-    if remainder <= 0:
+    if remainder <= 0 or len(effective_fractions) <= 1:
         return quotas
 
     remainders = sorted(

@@ -1,9 +1,24 @@
 Build exactly one approved plan slice.
 
+## When called from `/run-v2-implementation` (loop context)
+
+**Apply this section first** when the active command is `/run-v2-implementation`.
+
+Maps to `phase_N_slice_<id>_build`, `phase_N_slice_<id>_pre_alembic`, or `phase_N_slice_<id>_post_alembic`.
+
+**Ignore for loop steps:**
+
+- The **migration-slice gate** and [Migration slice manual workflow](#migration-slice-manual-workflow) below — Alembic preview, manual edit, and continue are separate loop step handlers.
+- **“Stop after this slice and wait for approval.”** — the loop advances via state `complete` after commit; no chat approval.
+
+**Still apply:** slice preflight, implementation, reviews, checks. If the slice is ambiguous, use **`AskQuestion`**, finish the step after the user answers, and continue the Agent batch.
+
+**Defer reporting under loop:** do not post the full slice report (files changed, test catalog, etc.) until the Agent batch ends or a hard failure stops the batch. After each step, at most one silent line in agent notes, then continue to the next loop step.
+
 Before editing:
 - Identify the active finalized plan file in docs/plans/.
 - Identify the exact slice to build.
-- **Migration-slice gate:** If the slice text references [`.cursor/commands/db-revision-preview.md`](db-revision-preview.md) and/or [`.cursor/commands/db-revision-continue.md`](db-revision-continue.md) (including `/db-revision-preview` or `/db-revision-continue`), **do not edit any files**. Output the [Migration slice manual workflow](#migration-slice-manual-workflow) below (tailored to that slice), then stop. Do not run review-validation, review-consistency, or implementation checks — there is no diff.
+- **Migration-slice gate (standalone only — skip under loop context above):** If the slice text references [`.cursor/commands/db-revision-preview.md`](db-revision-preview.md) and/or [`.cursor/commands/db-revision-continue.md`](db-revision-continue.md) (including `/db-revision-preview` or `/db-revision-continue`), **do not edit any files**. Output the [Migration slice manual workflow](#migration-slice-manual-workflow) below (tailored to that slice), then stop. Do not run review-validation, review-consistency, or implementation checks — there is no diff.
 - Run **slice preflight** and report 3–5 bullets before editing (or before the manual-workflow message when the migration-slice gate applies):
   1. Restate the slice objective in one sentence (spirit, not file list).
   2. Read sibling/completed modules for the same pattern (ORM, tests, services).
@@ -64,7 +79,7 @@ Consistency pass rules:
 - If no consistency edits are warranted, say so briefly in the slice report.
 - After consistency edits, run the narrowest relevant checks again when code changed.
 
-Stop after this slice and wait for approval.
+Stop after this slice and wait for approval (standalone `/build-plan-slice` only — skip under loop context above).
 
 ## Migration slice manual workflow
 

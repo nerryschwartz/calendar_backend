@@ -9,8 +9,9 @@ import pytest
 from calendar_backend.domain.constraints import intersect_time_windows
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.ids import GoalChildChainID, PlanID
+from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.resolution import (
+    ResolvedPrecedenceConstraint,
     ResolvedTask,
     ResolveTasksResult,
     build_resolution_indexes,
@@ -22,10 +23,10 @@ from calendar_backend.domain.resolution import (
     validate_resolve_tasks_result,
 )
 from calendar_backend.domain.time import TimeWindow
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as OrmTimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 
 _NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
@@ -156,60 +157,24 @@ def _malformed_user_group(plan_id: uuid.UUID) -> TimeConstraintGroup:
     return group
 
 
-def _attach_chain_item(
-    goal: Plan,
+def _attach_ordered_child(
+    parent: Plan,
+    child: Plan,
     *,
-    child_plan_id: uuid.UUID,
-    position: int,
-    chain_id: uuid.UUID | None = None,
-) -> GoalChildChainID:
-    resolved_chain_id = chain_id or uuid.uuid4()
-    chain = GoalChildChain(
-        goal_child_chain_id=resolved_chain_id,
-        parent_goal_id=goal.plan_id,
-        is_critical=False,
-        sort_order=0,
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
-    chain.items = [
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=resolved_chain_id,
-            child_plan_id=child_plan_id,
-            position=position,
-        )
-    ]
-    assert goal.goal_plan is not None
-    goal.goal_plan.chains = [*goal.goal_plan.chains, chain]
-    return GoalChildChainID(resolved_chain_id)
+    is_critical: bool = False,
+    sort_order: int = 0,
+) -> None:
+    child.parent_id = parent.plan_id
+    child.goal_is_critical = is_critical
+    child.goal_sort_order = sort_order
 
 
-def _attach_chain_items(
-    goal: Plan,
-    child_plan_ids: tuple[uuid.UUID, ...],
-) -> GoalChildChainID:
-    chain_id = uuid.uuid4()
-    chain = GoalChildChain(
-        goal_child_chain_id=chain_id,
-        parent_goal_id=goal.plan_id,
-        is_critical=False,
-        sort_order=0,
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
-    chain.items = [
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=chain_id,
-            child_plan_id=child_plan_id,
-            position=position,
-        )
-        for position, child_plan_id in enumerate(child_plan_ids)
-    ]
-    assert goal.goal_plan is not None
-    goal.goal_plan.chains = [chain]
-    return GoalChildChainID(chain_id)
+def _attach_ordered_children(
+    parent: Plan,
+    specs: tuple[tuple[Plan, bool, int], ...],
+) -> None:
+    for child, is_critical, sort_order in specs:
+        _attach_ordered_child(parent, child, is_critical=is_critical, sort_order=sort_order)
 
 
 def _resolved_task(
@@ -226,12 +191,12 @@ def _resolved_task(
         minimum_chunk_size_minutes=None,
         user_completed=user_completed,
         completed_at=_NOW if user_completed else None,
+        allowed_block_families=("default",),
         effective_time_windows=(),
         constraint_sources=(),
         priority_path=(0,),
         criticality_path=(),
         parent_path=(PlanID(plan_id),),
-        chain_path=(),
         validation_errors=validation_errors,
     )
 
@@ -258,7 +223,7 @@ def _constraint_intersection_graph() -> tuple[Plan, ...]:
 
     task = _plan(task_id, plan_kind=PlanKind.TASK, parent_id=master_id)
     _attach_task(task)
-    _attach_chain_item(master, child_plan_id=task_id, position=0)
+    _attach_ordered_child(master, task, is_critical=False, sort_order=0)
 
     return (master, task)
 
@@ -276,7 +241,7 @@ def _disjoint_constraint_graph() -> tuple[Plan, ...]:
 
     task = _plan(task_id, plan_kind=PlanKind.TASK, parent_id=master_id)
     _attach_task(task)
-    _attach_chain_item(master, child_plan_id=task_id, position=0)
+    _attach_ordered_child(master, task, is_critical=False, sort_order=0)
 
     return (master, task)
 
@@ -293,11 +258,11 @@ def _malformed_ancestor_graph() -> tuple[Plan, ...]:
     goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
     _attach_goal(goal)
     goal.constraint_groups = [_malformed_user_group(goal_id)]
-    _attach_chain_item(master, child_plan_id=goal_id, position=0)
+    _attach_ordered_child(master, goal, is_critical=False, sort_order=0)
 
     task = _plan(task_id, plan_kind=PlanKind.TASK, parent_id=goal_id)
     _attach_task(task)
-    _attach_chain_item(goal, child_plan_id=task_id, position=0)
+    _attach_ordered_child(goal, task, is_critical=False, sort_order=0)
 
     return (master, goal, task)
 
@@ -318,7 +283,14 @@ def _precedence_chain_graph() -> tuple[Plan, ...]:
         _attach_task(task, user_completed=index == 1)
         tasks.append(task)
 
-    _attach_chain_items(master, (task1_id, task2_id, task3_id))
+    _attach_ordered_children(
+        master,
+        (
+            (tasks[0], False, 0),
+            (tasks[1], False, 1),
+            (tasks[2], False, 2),
+        ),
+    )
 
     return (master, *tasks)
 
@@ -328,7 +300,6 @@ def _goal_between_tasks_graph() -> tuple[Plan, ...]:
     goal_id = uuid.uuid4()
     task1_id = uuid.uuid4()
     task2_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
 
     master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
     _attach_goal(master)
@@ -342,9 +313,14 @@ def _goal_between_tasks_graph() -> tuple[Plan, ...]:
     task2 = _plan(task2_id, plan_kind=PlanKind.TASK, parent_id=goal_id)
     _attach_task(task2)
 
-    _attach_chain_item(master, child_plan_id=task1_id, position=0, chain_id=chain_id)
-    _attach_chain_item(master, child_plan_id=goal_id, position=1, chain_id=chain_id)
-    _attach_chain_item(goal, child_plan_id=task2_id, position=0)
+    _attach_ordered_children(
+        master,
+        (
+            (task1, False, 0),
+            (goal, False, 1),
+        ),
+    )
+    _attach_ordered_child(goal, task2, is_critical=False, sort_order=0)
 
     return (master, goal, task1, task2)
 
@@ -363,7 +339,7 @@ def _repetition_template_task_graph() -> tuple[Plan, ...]:
 
     repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION, parent_id=master_id)
     repetition_plan = _attach_repetition(repetition, template_id, generated_at=_utc(10, 0))
-    _attach_chain_item(master, child_plan_id=repetition_id, position=0)
+    _attach_ordered_child(master, repetition, is_critical=False, sort_order=0)
 
     template = _plan(
         template_id,
@@ -381,7 +357,7 @@ def _repetition_template_task_graph() -> tuple[Plan, ...]:
         name="template task",
     )
     _attach_task(template_task)
-    _attach_chain_item(template, child_plan_id=template_task_id, position=0)
+    _attach_ordered_child(template, template_task, is_critical=False, sort_order=0)
 
     clone = _plan(
         clone_id,
@@ -403,7 +379,7 @@ def _repetition_template_task_graph() -> tuple[Plan, ...]:
         name="clone task",
     )
     _attach_task(clone_task)
-    _attach_chain_item(clone, child_plan_id=clone_task_id, position=0)
+    _attach_ordered_child(clone, clone_task, is_critical=False, sort_order=0)
 
     repetition_plan.instances = [
         RepetitionInstance(
@@ -444,7 +420,7 @@ def _repetition_two_instance_graph() -> tuple[Plan, ...]:
         generated_at=_utc(10, 0),
     )
     repetition.repetition_plan = repetition_plan
-    _attach_chain_item(master, child_plan_id=repetition_id, position=0)
+    _attach_ordered_child(master, repetition, is_critical=False, sort_order=0)
 
     template = _plan(
         template_id,
@@ -523,7 +499,7 @@ def _repetition_same_bucket_sort_order_graph() -> tuple[Plan, ...]:
         generated_at=_utc(10, 0),
     )
     repetition.repetition_plan = repetition_plan
-    _attach_chain_item(master, child_plan_id=repetition_id, position=0)
+    _attach_ordered_child(master, repetition, is_critical=False, sort_order=0)
 
     template = _plan(
         template_id,
@@ -709,34 +685,174 @@ def test_validate_resolve_tasks_result_rejects_mismatched_bucket_membership() ->
         validate_resolve_tasks_result(result)
 
 
-def test_collect_precedence_constraints_links_incomplete_chain_predecessor() -> None:
+def test_collect_precedence_constraints_returns_empty_without_plan_prerequisites() -> None:
     plans = _precedence_chain_graph()
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
-    task_ids = {task.plan_id for task in tasks}
 
-    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
 
-    assert any(
-        edge.predecessor_task_id in task_ids
-        and edge.successor_task_id in task_ids
-        and edge.reason == "goal_child_chain_order"
-        for edge in edges
+    assert edges == ()
+
+
+def test_collect_precedence_constraints_emits_plan_prerequisite_leaf_edges() -> None:
+    master_id = uuid.uuid4()
+    prereq_task_id = uuid.uuid4()
+    dependent_task_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id, _utc(8, 0), _utc(18, 0))]
+
+    prereq_task = _plan(
+        prereq_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="prereq",
+    )
+    _attach_task(prereq_task, user_completed=False)
+    dependent_task = _plan(
+        dependent_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="dependent",
+    )
+    _attach_task(dependent_task, user_completed=False)
+
+    _attach_ordered_children(
+        master,
+        (
+            (prereq_task, False, 0),
+            (dependent_task, False, 1),
+        ),
+    )
+
+    dependent_task.prerequisite_edges = [
+        PlanPrerequisite(plan_id=dependent_task_id, prerequisite_plan_id=prereq_task_id)
+    ]
+
+    plans = (master, prereq_task, dependent_task)
+    tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
+    indexes = build_resolution_indexes(plans)
+
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
+
+    assert edges == (
+        ResolvedPrecedenceConstraint(
+            predecessor_task_id=PlanID(prereq_task_id),
+            successor_task_id=PlanID(dependent_task_id),
+            reason="plan_prerequisite",
+        ),
     )
 
 
 def test_collect_precedence_constraints_skips_completed_predecessor() -> None:
-    plans = _precedence_chain_graph()
+    master_id = uuid.uuid4()
+    prereq_task_id = uuid.uuid4()
+    dependent_task_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id, _utc(8, 0), _utc(18, 0))]
+
+    prereq_task = _plan(
+        prereq_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="prereq",
+    )
+    _attach_task(prereq_task, user_completed=True)
+    dependent_task = _plan(
+        dependent_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="dependent",
+    )
+    _attach_task(dependent_task, user_completed=False)
+
+    _attach_ordered_children(
+        master,
+        (
+            (prereq_task, False, 0),
+            (dependent_task, False, 1),
+        ),
+    )
+    dependent_task.prerequisite_edges = [
+        PlanPrerequisite(plan_id=dependent_task_id, prerequisite_plan_id=prereq_task_id)
+    ]
+
+    plans = (master, prereq_task, dependent_task)
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
-    task_by_name = {task.name: task.plan_id for task in tasks}
 
-    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
 
-    assert (
-        PlanID(task_by_name["task-0"]),
-        PlanID(task_by_name["task-2"]),
-    ) in {(edge.predecessor_task_id, edge.successor_task_id) for edge in edges}
+    assert edges == ()
+
+
+def test_collect_precedence_constraints_emits_immediate_precedence_edge() -> None:
+    master_id = uuid.uuid4()
+    predecessor_task_id = uuid.uuid4()
+    successor_task_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id, _utc(8, 0), _utc(18, 0))]
+
+    predecessor_task = _plan(
+        predecessor_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="predecessor",
+    )
+    _attach_task(predecessor_task, user_completed=False)
+    successor_task = _plan(
+        successor_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master_id,
+        name="successor",
+    )
+    _attach_task(successor_task, user_completed=False)
+    assert successor_task.task_plan is not None
+    successor_task.task_plan.immediate_prerequisite_plan_id = predecessor_task_id
+
+    _attach_ordered_children(
+        master,
+        (
+            (predecessor_task, False, 0),
+            (successor_task, False, 1),
+        ),
+    )
+
+    plans = (master, predecessor_task, successor_task)
+    tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
+    indexes = build_resolution_indexes(plans)
+
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
+
+    assert edges == (
+        ResolvedPrecedenceConstraint(
+            predecessor_task_id=PlanID(predecessor_task_id),
+            successor_task_id=PlanID(successor_task_id),
+            reason="immediate_prerequisite",
+        ),
+    )
 
 
 def test_collect_precedence_constraints_ignores_non_task_chain_items() -> None:
@@ -744,7 +860,11 @@ def test_collect_precedence_constraints_ignores_non_task_chain_items() -> None:
     tasks = _all_tasks(resolve_tasks_from_graph(_RUN_AT, plans))
     indexes = build_resolution_indexes(plans)
 
-    edges = collect_precedence_constraints(tuple(tasks), plans, indexes)
+    edges = collect_precedence_constraints(
+        plans,
+        indexes,
+        invalid_leaf_ids=frozenset(task.plan_id for task in tasks if is_invalid_task(task)),
+    )
 
     assert edges == ()
 

@@ -11,7 +11,6 @@ from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind,
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import GoalCreatePayload, RepetitionCreatePayload
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
@@ -37,34 +36,18 @@ def _bootstrap_master_with_horizon(session: Session) -> PlanID:
     return master.value.plan_id
 
 
-def _add_chain_item(
+def _set_goal_child_ordering(
     txn: Session,
     *,
-    parent_goal_id: uuid.UUID,
     child_plan_id: uuid.UUID,
-    chain_id: uuid.UUID | None = None,
-    position: int = 0,
-) -> uuid.UUID:
-    resolved_chain_id = chain_id or uuid.uuid4()
-    txn.add(
-        GoalChildChain(
-            goal_child_chain_id=resolved_chain_id,
-            parent_goal_id=parent_goal_id,
-            is_critical=False,
-            sort_order=0,
-            created_at=RUN_AT,
-            updated_at=RUN_AT,
-        )
-    )
-    txn.add(
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=resolved_chain_id,
-            child_plan_id=child_plan_id,
-            position=position,
-        )
-    )
-    return resolved_chain_id
+    is_critical: bool = False,
+    sort_order: int = 0,
+) -> None:
+    plan = txn.get(Plan, child_plan_id)
+    assert plan is not None
+    plan.goal_is_critical = is_critical
+    plan.goal_sort_order = sort_order
+    txn.flush()
 
 
 def _seed_valid_repetition_create_shape(
@@ -84,12 +67,13 @@ def _seed_valid_repetition_create_shape(
             is_master=False,
             cloned_from_id=None,
             clone_status=CloneStatus.NOT_CLONED,
+            goal_is_critical=False,
+            goal_sort_order=0,
             created_at=RUN_AT,
             updated_at=RUN_AT,
         )
     )
     txn.add(GoalPlan(plan_id=goal_id))
-    _add_chain_item(txn, parent_goal_id=master_id, child_plan_id=goal_id)
 
     txn.add(
         Plan(
@@ -100,6 +84,8 @@ def _seed_valid_repetition_create_shape(
             is_master=False,
             cloned_from_id=None,
             clone_status=CloneStatus.NOT_CLONED,
+            goal_is_critical=False,
+            goal_sort_order=0,
             created_at=RUN_AT,
             updated_at=RUN_AT,
         )
@@ -131,7 +117,7 @@ def _seed_valid_repetition_create_shape(
             generated_at=None,
         )
     )
-    _add_chain_item(txn, parent_goal_id=goal_id, child_plan_id=repetition_id)
+    _set_goal_child_ordering(txn, child_plan_id=repetition_id)
 
     txn.flush()
     return repetition_id
@@ -270,13 +256,12 @@ def test_validate_master_tree_reports_empty_user_group(service_db_session: Sessi
 
 
 @pytest.mark.integration
-def test_validate_master_tree_reports_misaligned_chain_child(
+def test_validate_master_tree_reports_goal_child_missing_ordering(
     service_db_session: Session,
 ) -> None:
     master_id = _bootstrap_master_with_horizon(service_db_session)
     goal_id = uuid.uuid4()
     child_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
     with transaction(service_db_session) as txn:
         txn.add(
             Plan(
@@ -287,6 +272,8 @@ def test_validate_master_tree_reports_misaligned_chain_child(
                 is_master=False,
                 cloned_from_id=None,
                 clone_status=CloneStatus.NOT_CLONED,
+                goal_is_critical=False,
+                goal_sort_order=0,
                 created_at=RUN_AT,
                 updated_at=RUN_AT,
             )
@@ -297,7 +284,7 @@ def test_validate_master_tree_reports_misaligned_chain_child(
                 plan_id=child_id,
                 plan_kind=PlanKind.TASK,
                 name="child",
-                parent_id=master_id,
+                parent_id=goal_id,
                 is_master=False,
                 cloned_from_id=None,
                 clone_status=CloneStatus.NOT_CLONED,
@@ -315,24 +302,6 @@ def test_validate_master_tree_reports_misaligned_chain_child(
                 completed_at=None,
             )
         )
-        txn.add(
-            GoalChildChain(
-                goal_child_chain_id=chain_id,
-                parent_goal_id=goal_id,
-                is_critical=False,
-                sort_order=0,
-                created_at=RUN_AT,
-                updated_at=RUN_AT,
-            )
-        )
-        txn.add(
-            GoalChildChainItem(
-                goal_child_chain_item_id=uuid.uuid4(),
-                chain_id=chain_id,
-                child_plan_id=child_id,
-                position=0,
-            )
-        )
         txn.flush()
 
     result = PlanTreeInvariantService(service_db_session).validate_master_tree()
@@ -340,20 +309,19 @@ def test_validate_master_tree_reports_misaligned_chain_child(
     assert not result.success
     assert any(
         error.code == MessageCode.CHAIN_INVARIANT_VIOLATION
-        and "direct child of the parent goal" in error.message
+        and "goal ordering fields set" in error.message
         for error in result.errors
     )
 
 
 @pytest.mark.integration
-def test_validate_master_tree_reports_non_dense_chain_position(
+def test_validate_master_tree_reports_non_dense_goal_sort_order(
     service_db_session: Session,
 ) -> None:
     master_id = _bootstrap_master_with_horizon(service_db_session)
     goal_id = uuid.uuid4()
     child_a_id = uuid.uuid4()
     child_b_id = uuid.uuid4()
-    chain_id = uuid.uuid4()
     with transaction(service_db_session) as txn:
         txn.add(
             Plan(
@@ -364,12 +332,14 @@ def test_validate_master_tree_reports_non_dense_chain_position(
                 is_master=False,
                 cloned_from_id=None,
                 clone_status=CloneStatus.NOT_CLONED,
+                goal_is_critical=False,
+                goal_sort_order=0,
                 created_at=RUN_AT,
                 updated_at=RUN_AT,
             )
         )
         txn.add(GoalPlan(plan_id=goal_id))
-        for child_id in (child_a_id, child_b_id):
+        for child_id, sort_order in ((child_a_id, 0), (child_b_id, 2)):
             txn.add(
                 Plan(
                     plan_id=child_id,
@@ -379,6 +349,8 @@ def test_validate_master_tree_reports_non_dense_chain_position(
                     is_master=False,
                     cloned_from_id=None,
                     clone_status=CloneStatus.NOT_CLONED,
+                    goal_is_critical=False,
+                    goal_sort_order=sort_order,
                     created_at=RUN_AT,
                     updated_at=RUN_AT,
                 )
@@ -393,32 +365,6 @@ def test_validate_master_tree_reports_non_dense_chain_position(
                     completed_at=None,
                 )
             )
-        txn.add(
-            GoalChildChain(
-                goal_child_chain_id=chain_id,
-                parent_goal_id=goal_id,
-                is_critical=False,
-                sort_order=0,
-                created_at=RUN_AT,
-                updated_at=RUN_AT,
-            )
-        )
-        txn.add(
-            GoalChildChainItem(
-                goal_child_chain_item_id=uuid.uuid4(),
-                chain_id=chain_id,
-                child_plan_id=child_a_id,
-                position=0,
-            )
-        )
-        txn.add(
-            GoalChildChainItem(
-                goal_child_chain_item_id=uuid.uuid4(),
-                chain_id=chain_id,
-                child_plan_id=child_b_id,
-                position=2,
-            )
-        )
         txn.flush()
 
     result = PlanTreeInvariantService(service_db_session).validate_master_tree()
@@ -426,7 +372,7 @@ def test_validate_master_tree_reports_non_dense_chain_position(
     assert not result.success
     assert any(
         error.code == MessageCode.CHAIN_INVARIANT_VIOLATION
-        and "positions must be dense" in error.message
+        and "sort_order must be dense" in error.message
         for error in result.errors
     )
 

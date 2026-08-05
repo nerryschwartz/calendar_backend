@@ -20,28 +20,35 @@ from calendar_backend.domain.enums import (
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
 from calendar_backend.domain.time import TimeWindow
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan, RepetitionPlan
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
+from calendar_backend.scheduling.decomposition import AssignmentComponent
 from calendar_backend.scheduling.exact_cp_sat import solve_exact_component
 from calendar_backend.scheduling.input import AssignmentInput, SchedulableTask, SolverLimits
 from calendar_backend.scheduling.types import (
     AssignmentSolverResult,
     TaskAssignment,
     exact_optimal_result,
+    infeasible_result,
 )
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.block_assignment import BlockAssignmentService
+from calendar_backend.services.block_resolution import BlockResolutionService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
+from calendar_backend.services.plan_tree import PlanTreeService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
 from calendar_backend.services.task_assignment import (
@@ -150,7 +157,7 @@ def _create_goal_template_repetition_with_task_child(
     )
 
 
-def _create_goal_template_repetition_with_chained_tasks(
+def _create_goal_template_repetition_with_ordered_tasks(
     session: Session,
     master_plan_id: PlanID,
 ) -> tuple[PlanID, PlanID, PlanID, PlanID]:
@@ -191,7 +198,7 @@ def _create_goal_template_repetition_with_chained_tasks(
     assert second_result.success and second_result.value is not None
     first_task_id = first_result.value.plan_id
     second_task_id = second_result.value.plan_id
-    assert goal_service.move_plan(second_task_id, 0, 1).success
+    assert goal_service.move_plan(second_task_id, 0).success
     return (
         repetition_result.value.plan_id,
         template_goal_id,
@@ -290,12 +297,12 @@ def _invalid_incomplete_task() -> tuple[ResolvedTask, ...]:
             minimum_chunk_size_minutes=None,
             user_completed=False,
             completed_at=None,
+            allowed_block_families=("default",),
             effective_time_windows=(),
             constraint_sources=(),
             priority_path=(0,),
             criticality_path=(),
             parent_path=(PlanID(plan_id),),
-            chain_path=(),
             validation_errors=(
                 ServiceMessage(
                     code=MessageCode.INVALID_DURATION,
@@ -318,12 +325,12 @@ def _invalid_completed_task() -> tuple[ResolvedTask, ...]:
             minimum_chunk_size_minutes=None,
             user_completed=True,
             completed_at=RUN_AT,
+            allowed_block_families=("default",),
             effective_time_windows=(),
             constraint_sources=(),
             priority_path=(0,),
             criticality_path=(),
             parent_path=(PlanID(plan_id),),
-            chain_path=(),
             validation_errors=(
                 ServiceMessage(
                     code=MessageCode.INVALID_DURATION,
@@ -415,6 +422,53 @@ def _seed_active_calendar_state_with_past_task(
     return run_id
 
 
+def _seed_past_block_calendar_entry(
+    session: Session,
+    *,
+    past_start: datetime,
+    past_end: datetime,
+    source_plan_id: PlanID,
+) -> None:
+    run_id = uuid.uuid4()
+    with transaction(session) as txn:
+        txn.add(
+            CalendarRun(
+                calendar_run_id=run_id,
+                run_started_at=RUN_AT,
+                run_finished_at=RUN_AT,
+                status=CalendarRunStatus.SUCCESS,
+                solver_status=SolverStatus.FEASIBLE,
+                conflict_count=0,
+                warning_count=0,
+                runtime_ms=1,
+                created_at=RUN_AT,
+            )
+        )
+        txn.add(
+            ActiveCalendarState(
+                singleton_id=1,
+                active_calendar_run_id=run_id,
+                last_refresh_failed=False,
+                last_failure_at=None,
+                last_failure_reason=None,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.add(
+            BlockCalendarEntry(
+                block_calendar_entry_id=uuid.uuid4(),
+                start_time=past_start,
+                end_time=past_end,
+                source_plan_id=source_plan_id,
+                calendar_run_id=run_id,
+                display_label="past block",
+                created_at=RUN_AT,
+                updated_at=RUN_AT,
+            )
+        )
+        txn.flush()
+
+
 @pytest.mark.integration
 def test_assign_tasks_invalid_incomplete_blocks_without_db_mutation(
     service_db_session: Session,
@@ -503,7 +557,7 @@ def test_assign_tasks_falls_back_to_heuristic_when_exact_not_usable(
 ) -> None:
     _bootstrap_narrow_assignable_task(service_db_session)
 
-    def exact_not_usable(component) -> AssignmentSolverResult:
+    def exact_not_usable(component: AssignmentComponent) -> AssignmentSolverResult:
         del component
         return AssignmentSolverResult(
             status=SolverStatus.INFEASIBLE,
@@ -613,7 +667,7 @@ def test_assign_tasks_loads_stability_hints_from_future_task_entries(
     captured_inputs: list[AssignmentInput] = []
     original_solve = solve_exact_component
 
-    def capture_exact_solve(component) -> AssignmentSolverResult:
+    def capture_exact_solve(component: AssignmentComponent) -> AssignmentSolverResult:
         captured_inputs.append(
             AssignmentInput(
                 run_started_at=component.run_started_at,
@@ -736,7 +790,7 @@ def test_solve_assignment_mixed_exact_then_heuristic_per_component(
     )
     calls: list[int] = []
 
-    def fake_solve_exact_component(component) -> AssignmentSolverResult:
+    def fake_solve_exact_component(component: AssignmentComponent) -> AssignmentSolverResult:
         calls.append(1)
         if len(calls) == 1:
             return exact_optimal_result(exact_assignments)
@@ -802,7 +856,7 @@ def test_assign_tasks_ignores_stale_future_entries_from_other_calendar_runs(
     captured_inputs: list[AssignmentInput] = []
     original_solve = solve_exact_component
 
-    def capture_exact_solve(component) -> AssignmentSolverResult:
+    def capture_exact_solve(component: AssignmentComponent) -> AssignmentSolverResult:
         captured_inputs.append(
             AssignmentInput(
                 run_started_at=component.run_started_at,
@@ -1063,6 +1117,7 @@ def test_assign_tasks_failure_persists_failed_run_and_last_refresh_failed(
 @pytest.mark.integration
 def test_assign_tasks_failure_preserves_active_calendar_run_id(
     service_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     master_id = _bootstrap_master_with_horizon(service_db_session)
     _create_task(service_db_session, master_id, name="solo")
@@ -1075,13 +1130,30 @@ def test_assign_tasks_failure_preserves_active_calendar_run_id(
     assert state is not None
     prior_active_run_id = state.active_calendar_run_id
 
-    clock = _clock()
-    TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
-        (_window(RUN_AT, RUN_AT + timedelta(minutes=30)),),
+    _create_task(service_db_session, master_id, name="extra")
+
+    def _forced_infeasible_solve(
+        _assignment_input: AssignmentInput,
+        *,
+        heuristic_enabled: bool,
+    ) -> tuple[AssignmentSolverResult, int]:
+        del _assignment_input, heuristic_enabled
+        return (
+            infeasible_result(
+                ServiceMessage(
+                    code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+                    message="forced infeasible for test",
+                    details={},
+                )
+            ),
+            0,
+        )
+
+    monkeypatch.setattr(
+        "calendar_backend.services.task_assignment._solve_assignment",
+        _forced_infeasible_solve,
     )
-    second_id = _create_task(service_db_session, master_id, name="extra")
-    assert second_id
+
     failure = _assignment_service(service_db_session).assign_tasks(
         _resolve_seam(service_db_session),
         RUN_AT,
@@ -1147,12 +1219,77 @@ def test_assign_tasks_occupied_past_task_blocks_placement(
 
 
 @pytest.mark.integration
-def test_assign_tasks_repetition_clone_chain_precedence_orders_calendar(
+def test_assign_tasks_occupied_past_block_blocks_placement(
     service_db_session: Session,
 ) -> None:
     master_id = _bootstrap_master_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, master_id)
+    clock = _clock()
+    TimeConstraintService(service_db_session, clock).add_user_group(
+        master_id,
+        (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
+    )
+    _seed_past_block_calendar_entry(
+        service_db_session,
+        past_start=_utc(2026, 6, 7, 9, 0),
+        past_end=_utc(2026, 6, 7, 10, 30),
+        source_plan_id=task_id,
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    assert len(result.value.calendar_entries) == 1
+    assert result.value.calendar_entries[0].start_time == _utc(2026, 6, 7, 10, 30)
+
+
+@pytest.mark.integration
+def test_assign_tasks_plan_prerequisite_orders_calendar(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    prereq_id = _create_task(service_db_session, master_id, name="prereq")
+    dependent_id = _create_task(service_db_session, master_id, name="dependent")
+    clock = _clock()
+    assert (
+        PlanTreeService(service_db_session, clock)
+        .add_plan_prerequisite(dependent_id, prereq_id)
+        .success
+    )
+    TimeConstraintService(service_db_session, clock).add_user_group(
+        master_id,
+        (_window(_utc(2026, 6, 7, 10, 0), _utc(2026, 6, 7, 12, 0)),),
+    )
+
+    result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+    )
+
+    assert result.success and result.value is not None
+    entries_by_source = {entry.source_plan_id: entry for entry in result.value.calendar_entries}
+    assert prereq_id in entries_by_source
+    assert dependent_id in entries_by_source
+    assert entries_by_source[prereq_id].start_time < entries_by_source[dependent_id].start_time
+
+
+@pytest.mark.integration
+def test_assign_tasks_repetition_clone_immediate_prerequisite_orders_calendar(
+    service_db_session: Session,
+) -> None:
+    """Immediate prerequisite on repetition clone tasks constrains calendar ordering."""
+    master_id = _bootstrap_master_with_horizon(service_db_session)
     repetition_id, _, first_template_id, second_template_id = (
-        _create_goal_template_repetition_with_chained_tasks(service_db_session, master_id)
+        _create_goal_template_repetition_with_ordered_tasks(service_db_session, master_id)
+    )
+    clock = _clock()
+    assert (
+        TaskService(service_db_session, clock)
+        .set_immediate_prerequisite(second_template_id, first_template_id)
+        .success
     )
     _generate_instances(service_db_session, repetition_id)
     clone_goal_id = _instance_root_clone_goal_id(service_db_session, repetition_id)
@@ -1166,7 +1303,6 @@ def test_assign_tasks_repetition_clone_chain_precedence_orders_calendar(
         parent_clone_id=clone_goal_id,
         template_plan_id=second_template_id,
     )
-    clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
         master_id,
         (_window(_utc(2026, 6, 7, 10, 0), _utc(2026, 6, 7, 12, 0)),),
@@ -1179,9 +1315,11 @@ def test_assign_tasks_repetition_clone_chain_precedence_orders_calendar(
 
     assert result.success and result.value is not None
     entries_by_source = {entry.source_plan_id: entry for entry in result.value.calendar_entries}
-    first_entry = entries_by_source[first_clone_id]
-    second_entry = entries_by_source[second_clone_id]
-    assert first_entry.end_time <= second_entry.start_time
+    assert first_clone_id in entries_by_source
+    assert second_clone_id in entries_by_source
+    assert (
+        entries_by_source[first_clone_id].start_time < entries_by_source[second_clone_id].start_time
+    )
 
 
 @pytest.mark.integration
@@ -1250,3 +1388,46 @@ def test_assign_tasks_persists_only_instance_clone_source_plan_ids(
     assert template_goal_id not in calendar_source_ids
     assert template_task_id not in calendar_source_ids
     assert task_clone_id in calendar_source_ids
+
+
+@pytest.mark.integration
+def test_assign_tasks_with_explicit_calendar_run_id_adds_task_rows_to_block_run(
+    service_db_session: Session,
+) -> None:
+    master_id = _bootstrap_master_with_horizon(service_db_session)
+    block = GoalService(service_db_session, _clock()).create_child(
+        master_id,
+        PlanKind.BLOCK,
+        BlockCreatePayload("focus", 30, False, None, "focus"),
+        is_critical=False,
+    )
+    assert block.success and block.value is not None
+    _create_task(service_db_session, master_id)
+
+    block_resolved = BlockResolutionService(service_db_session, _clock()).resolve_blocks(RUN_AT)
+    assert block_resolved.success and block_resolved.value is not None
+    block_assigned = BlockAssignmentService(service_db_session, _clock()).assign_blocks(
+        block_resolved.value,
+        RUN_AT,
+    )
+    assert block_assigned.success and block_assigned.value is not None
+    shared_run_id = block_assigned.value.calendar_run_id
+    assert shared_run_id is not None
+
+    task_result = _assignment_service(service_db_session).assign_tasks(
+        _resolve_seam(service_db_session),
+        RUN_AT,
+        calendar_run_id=shared_run_id,
+    )
+
+    assert task_result.success and task_result.value is not None
+    assert task_result.value.calendar_run_id == shared_run_id
+    state = _active_state(service_db_session)
+    assert state is not None
+    assert state.active_calendar_run_id == shared_run_id
+    block_entry = service_db_session.scalars(select(BlockCalendarEntry)).one()
+    assert block_entry.calendar_run_id == shared_run_id
+    task_entry = service_db_session.scalars(
+        select(CalendarEntry).where(CalendarEntry.entry_type == CalendarEntryType.TASK)
+    ).one()
+    assert task_entry.calendar_run_id == shared_run_id

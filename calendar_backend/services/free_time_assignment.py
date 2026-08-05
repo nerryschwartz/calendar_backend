@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
@@ -17,24 +17,36 @@ from calendar_backend.domain.assignment import (
     sorted_free_time_calendar_insert_specs,
     sqlite_utc,
 )
+from calendar_backend.domain.block_assignment import (
+    block_placements_from_block_calendar_entries,
+    occupied_intervals_from_block_calendar_entries,
+)
 from calendar_backend.domain.dtos import AppSettingsDTO
-from calendar_backend.domain.enums import CalendarEntryType
+from calendar_backend.domain.enums import CalendarEntryType, FreeTimeWeekStartDay
 from calendar_backend.domain.errors import MessageCode, ServiceMessage, ServiceTransactionAborted
 from calendar_backend.domain.free_time import (
     FreeTimeActivityDTO,
     FreeTimeAssignmentResult,
     FreeTimeCalendarEntryInsertSpec,
-    FreeTimeGap,
     assign_free_time_to_gaps,
     blocked_activity_ids,
+    combined_gap_blocker_windows,
     compute_effective_fractions,
-    discover_free_time_gaps,
+    eligible_free_time_gaps_for_activity,
     free_time_activity_dto_from_row,
     free_time_plan_graph_from_plans,
 )
-from calendar_backend.domain.ids import CalendarEntryID, CalendarRunID, FreeTimeActivityID, new_id
+from calendar_backend.domain.ids import (
+    CalendarEntryID,
+    CalendarRunID,
+    FreeTimeActivityID,
+    PlanID,
+    new_id,
+)
 from calendar_backend.domain.results import ServiceResult, fail, ok
-from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.domain.task_families import BlockPlacementSnapshot
+from calendar_backend.domain.time import Clock, SystemClock, TimeWindow
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.models.runs import ActiveCalendarState
 from calendar_backend.services.app_settings import AppSettingsService
@@ -77,11 +89,26 @@ class FreeTimeAssignmentService:
         except ServiceTransactionAborted as exc:
             return fail(*exc.errors)
 
-        insert_specs = assign_free_time_to_gaps(
-            gaps=loaded.gaps,
-            effective_fractions=loaded.effective_fractions,
-            activities_by_id=loaded.activities_by_id,
-        )
+        insert_specs: list[FreeTimeCalendarEntryInsertSpec] = []
+        for activity_id, fraction in loaded.effective_fractions:
+            activity = loaded.activities_by_id[activity_id]
+            activity_gaps = eligible_free_time_gaps_for_activity(
+                run_started_at=run_started_at,
+                master_horizon_end=loaded.master_horizon_end,
+                week_start_day=loaded.week_start_day,
+                local_timezone=loaded.local_timezone,
+                combined_blockers=loaded.combined_blockers,
+                task_blockers=loaded.task_blockers,
+                allowed_families=activity.allowed_block_families,
+                placements=loaded.placements,
+            )
+            insert_specs.extend(
+                assign_free_time_to_gaps(
+                    gaps=activity_gaps,
+                    effective_fractions=((activity_id, fraction),),
+                    activities_by_id={activity_id: activity},
+                )
+            )
         runtime_ms = int((time.perf_counter() - started) * 1000)
 
         with transaction(self._session) as txn:
@@ -90,7 +117,7 @@ class FreeTimeAssignmentService:
                 self._clock,
                 run_started_at=run_started_at,
                 active_calendar_run_id=loaded.active_calendar_run_id,
-                insert_specs=insert_specs,
+                insert_specs=tuple(insert_specs),
                 runtime_ms=runtime_ms,
             )
         return ok(result)
@@ -100,8 +127,13 @@ class FreeTimeAssignmentService:
 class _AssignmentInputs:
     active_calendar_run_id: CalendarRunID
     effective_fractions: tuple[tuple[FreeTimeActivityID, Decimal], ...]
-    gaps: tuple[FreeTimeGap, ...]
     activities_by_id: dict[FreeTimeActivityID, FreeTimeActivityDTO]
+    combined_blockers: tuple[TimeWindow, ...]
+    task_blockers: tuple[TimeWindow, ...]
+    placements: tuple[BlockPlacementSnapshot, ...]
+    master_horizon_end: datetime
+    week_start_day: FreeTimeWeekStartDay
+    local_timezone: str
 
 
 def _load_assignment_inputs(
@@ -134,6 +166,7 @@ def _load_assignment_inputs(
             )
         )
     master_horizon_end = sqlite_utc(horizon_end_raw)
+    active_calendar_run_id = CalendarRunID(state.active_calendar_run_id)
 
     activities = load_all_activities(session)
     activity_dtos = tuple(free_time_activity_dto_from_row(activity) for activity in activities)
@@ -144,28 +177,87 @@ def _load_assignment_inputs(
     blocked = blocked_activity_ids(activity_dtos, graph)
     effective_fractions = compute_effective_fractions(activity_dtos, blocked)
 
-    calendar_entries = tuple(
-        session.scalars(
-            select(CalendarEntry).where(CalendarEntry.entry_type == CalendarEntryType.TASK)
-        ).all()
+    task_entries = _load_task_calendar_entries(
+        session,
+        run_started_at=run_started_at,
+        active_calendar_run_id=active_calendar_run_id,
+    )
+    block_entries = _load_block_calendar_entries(
+        session,
+        run_started_at=run_started_at,
+        active_calendar_run_id=active_calendar_run_id,
     )
     task_blockers = future_task_blocker_intervals_from_calendar_entries(
-        calendar_entries,
+        task_entries,
         run_started_at,
     )
-    gaps = discover_free_time_gaps(
-        run_started_at=run_started_at,
-        master_horizon_end=master_horizon_end,
+    block_occupied = occupied_intervals_from_block_calendar_entries(
+        block_entries,
+        run_started_at,
+        active_calendar_run_id=active_calendar_run_id,
+    )
+    block_blockers = tuple(
+        TimeWindow(start_time=interval.start_time, end_time=interval.end_time)
+        for interval in block_occupied
+    )
+    combined_blockers = combined_gap_blocker_windows(task_blockers, block_blockers)
+    block_family_by_plan_id = {
+        PlanID(plan.plan_id): plan.block_plan.block_family
+        for plan in plans
+        if plan.block_plan is not None
+    }
+    placements = block_placements_from_block_calendar_entries(
+        block_entries,
+        block_family_by_plan_id=block_family_by_plan_id,
+    )
+
+    return _AssignmentInputs(
+        active_calendar_run_id=active_calendar_run_id,
+        effective_fractions=effective_fractions,
+        activities_by_id=activities_by_id,
+        combined_blockers=combined_blockers,
         task_blockers=task_blockers,
+        placements=placements,
+        master_horizon_end=master_horizon_end,
         week_start_day=settings.free_time_week_start_day,
         local_timezone=settings.local_timezone,
     )
 
-    return _AssignmentInputs(
-        active_calendar_run_id=CalendarRunID(state.active_calendar_run_id),
-        effective_fractions=effective_fractions,
-        gaps=gaps,
-        activities_by_id=activities_by_id,
+
+def _load_task_calendar_entries(
+    session: Session,
+    *,
+    run_started_at: datetime,
+    active_calendar_run_id: CalendarRunID,
+) -> tuple[CalendarEntry, ...]:
+    return tuple(
+        session.scalars(
+            select(CalendarEntry).where(
+                CalendarEntry.entry_type == CalendarEntryType.TASK,
+                or_(
+                    CalendarEntry.start_time < run_started_at,
+                    CalendarEntry.calendar_run_id == active_calendar_run_id,
+                ),
+            )
+        ).all()
+    )
+
+
+def _load_block_calendar_entries(
+    session: Session,
+    *,
+    run_started_at: datetime,
+    active_calendar_run_id: CalendarRunID,
+) -> tuple[BlockCalendarEntry, ...]:
+    return tuple(
+        session.scalars(
+            select(BlockCalendarEntry).where(
+                or_(
+                    BlockCalendarEntry.start_time < run_started_at,
+                    BlockCalendarEntry.calendar_run_id == active_calendar_run_id,
+                ),
+            )
+        ).all()
     )
 
 

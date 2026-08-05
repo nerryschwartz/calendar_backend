@@ -10,18 +10,25 @@ from datetime import datetime
 from calendar_backend.domain.constraints import intersect_time_windows, merge_or_windows
 from calendar_backend.domain.enums import ConstraintKind, PlanKind
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
-from calendar_backend.domain.ids import GoalChildChainID, PlanID, TimeConstraintGroupID
+from calendar_backend.domain.ids import PlanID, TimeConstraintGroupID
 from calendar_backend.domain.plan_traversal import (
     collect_descendant_ids,
-    ordered_chains,
+    ordered_goal_children,
     ordered_repetition_instances,
-    sorted_chain_items,
+)
+from calendar_backend.domain.prerequisites import (
+    expand_immediate_precedence,
+    expand_plan_prerequisite_precedence,
+    leaf_task_ids_in_subtree,
+)
+from calendar_backend.domain.task_families import (
+    BlockPlacementSnapshot,
+    effective_allowed_block_families,
+    narrow_task_effective_windows,
 )
 from calendar_backend.domain.time import TimeWindow, validate_time_window
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import Plan
-
-ChainPathStep = tuple[GoalChildChainID, int]
 
 
 @dataclass(frozen=True)
@@ -40,12 +47,12 @@ class ResolvedTask:
     minimum_chunk_size_minutes: int | None
     user_completed: bool
     completed_at: datetime | None
+    allowed_block_families: tuple[str, ...]
     effective_time_windows: tuple[TimeWindow, ...]
     constraint_sources: tuple[ConstraintSource, ...]
     priority_path: tuple[int, ...]
     criticality_path: tuple[bool, ...]
     parent_path: tuple[PlanID, ...]
-    chain_path: tuple[ChainPathStep, ...]
     validation_errors: tuple[ServiceMessage, ...]
 
 
@@ -53,7 +60,6 @@ class ResolvedTask:
 class ResolvedPrecedenceConstraint:
     predecessor_task_id: PlanID
     successor_task_id: PlanID
-    source_chain_id: GoalChildChainID
     reason: str
 
 
@@ -214,69 +220,163 @@ def _apply_effective_constraints(
     return enriched
 
 
-def collect_precedence_constraints(
-    tasks: tuple[ResolvedTask, ...],
+def _allowed_families_for_task(plan_id: PlanID, indexes: ResolutionIndexes) -> tuple[str, ...]:
+    plan = indexes.plans_by_id.get(plan_id)
+    if plan is None or plan.task_plan is None:
+        return effective_allowed_block_families(None)
+    return effective_allowed_block_families(plan.task_plan.allowed_block_families)
+
+
+def _apply_allowed_families_and_narrowing(
+    tasks: list[ResolvedTask],
+    indexes: ResolutionIndexes,
+    block_placements: tuple[BlockPlacementSnapshot, ...],
+) -> list[ResolvedTask]:
+    enriched: list[ResolvedTask] = []
+    for task in tasks:
+        allowed_families = _allowed_families_for_task(task.plan_id, indexes)
+        if block_placements:
+            narrowed = narrow_task_effective_windows(
+                task.effective_time_windows,
+                allowed_families,
+                block_placements,
+            )
+            validation_errors = list(task.validation_errors)
+            if not validation_errors and not task.user_completed and not narrowed:
+                validation_errors.append(
+                    ServiceMessage(
+                        code=MessageCode.NO_VALID_WINDOW_FOR_TASK,
+                        message="Task has no effective time windows after family narrowing",
+                        details={"plan_id": str(task.plan_id)},
+                    )
+                )
+            enriched.append(
+                replace(
+                    task,
+                    allowed_block_families=allowed_families,
+                    effective_time_windows=narrowed,
+                    validation_errors=tuple(validation_errors),
+                )
+            )
+        else:
+            enriched.append(
+                replace(
+                    task,
+                    allowed_block_families=allowed_families,
+                )
+            )
+    return enriched
+
+
+def graph_leaf_completion_sets(
+    *,
     plans: tuple[Plan, ...],
     indexes: ResolutionIndexes,
+    invalid_leaf_ids: frozenset[PlanID],
+) -> tuple[frozenset[PlanID], frozenset[PlanID]]:
+    """Incomplete and completed schedulable leaf IDs under the master tree."""
+    leaf_ids = leaf_task_ids_in_subtree(
+        indexes.master_plan_id,
+        plans_by_id=indexes.plans_by_id,
+        template_subtree_ids=indexes.template_subtree_ids,
+    )
+    incomplete: set[PlanID] = set()
+    completed: set[PlanID] = set()
+    for leaf_id in leaf_ids:
+        if leaf_id in invalid_leaf_ids:
+            continue
+        plan = indexes.plans_by_id.get(leaf_id)
+        if plan is None:
+            continue
+        if plan.plan_kind == PlanKind.TASK:
+            if plan.task_plan is None:
+                continue
+            if plan.task_plan.user_completed:
+                completed.add(leaf_id)
+            else:
+                incomplete.add(leaf_id)
+        elif plan.plan_kind == PlanKind.BLOCK:
+            if plan.block_plan is None:
+                continue
+            if plan.block_plan.user_completed:
+                completed.add(leaf_id)
+            else:
+                incomplete.add(leaf_id)
+    return frozenset(incomplete), frozenset(completed)
+
+
+def collect_precedence_constraints(
+    plans: tuple[Plan, ...],
+    indexes: ResolutionIndexes,
+    *,
+    invalid_leaf_ids: frozenset[PlanID],
 ) -> tuple[ResolvedPrecedenceConstraint, ...]:
-    task_by_id = {task.plan_id: task for task in tasks}
-    edges: list[ResolvedPrecedenceConstraint] = []
+    incomplete_leaf_ids, completed_leaf_ids = graph_leaf_completion_sets(
+        plans=plans,
+        indexes=indexes,
+        invalid_leaf_ids=invalid_leaf_ids,
+    )
 
-    for plan in plans:
-        if plan.plan_id in indexes.template_subtree_ids:
-            continue
-        if plan.goal_plan is None:
-            continue
+    plan_edges = expand_plan_prerequisite_precedence(
+        plans=plans,
+        plans_by_id=indexes.plans_by_id,
+        template_subtree_ids=indexes.template_subtree_ids,
+        incomplete_leaf_ids=incomplete_leaf_ids,
+        completed_leaf_ids=completed_leaf_ids,
+    )
+    immediate_edges = expand_immediate_precedence(
+        plans=plans,
+        incomplete_leaf_ids=incomplete_leaf_ids,
+        completed_leaf_ids=completed_leaf_ids,
+    )
 
-        for chain in plan.goal_plan.chains:
-            incomplete_predecessor: PlanID | None = None
-            for item in sorted_chain_items(chain):
-                successor_id = PlanID(item.child_plan_id)
-                successor = task_by_id.get(successor_id)
-                if successor is None:
-                    continue
-
-                if incomplete_predecessor is not None:
-                    edges.append(
-                        ResolvedPrecedenceConstraint(
-                            predecessor_task_id=incomplete_predecessor,
-                            successor_task_id=successor_id,
-                            source_chain_id=GoalChildChainID(chain.goal_child_chain_id),
-                            reason="goal_child_chain_order",
-                        )
-                    )
-
-                if not successor.user_completed:
-                    incomplete_predecessor = successor_id
-
-    edges.sort(
-        key=lambda edge: (
-            str(edge.source_chain_id),
-            str(edge.successor_task_id),
-            str(edge.predecessor_task_id),
+    combined: list[ResolvedPrecedenceConstraint] = []
+    for predecessor_task_id, successor_task_id, reason in plan_edges + immediate_edges:
+        combined.append(
+            ResolvedPrecedenceConstraint(
+                predecessor_task_id=predecessor_task_id,
+                successor_task_id=successor_task_id,
+                reason=reason,
+            )
+        )
+    return tuple(
+        sorted(
+            combined,
+            key=lambda edge: (
+                str(edge.predecessor_task_id),
+                str(edge.successor_task_id),
+                edge.reason,
+            ),
         )
     )
-    return tuple(edges)
 
 
 def resolve_tasks_from_graph(
     run_started_at: datetime,
     plans: tuple[Plan, ...],
+    *,
+    block_placements: tuple[BlockPlacementSnapshot, ...] = (),
 ) -> ResolveTasksResult:
     indexes = build_resolution_indexes(plans)
     collector = _TaskCollector(indexes=indexes)
-    collector.traverse_goal_chains(
+    collector.traverse_goal_children(
         indexes.master_plan_id,
         parent_path=(indexes.master_plan_id,),
         criticality_path=(),
-        chain_path=(),
         inherited_errors=(),
     )
     enriched_tasks = _apply_effective_constraints(collector.tasks, indexes)
+    enriched_tasks = _apply_allowed_families_and_narrowing(
+        enriched_tasks,
+        indexes,
+        block_placements,
+    )
     precedence_constraints = collect_precedence_constraints(
-        tuple(enriched_tasks),
         plans,
         indexes,
+        invalid_leaf_ids=frozenset(
+            task.plan_id for task in enriched_tasks if is_invalid_task(task)
+        ),
     )
     (
         valid_incomplete,
@@ -370,11 +470,17 @@ def _partition_resolved_tasks(
     )
 
 
+def _ordered_children_for_goal(indexes: ResolutionIndexes, goal: Plan) -> tuple[Plan, ...]:
+    children = tuple(
+        child for child in indexes.plans_by_id.values() if child.parent_id == goal.plan_id
+    )
+    return ordered_goal_children(goal, children=children)
+
+
 @dataclass(frozen=True)
 class _WalkContext:
     parent_path: tuple[PlanID, ...]
     criticality_path: tuple[bool, ...]
-    chain_path: tuple[ChainPathStep, ...]
     inherited_errors: tuple[ServiceMessage, ...]
     priority_path: tuple[int, ...]
 
@@ -385,13 +491,12 @@ class _TaskCollector:
     tasks: list[ResolvedTask] = field(default_factory=lambda: [])
     _priority_counter: int = 0
 
-    def traverse_goal_chains(
+    def traverse_goal_children(
         self,
         goal_id: PlanID,
         *,
         parent_path: tuple[PlanID, ...],
         criticality_path: tuple[bool, ...],
-        chain_path: tuple[ChainPathStep, ...],
         inherited_errors: tuple[ServiceMessage, ...],
         priority_path: tuple[int, ...] = (),
     ) -> None:
@@ -402,40 +507,31 @@ class _TaskCollector:
         goal_errors = constraint_errors_for_plan(plan)
         subtree_errors = inherited_errors + goal_errors
 
-        for chain in ordered_chains(plan.goal_plan):
-            for item in sorted_chain_items(chain):
-                child_id = PlanID(item.child_plan_id)
-                if child_id in self.indexes.template_subtree_ids:
-                    continue
-                child = self.indexes.plans_by_id.get(item.child_plan_id)
-                if child is None:
-                    continue
+        for child in _ordered_children_for_goal(self.indexes, plan):
+            child_id = PlanID(child.plan_id)
+            if child_id in self.indexes.template_subtree_ids:
+                continue
 
-                step_chain_path = (
-                    *chain_path,
-                    (GoalChildChainID(chain.goal_child_chain_id), item.position),
-                )
-                step_criticality = (*criticality_path, chain.is_critical)
-                child_parent_path = (*parent_path, child_id)
-                step_priority = (*priority_path, self._priority_counter)
-                self._priority_counter += 1
+            assert child.goal_is_critical is not None
+            step_criticality = (*criticality_path, child.goal_is_critical)
+            child_parent_path = (*parent_path, child_id)
+            step_priority = (*priority_path, self._priority_counter)
+            self._priority_counter += 1
 
-                child_context = _WalkContext(
-                    parent_path=child_parent_path,
-                    criticality_path=step_criticality,
-                    chain_path=step_chain_path,
-                    inherited_errors=subtree_errors,
-                    priority_path=step_priority,
-                )
-                self._visit_chain_child(child, child_context)
+            child_context = _WalkContext(
+                parent_path=child_parent_path,
+                criticality_path=step_criticality,
+                inherited_errors=subtree_errors,
+                priority_path=step_priority,
+            )
+            self._visit_goal_child(child, child_context)
 
-    def _visit_chain_child(self, plan: Plan, context: _WalkContext) -> None:
+    def _visit_goal_child(self, plan: Plan, context: _WalkContext) -> None:
         if plan.plan_kind == PlanKind.GOAL:
-            self.traverse_goal_chains(
+            self.traverse_goal_children(
                 PlanID(plan.plan_id),
                 parent_path=context.parent_path,
                 criticality_path=context.criticality_path,
-                chain_path=context.chain_path,
                 inherited_errors=context.inherited_errors,
                 priority_path=context.priority_path,
             )
@@ -465,7 +561,6 @@ class _TaskCollector:
             instance_context = _WalkContext(
                 parent_path=(*context.parent_path, root_id),
                 criticality_path=(*context.criticality_path, instance.is_critical),
-                chain_path=context.chain_path,
                 inherited_errors=context.inherited_errors,
                 priority_path=instance_priority,
             )
@@ -476,11 +571,10 @@ class _TaskCollector:
             return
 
         if plan.plan_kind == PlanKind.GOAL:
-            self.traverse_goal_chains(
+            self.traverse_goal_children(
                 PlanID(plan.plan_id),
                 parent_path=context.parent_path,
                 criticality_path=context.criticality_path,
-                chain_path=context.chain_path,
                 inherited_errors=context.inherited_errors,
                 priority_path=context.priority_path,
             )
@@ -521,12 +615,14 @@ class _TaskCollector:
                 minimum_chunk_size_minutes=task_plan.minimum_chunk_size_minutes,
                 user_completed=task_plan.user_completed,
                 completed_at=task_plan.completed_at,
+                allowed_block_families=effective_allowed_block_families(
+                    task_plan.allowed_block_families
+                ),
                 effective_time_windows=(),
                 constraint_sources=(),
                 priority_path=context.priority_path,
                 criticality_path=context.criticality_path,
                 parent_path=context.parent_path,
-                chain_path=context.chain_path,
                 validation_errors=tuple(validation_errors),
             )
         )

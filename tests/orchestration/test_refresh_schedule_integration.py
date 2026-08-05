@@ -107,12 +107,13 @@ def test_refresh_schedule_invalid_incomplete_blocks_before_assignment(
     assert not result.success
     assert result.errors[0].code == MessageCode.INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT
     assert result.value is not None
+    assert result.value.resolved_blocks is not None
     assert result.value.resolved is not None
     assert len(result.value.resolved.invalid_incomplete) == 1
     assert result.value.assignment is None
     assert result.value.free_time is None
     assert oh.calendar_entry_count(service_db_session) == entries_before
-    assert oh.calendar_run_count(service_db_session) == runs_before
+    assert oh.calendar_run_count(service_db_session) == runs_before + 1
 
 
 @pytest.mark.integration
@@ -575,5 +576,60 @@ def test_refresh_schedule_repetition_refresh_failure_aborts_before_assignment(
 
     assert not result.success
     assert result.value is None
+    assert oh.calendar_entry_count(service_db_session) == entries_before
+    assert oh.calendar_run_count(service_db_session) == runs_before
+
+
+@pytest.mark.integration
+def test_refresh_schedule_v2_happy_path_uses_single_calendar_run(
+    service_db_session: Session,
+) -> None:
+    master_id = oh.bootstrap_master_with_horizon(service_db_session)
+    oh.create_block(service_db_session, master_id)
+    task_id = oh.create_task(service_db_session, master_id)
+    TimeConstraintService(service_db_session, oh.clock()).add_user_group(
+        master_id,
+        (oh.window(oh.RUN_AT, oh.RUN_AT + timedelta(hours=2)),),
+    )
+    oh.create_enabled_activity(service_db_session)
+
+    result = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
+
+    assert result.success and result.value is not None
+    assert result.value.resolved_blocks is not None
+    assert result.value.block_assignment is not None
+    assert result.value.assignment is not None
+    assert result.value.free_time is not None
+    shared_run_id = result.value.block_assignment.calendar_run_id
+    assert shared_run_id == result.value.assignment.calendar_run_id
+    state = oh.active_state(service_db_session)
+    assert state is not None
+    assert state.active_calendar_run_id == shared_run_id
+    assert oh.future_task_entry_count(service_db_session, task_id) == 1
+    assert oh.block_calendar_entry_count(service_db_session) == 1
+
+
+@pytest.mark.integration
+def test_refresh_schedule_prerequisite_preflight_failure_without_calendar_mutation(
+    service_db_session: Session,
+) -> None:
+    oh.bootstrap_assignable_task(service_db_session)
+    entries_before, runs_before = oh.entries_and_runs_before(service_db_session)
+
+    with patch(
+        "calendar_backend.orchestration.refresh_schedule.validate_prerequisite_clones_for_refresh",
+        return_value=ServiceMessage(
+            code=MessageCode.PREREQUISITE_CLONES_NOT_GENERATED,
+            message="missing prerequisite clones",
+            details={"missing_prerequisite_plan_ids": "test"},
+        ),
+    ):
+        result = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
+
+    assert not result.success
+    assert result.errors[0].code == MessageCode.PREREQUISITE_CLONES_NOT_GENERATED
+    assert result.value is not None
+    assert result.value.resolved_blocks is not None
+    assert result.value.block_assignment is None
     assert oh.calendar_entry_count(service_db_session) == entries_before
     assert oh.calendar_run_count(service_db_session) == runs_before

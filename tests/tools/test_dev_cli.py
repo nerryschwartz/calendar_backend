@@ -6,6 +6,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from calendar_backend.domain.block_assignment import BlockAssignmentResult
+from calendar_backend.domain.block_resolution import ResolveBlocksResult
+from calendar_backend.domain.enums import SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.orchestration import RefreshScheduleResult
 from calendar_backend.domain.resolution import ResolveTasksResult
@@ -20,8 +23,6 @@ APPLICATION_TABLES = (
     "goal_plan",
     "task_plan",
     "repetition_plan",
-    "goal_child_chain",
-    "goal_child_chain_item",
     "time_constraint_group",
     "time_window",
     "repetition_instance",
@@ -216,6 +217,23 @@ def test_dispatch_refresh_schedule_stubbed_success(
         return ok(
             RefreshScheduleResult(
                 run_started_at=run_started_at,
+                resolved_blocks=ResolveBlocksResult(
+                    run_started_at=run_started_at,
+                    valid_incomplete=(),
+                    valid_completed=(),
+                    invalid_incomplete=(),
+                    invalid_completed=(),
+                    precedence_constraints=(),
+                    warnings=(),
+                ),
+                block_assignment=BlockAssignmentResult(
+                    run_started_at=run_started_at,
+                    optimization_status=SolverStatus.FEASIBLE,
+                    block_calendar_entries=(),
+                    warnings=(),
+                    runtime_ms=1,
+                    calendar_run_id=None,
+                ),
                 resolved=ResolveTasksResult(
                     run_started_at=run_started_at,
                     valid_incomplete=(),
@@ -239,6 +257,8 @@ def test_dispatch_refresh_schedule_stubbed_success(
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "success: True" in captured.out
+    assert "block_valid_incomplete_count: 0" in captured.out
+    assert "block_entry_count: 0" in captured.out
     assert "valid_incomplete_count: 0" in captured.out
 
 
@@ -269,6 +289,8 @@ def test_dispatch_refresh_schedule_stubbed_failure(
             ),
             _value=RefreshScheduleResult(
                 run_started_at=run_started_at,
+                resolved_blocks=None,
+                block_assignment=None,
                 resolved=resolved,
                 assignment=None,
                 free_time=None,

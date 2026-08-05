@@ -1,5 +1,7 @@
 # calendar_backend Cursor Implementation Guide
 
+> **Superseded for V2 work.** Use [`docs/v2_cursor_implementation_guide.md`](v2_cursor_implementation_guide.md) and [`docs/v2_engineering_design.md`](v2_engineering_design.md). This file remains as the historical V1 build record.
+
 Recommended location in the repo: `docs/cursor_implementation_guide.md`
 
 This guide is for implementing `calendar_backend` from a brand-new empty repo using Cursor, WSL, `uv`, SQLAlchemy, Alembic, pytest, ruff, and pyright.

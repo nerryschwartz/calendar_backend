@@ -15,10 +15,10 @@ from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.models.blocks import BlockCalendarEntry
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChain
 from calendar_backend.models.constraints import TimeConstraintGroup
-from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan
+from calendar_backend.models.plans import Plan, RepetitionPlan
 
 
 class DeletionPreviewService:
@@ -65,21 +65,25 @@ def preview_delete_in_txn(
             )
         )
 
-    plans, calendar_entries = _load_deletion_graph(txn)
-    preview = build_deletion_preview(operation, plans, calendar_entries)
+    plans, calendar_entries, block_calendar_entries = _load_deletion_graph(txn)
+    preview = build_deletion_preview(
+        operation,
+        plans,
+        calendar_entries,
+        block_calendar_entries,
+    )
     return ok(preview)
 
 
 def _load_deletion_graph(
     txn: Session,
-) -> tuple[tuple[Plan, ...], tuple[CalendarEntry, ...]]:
+) -> tuple[tuple[Plan, ...], tuple[CalendarEntry, ...], tuple[BlockCalendarEntry, ...]]:
     plans = tuple(
         txn.scalars(
             select(Plan).options(
-                selectinload(Plan.goal_plan)
-                .selectinload(GoalPlan.chains)
-                .selectinload(GoalChildChain.items),
+                selectinload(Plan.goal_plan),
                 selectinload(Plan.task_plan),
+                selectinload(Plan.block_plan),
                 selectinload(Plan.repetition_plan).selectinload(RepetitionPlan.instances),
                 selectinload(Plan.constraint_groups).selectinload(TimeConstraintGroup.windows),
             )
@@ -87,9 +91,14 @@ def _load_deletion_graph(
     )
     plan_ids = [plan.plan_id for plan in plans]
     if not plan_ids:
-        return plans, ()
+        return plans, (), ()
 
     calendar_entries = tuple(
         txn.scalars(select(CalendarEntry).where(CalendarEntry.source_plan_id.in_(plan_ids))).all()
     )
-    return plans, calendar_entries
+    block_calendar_entries = tuple(
+        txn.scalars(
+            select(BlockCalendarEntry).where(BlockCalendarEntry.source_plan_id.in_(plan_ids))
+        ).all()
+    )
+    return plans, calendar_entries, block_calendar_entries

@@ -6,6 +6,7 @@ from enum import StrEnum
 class PlanKind(StrEnum):
     GOAL = "GOAL"
     TASK = "TASK"
+    BLOCK = "BLOCK"
     REPETITION = "REPETITION"
 
 

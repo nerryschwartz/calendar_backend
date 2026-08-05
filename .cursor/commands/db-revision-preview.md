@@ -1,5 +1,18 @@
 Generate and review an Alembic migration draft. Stop before applying it.
 
+## When called from `/run-v2-implementation` (loop context)
+
+**Apply this section first** when the active command is `/run-v2-implementation`.
+
+Maps to `phase_N_slice_<id>_alembic_preview` (Agent batch).
+
+- Follow sections 1–4 below (autogenerate + structured review report).
+- **Do not edit** the migration file in this step.
+- **Do not** stop or wait for user approval (ignore standalone stop lines below).
+- Store the preview report in the agent turn; **`complete`** and continue the Agent batch to `migration_manual_edit`.
+
+Standalone `/db-revision-preview` (outside the loop) keeps report-only behavior and manual user edit before continue.
+
 Use after SQLAlchemy model changes and before manual migration approval.
 
 Prerequisites:
@@ -110,6 +123,9 @@ If no red flags or manual edits are likely, say so explicitly.
 - run `/review-abstractions`
 - fix unrelated failing tests
 
-Stop after preview output and wait for manual migration approval.
+Stop after preview output and wait for manual migration approval (**standalone only** — skip under loop context above).
 
 The user edits the migration script as needed, then runs `/db-revision-continue`.
+
+Standalone loop-context summary: preview step stores the report; `migration_manual_edit` applies edits; `alembic_continue` runs upgrade and commit. See [run-v2-implementation.md](run-v2-implementation.md).
+

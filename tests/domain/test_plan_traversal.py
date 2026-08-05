@@ -1,0 +1,124 @@
+"""Pure tests for plan traversal ordering helpers."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+
+import calendar_backend.models.constraints  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from calendar_backend.domain.enums import CloneStatus, PlanKind
+from calendar_backend.domain.plan_traversal import ordered_goal_children
+from calendar_backend.models.plans import GoalPlan, Plan
+
+_NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+
+def _plan(
+    plan_id: uuid.UUID,
+    *,
+    parent_id: uuid.UUID | None = None,
+    goal_is_critical: bool | None = None,
+    goal_sort_order: int | None = None,
+) -> Plan:
+    return Plan(
+        plan_id=plan_id,
+        plan_kind=PlanKind.TASK,
+        name="child",
+        parent_id=parent_id,
+        is_master=False,
+        cloned_from_id=None,
+        clone_status=CloneStatus.NOT_CLONED,
+        goal_is_critical=goal_is_critical,
+        goal_sort_order=goal_sort_order,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+def test_ordered_goal_children_critical_before_non_critical() -> None:
+    master_id = uuid.uuid4()
+    critical_id = uuid.uuid4()
+    non_critical_id = uuid.uuid4()
+    master = Plan(
+        plan_id=master_id,
+        plan_kind=PlanKind.GOAL,
+        name="master",
+        parent_id=None,
+        is_master=True,
+        cloned_from_id=None,
+        clone_status=CloneStatus.NOT_CLONED,
+        goal_is_critical=None,
+        goal_sort_order=None,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+    master.goal_plan = GoalPlan(plan_id=master_id)
+    critical = _plan(critical_id, parent_id=master_id, goal_is_critical=True, goal_sort_order=0)
+    non_critical = _plan(
+        non_critical_id,
+        parent_id=master_id,
+        goal_is_critical=False,
+        goal_sort_order=0,
+    )
+    master.children = [non_critical, critical]
+
+    ordered = ordered_goal_children(master)
+
+    assert [plan.plan_id for plan in ordered] == [critical_id, non_critical_id]
+
+
+def test_ordered_goal_children_dense_sort_within_bucket() -> None:
+    master_id = uuid.uuid4()
+    first_id = uuid.uuid4()
+    second_id = uuid.uuid4()
+    master = Plan(
+        plan_id=master_id,
+        plan_kind=PlanKind.GOAL,
+        name="master",
+        parent_id=None,
+        is_master=True,
+        cloned_from_id=None,
+        clone_status=CloneStatus.NOT_CLONED,
+        goal_is_critical=None,
+        goal_sort_order=None,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+    master.goal_plan = GoalPlan(plan_id=master_id)
+    second = _plan(second_id, parent_id=master_id, goal_is_critical=False, goal_sort_order=1)
+    first = _plan(first_id, parent_id=master_id, goal_is_critical=False, goal_sort_order=0)
+    master.children = [second, first]
+
+    ordered = ordered_goal_children(master)
+
+    assert [plan.plan_id for plan in ordered] == [first_id, second_id]
+
+
+def test_ordered_goal_children_skips_children_without_ordering_fields() -> None:
+    master_id = uuid.uuid4()
+    ordered_id = uuid.uuid4()
+    template_id = uuid.uuid4()
+    master = Plan(
+        plan_id=master_id,
+        plan_kind=PlanKind.GOAL,
+        name="master",
+        parent_id=None,
+        is_master=True,
+        cloned_from_id=None,
+        clone_status=CloneStatus.NOT_CLONED,
+        goal_is_critical=None,
+        goal_sort_order=None,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+    master.goal_plan = GoalPlan(plan_id=master_id)
+    ordered_child = _plan(
+        ordered_id,
+        parent_id=master_id,
+        goal_is_critical=False,
+        goal_sort_order=0,
+    )
+    template_root = _plan(template_id, parent_id=master_id)
+    master.children = [template_root, ordered_child]
+
+    assert ordered_goal_children(master) == (ordered_child,)

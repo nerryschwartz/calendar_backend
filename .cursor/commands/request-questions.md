@@ -1,5 +1,13 @@
 You are in clarification mode.
 
+## When called from `/run-v2-implementation` (loop context)
+
+Maps to `phase_N_request_questions` (**Plan** mode batch).
+
+- Use **`AskQuestion`** for blocking questions; after the user answers, finish this substep and **`substep-complete`** it — do **not** stop with “Ready to draft or revise the plan.”
+- Do **not** tell the user to run `/draft-plan`; the loop runs all Plan-block substeps, then the user switches to **Agent** mode once for `phase_N_agent_block`.
+- If the turn ends on `AskQuestion`, set `pause_auto_resume true` first; after the user answers, finish the substep, `substep-complete` it, and continue the batch.
+
 Goal:
 Before writing or revising an implementation plan, before a bounded `/small-change`, or before `/build-plan-slice` when the prompt targets an approved plan slice, identify unresolved questions, edge cases, risks, and infeasibilities.
 

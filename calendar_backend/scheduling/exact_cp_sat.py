@@ -16,6 +16,7 @@ from ortools.sat.python import cp_model
 from calendar_backend.domain.enums import SolverStatus
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.task_families import demand_windows_for_block_family
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.scheduling import decomposition
 from calendar_backend.scheduling.decomposition import (
@@ -178,7 +179,7 @@ def _solve_component_with_status(
     return _ComponentSolveResult(assignments, status, limit_reached)
 
 
-def _run_lex_chain(
+def _run_lex_chain(  # noqa: PLR0911
     context: _ComponentContext,
 ) -> tuple[tuple[TaskAssignment, ...], SolverStatus, bool] | None:
     time_limit_seconds = _time_limit_seconds(context.component.solver_limits)
@@ -207,6 +208,17 @@ def _run_lex_chain(
     )
     if last_assignments is None:
         return None
+
+    if context.component.downstream_task_feasibility_summaries:
+        assignments, ortools_status, solver = _run_lex_pass(
+            context,
+            _objective_maximize_downstream_task_feasibility,
+            maximize=True,
+        )
+        if assignments is None:
+            return last_assignments, solve_status, limit_reached
+        absorb_solve(ortools_status, solver)
+        last_assignments = assignments
 
     lex_steps: list[tuple[Callable[[_ComponentContext], cp_model.IntVar], bool]] = [
         (_objective_maximize_exact_hint_matches, True),
@@ -984,6 +996,55 @@ def _solve_hit_time_limit(solver: cp_model.CpSolver, time_limit_seconds: float) 
     if time_limit_seconds <= 0:
         return False
     return solver.WallTime() >= time_limit_seconds - 0.001
+
+
+def _objective_maximize_downstream_task_feasibility(context: _ComponentContext) -> cp_model.IntVar:
+    summaries = context.component.downstream_task_feasibility_summaries
+    model = context.model
+    terms: list[cp_model.IntVar] = []
+    for task_vars in context.task_variables:
+        block_family = task_vars.task.block_family
+        if block_family is None:
+            continue
+        demand_windows = demand_windows_for_block_family(summaries, block_family)
+        for segment in task_vars.segments:
+            for window in demand_windows:
+                terms.append(
+                    _bounded_overlap_minutes(
+                        context,
+                        segment=segment,
+                        window=window,
+                        task_duration_minutes=task_vars.task.duration_minutes,
+                    )
+                )
+    total = model.NewIntVar(
+        0,
+        context.horizon_minutes * max(len(context.task_variables), 1),
+        "downstream_task_feasibility",
+    )
+    if terms:
+        model.Add(total == sum(terms))
+    else:
+        model.Add(total == 0)
+    return total
+
+
+def _bounded_overlap_minutes(
+    context: _ComponentContext,
+    *,
+    segment: _SegmentVariables,
+    window: TimeWindow,
+    task_duration_minutes: int,
+) -> cp_model.IntVar:
+    model = context.model
+    window_start = _minute_offset(window.start_time, context.timeline_anchor)
+    window_end = _minute_offset(window.end_time, context.timeline_anchor)
+    max_overlap = max(0, min(task_duration_minutes, window_end - window_start))
+    overlap = model.NewIntVar(0, max_overlap, "demand_overlap")
+    model.Add(overlap <= segment.duration)
+    model.Add(overlap <= segment.end - window_start)
+    model.Add(overlap <= window_end - segment.start)
+    return overlap
 
 
 def _exact_guard_not_usable_result() -> AssignmentSolverResult:

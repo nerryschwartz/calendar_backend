@@ -5,12 +5,11 @@ from typing import NewType
 from uuid import UUID, uuid4
 
 PlanID = NewType("PlanID", UUID)
-GoalChildChainID = NewType("GoalChildChainID", UUID)
-GoalChildChainItemID = NewType("GoalChildChainItemID", UUID)
 TimeConstraintGroupID = NewType("TimeConstraintGroupID", UUID)
 TimeWindowID = NewType("TimeWindowID", UUID)
 RepetitionInstanceID = NewType("RepetitionInstanceID", UUID)
 CalendarEntryID = NewType("CalendarEntryID", UUID)
+BlockCalendarEntryID = NewType("BlockCalendarEntryID", UUID)
 FreeTimeActivityID = NewType("FreeTimeActivityID", UUID)
 FreeTimeActivityPrerequisiteID = NewType("FreeTimeActivityPrerequisiteID", UUID)
 CalendarRunID = NewType("CalendarRunID", UUID)

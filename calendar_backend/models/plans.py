@@ -2,7 +2,7 @@
 
 Subtype pairing (plan_kind vs detail rows) and tree reachability are enforced
 by services and PlanTreeInvariantService, not by database triggers or ORM.
-Goal child chains live in ``calendar_backend.models.chains``.
+Direct goal-child ordering uses ``plan.goal_is_critical`` and ``plan.goal_sort_order``.
 """
 
 from __future__ import annotations
@@ -27,9 +27,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from calendar_backend.db.base import Base
 from calendar_backend.domain.enums import CloneStatus, PlanKind, RepeatMode
+from calendar_backend.models.prerequisites import PlanPrerequisite
 
 if TYPE_CHECKING:
-    from calendar_backend.models.chains import GoalChildChain
+    from calendar_backend.models.blocks import BlockPlan
     from calendar_backend.models.constraints import TimeConstraintGroup
     from calendar_backend.models.repetitions import RepetitionInstance
 
@@ -40,6 +41,12 @@ class Plan(Base):
         CheckConstraint(
             "NOT is_master OR plan_kind = 'GOAL'",
             name="master_is_goal",
+        ),
+        CheckConstraint(
+            "(goal_is_critical IS NULL AND goal_sort_order IS NULL) "
+            "OR (goal_is_critical IS NOT NULL AND goal_sort_order IS NOT NULL "
+            "AND goal_sort_order >= 0)",
+            name="goal_child_ordering_fields_paired",
         ),
         Index(
             "uq_plan_is_master",
@@ -70,6 +77,8 @@ class Plan(Base):
         Enum(CloneStatus, native_enum=False),
         nullable=False,
     )
+    goal_is_critical: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    goal_sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -93,6 +102,12 @@ class Plan(Base):
     task_plan: Mapped[TaskPlan | None] = relationship(
         back_populates="plan",
         uselist=False,
+        foreign_keys="TaskPlan.plan_id",
+    )
+    block_plan: Mapped[BlockPlan | None] = relationship(
+        back_populates="plan",
+        uselist=False,
+        foreign_keys="BlockPlan.plan_id",
     )
     repetition_plan: Mapped[RepetitionPlan | None] = relationship(
         back_populates="plan",
@@ -101,6 +116,14 @@ class Plan(Base):
     )
     constraint_groups: Mapped[list[TimeConstraintGroup]] = relationship(
         back_populates="plan",
+    )
+    prerequisite_edges: Mapped[list[PlanPrerequisite]] = relationship(
+        foreign_keys=[PlanPrerequisite.plan_id],
+        back_populates="dependent_plan",
+    )
+    dependent_edges: Mapped[list[PlanPrerequisite]] = relationship(
+        foreign_keys=[PlanPrerequisite.prerequisite_plan_id],
+        back_populates="prerequisite_plan",
     )
 
 
@@ -114,7 +137,6 @@ class GoalPlan(Base):
     )
 
     plan: Mapped[Plan] = relationship(back_populates="goal_plan")
-    chains: Mapped[list[GoalChildChain]] = relationship(back_populates="parent_goal")
 
 
 class TaskPlan(Base):
@@ -152,8 +174,20 @@ class TaskPlan(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    immediate_prerequisite_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("plan.plan_id"),
+        nullable=True,
+    )
+    allowed_block_families: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    plan: Mapped[Plan] = relationship(back_populates="task_plan")
+    plan: Mapped[Plan] = relationship(
+        back_populates="task_plan",
+        foreign_keys=[plan_id],
+    )
+    immediate_prerequisite_plan: Mapped[Plan | None] = relationship(
+        foreign_keys=[immediate_prerequisite_plan_id],
+    )
 
 
 class RepetitionPlan(Base):

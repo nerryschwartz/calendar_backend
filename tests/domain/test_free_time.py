@@ -30,7 +30,6 @@ from calendar_backend.domain.free_time import (
 from calendar_backend.domain.ids import FreeTimeActivityID, PlanID
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.repetitions import RepetitionInstance
@@ -83,53 +82,16 @@ def _attach_task(plan: Plan, *, user_completed: bool = False) -> None:
     )
 
 
-def _attach_critical_chain_item(
-    goal: Plan,
+def _attach_ordered_child(
+    parent: Plan,
+    child: Plan,
     *,
-    child_plan_id: uuid.UUID,
-    position: int,
+    is_critical: bool,
+    sort_order: int = 0,
 ) -> None:
-    chain_id = uuid.uuid4()
-    chain = GoalChildChain(
-        goal_child_chain_id=chain_id,
-        parent_goal_id=goal.plan_id,
-        is_critical=True,
-        sort_order=0,
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
-    chain.items = [
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=chain_id,
-            child_plan_id=child_plan_id,
-            position=position,
-        )
-    ]
-    assert goal.goal_plan is not None
-    goal.goal_plan.chains = [chain]
-
-
-def _attach_noncritical_chain_item(goal: Plan, *, child_plan_id: uuid.UUID) -> None:
-    chain_id = uuid.uuid4()
-    chain = GoalChildChain(
-        goal_child_chain_id=chain_id,
-        parent_goal_id=goal.plan_id,
-        is_critical=False,
-        sort_order=0,
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
-    chain.items = [
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=chain_id,
-            child_plan_id=child_plan_id,
-            position=0,
-        )
-    ]
-    assert goal.goal_plan is not None
-    goal.goal_plan.chains = [chain]
+    child.parent_id = parent.plan_id
+    child.goal_is_critical = is_critical
+    child.goal_sort_order = sort_order
 
 
 def _activity_dto(
@@ -147,6 +109,7 @@ def _activity_dto(
         real_fraction=real_fraction,
         minimum_block_size_minutes=minimum_block_size_minutes,
         prerequisite_plan_ids=tuple(PlanID(plan_id) for plan_id in prerequisite_plan_ids),
+        allowed_block_families=("free-time", "default"),
         created_at=_NOW,
         updated_at=_NOW,
     )
@@ -284,7 +247,7 @@ def test_is_plan_logically_complete_task_requires_user_completed() -> None:
     assert not is_plan_logically_complete(PlanID(incomplete_task.plan_id), incomplete_graph)
 
 
-def test_is_plan_logically_complete_goal_requires_critical_chain_children() -> None:
+def test_is_plan_logically_complete_goal_requires_critical_ordered_children() -> None:
     master_id = uuid.uuid4()
     goal_id = uuid.uuid4()
     task_id = uuid.uuid4()
@@ -295,8 +258,8 @@ def test_is_plan_logically_complete_goal_requires_critical_chain_children() -> N
     _attach_goal(goal)
     task = _plan(task_id, plan_kind=PlanKind.TASK, parent_id=goal_id)
     _attach_task(task, user_completed=False)
-    _attach_critical_chain_item(master, child_plan_id=goal_id, position=0)
-    _attach_critical_chain_item(goal, child_plan_id=task_id, position=0)
+    _attach_ordered_child(master, goal, is_critical=True, sort_order=0)
+    _attach_ordered_child(goal, task, is_critical=True, sort_order=0)
 
     graph = free_time_plan_graph_from_plans((master, goal, task))
     assert not is_plan_logically_complete(PlanID(master_id), graph)
@@ -307,7 +270,7 @@ def test_is_plan_logically_complete_goal_requires_critical_chain_children() -> N
     assert is_plan_logically_complete(PlanID(master_id), completed_graph)
 
 
-def test_is_plan_logically_complete_goal_ignores_noncritical_chain() -> None:
+def test_is_plan_logically_complete_goal_ignores_noncritical_children() -> None:
     master_id = uuid.uuid4()
     task_id = uuid.uuid4()
 
@@ -315,7 +278,7 @@ def test_is_plan_logically_complete_goal_ignores_noncritical_chain() -> None:
     _attach_goal(master)
     task = _plan(task_id, plan_kind=PlanKind.TASK, parent_id=master_id)
     _attach_task(task, user_completed=False)
-    _attach_noncritical_chain_item(master, child_plan_id=task_id)
+    _attach_ordered_child(master, task, is_critical=False, sort_order=0)
 
     graph = free_time_plan_graph_from_plans((master, task))
     assert is_plan_logically_complete(PlanID(master_id), graph)
@@ -360,7 +323,7 @@ def test_is_plan_logically_complete_repetition_requires_critical_instance_subtre
     _attach_goal(clone)
     clone_task = _plan(clone_task_id, plan_kind=PlanKind.TASK, parent_id=clone_id)
     _attach_task(clone_task, user_completed=False)
-    _attach_critical_chain_item(clone, child_plan_id=clone_task_id, position=0)
+    _attach_ordered_child(clone, clone_task, is_critical=True, sort_order=0)
 
     repetition_plan.instances = [
         RepetitionInstance(

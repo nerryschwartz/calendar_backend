@@ -1,6 +1,6 @@
 # Repository code conventions
 
-These conventions take precedence over `docs/calendar_backend_v1_engineering_design_updated.pdf`, `docs/cursor_implementation_guide.md`, finalized plans in `docs/plans/`, and existing code.
+These conventions take precedence over `docs/v2_engineering_design.md`, `docs/v2_cursor_implementation_guide.md`, archived V1 PDF/guide, finalized plans in `docs/plans/`, and existing code.
 
 Add or change conventions only via [`/add-repo-convention`](commands/add-repo-convention.md).
 
@@ -150,8 +150,8 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 
 **Examples:**
 
-- **Do not report:** master must be `GOAL` (`ck_plan_master_is_goal`), duplicate `child_plan_id` in chain items (`UNIQUE(child_plan_id)`), `start_time >= end_time` on windows (`ck_time_window_start_before_end`).
-- **Do report:** reachability from master, subtype pairing, dense chain/repetition ordering, chain child parent alignment, clone lineage, master horizon placement/cardinality, minute-aligned merged USER windows.
+- **Do not report:** master must be `GOAL` (`ck_plan_master_is_goal`), paired goal-child ordering columns (`ck_plan_goal_child_ordering_fields_paired`), `start_time >= end_time` on windows (`ck_time_window_start_before_end`).
+- **Do report:** reachability from master, subtype pairing, dense goal-child ordering per `(parent_id, goal_is_critical)`, goal-child parent alignment, clone lineage, master horizon placement/cardinality, minute-aligned merged USER windows.
 
 **Supersedes:** Plan or test guidance that treats invariant diagnostics as a full replay of schema tests on loaded graphs.
 
@@ -272,15 +272,15 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 **Rule:**
 
 - **`PlanTreeService`** — plan-wide **identity** (`rename_plan`) and **existence** (`preview_delete`, `delete_plan`); repo-internal `make_*` / `attach_under_parent` for sibling services.
-- **`GoalService`** — goal-parent **child-chain layout**: `create_child` (initial chain placement) and `move_plan` (within/cross-chain reorder under the same parent goal; no reparenting in V1).
+- **`GoalService`** — **direct goal-child ordering** on `Plan` rows under goal parents: `create_child` (append at bucket end) and `move_plan` (within-bucket reorder or cross criticality bucket; no reparenting in V1).
 - **`TaskService` / `RepetitionService`** — subtype self-edits on the plan node (scheduling, generation, etc.).
-- Goal child-chain persistence helpers (ordering, dense renumbering, bucket-end chain creation) are **module-private to `GoalService`**, not shared via `PlanTreeService`.
+- Goal-child ordering helpers (dense renumbering, bucket append, clone sync) are **module-private to `GoalService`**, not shared via `PlanTreeService`.
 
 **Examples:**
 
-- **GoalService:** `create_child` + `_attach_to_goal_chain`; `move_plan(plan_id, position)` and `move_plan(plan_id, chain_index, position)`.
+- **GoalService:** `create_child` sets `goal_is_critical` + `goal_sort_order`; `move_plan(plan_id, position)` within bucket; `move_plan(plan_id, is_critical, position)` across buckets.
 - **PlanTreeService:** `rename_plan`; future `preview_delete` / `delete_plan`; `make_goal` / `attach_under_parent` called from `GoalService` during create.
-- **Not PlanTreeService:** chain reorder, cross-chain move, or empty-chain cleanup after move.
+- **Not PlanTreeService:** goal-child reorder or cross-bucket moves.
 
 **Supersedes:** Guide §0.1 row “Plan creation vs tree mutations” and [`docs/plans/plan_tree_service.md`](../docs/plans/plan_tree_service.md) assumptions that listed `move_plan` on `PlanTreeService`; PDF §7 monolithic plan-tree service readings for move ownership.
 
@@ -294,14 +294,14 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 
 - The service that **mutates** an aggregate (plan, constraint group, repetition, settings, etc.) **owns** persistence access for that aggregate’s rows: loads, saves, deletes, and aggregate-specific read helpers used by siblings.
 - **Consumers call the owner** — do not embed duplicate `select` / `session.get` / private loaders for another aggregate’s data. Expose a small read helper on the owner when another service needs a value (for example horizon end on `MasterHorizonService`).
-- **Bundled creates stay on the factory** — when a structure is always created as a unit (repetition shell + template, goal + initial chains), one `make_*` / create path owns the full subtree; subtype services do not get standalone APIs for sub-parts that are never authored alone.
+- **Bundled creates stay on the factory** — when a structure is always created as a unit (repetition shell + template, goal child with initial ordering fields), one `make_*` / create path owns the full subtree; subtype services do not get standalone APIs for sub-parts that are never authored alone.
 - **Layout vs identity vs subtype behavior** — apply the [§14](#14-plan-service-ownership-boundaries) split spirit to plan services; apply the same *who owns what* thinking to non-plan services (horizon on `MasterHorizonService`, USER constraints on `TimeConstraintService`, etc.).
 
 **Examples:**
 
 - `RepetitionService.generate_instances` calls `get_master_horizon_end` — does not own horizon SQL.
 - `make_repetition` creates shell + template; no `RepetitionService.create_template_child` for normal flows.
-- `GoalService` owns chain reorder helpers; `PlanTreeService` does not.
+- `GoalService` owns goal-child ordering helpers; `PlanTreeService` does not.
 
 **Aligns with:** [§3](#3-orm-relationships-for-graph-reads-explicit-sql-for-filtered-writes), [§14](#14-plan-service-ownership-boundaries).
 
@@ -395,3 +395,29 @@ Add or change conventions only via [`/add-repo-convention`](commands/add-repo-co
 - No test that `reopen` does not detach — incidental, not a guarantee.
 
 **Aligns with:** [§7](#7-plan-tree-invariant-ideal-shape); [testing and checks](../rules/20-testing-and-checks.mdc), [planning slices](../rules/30-planning-slices.mdc).
+
+---
+
+## 20. V2 design supersessions (documentation authority)
+
+**Scope:** Planning and implementation after adoption of V2 documentation (`docs/v2_engineering_design.md`, `docs/v2_cursor_implementation_guide.md`).
+
+**Rule:**
+
+- **Architecture and behavior:** Follow `docs/v2_engineering_design.md` when no numbered convention in this file applies.
+- **Cursor workflow:** Follow `docs/v2_cursor_implementation_guide.md` for slice workflow, migration five-step split, and V2 phase sequencing.
+- **Archived V1:** `docs/calendar_backend_v1_engineering_design_updated.pdf` and `docs/cursor_implementation_guide.md` are historical unless V2 docs explicitly reference them for unchanged tooling (Alembic style, layer boundaries, scripts).
+- **Contradictions:** When V2 docs conflict with archived V1 docs, **V2 wins**. Record any intentional exception in this file via `/add-repo-convention`.
+
+**V2 behavioral supersessions (summary — detail in V2 design):**
+
+| Topic | V1 | V2 |
+|---|---|---|
+| Goal child layout | `GoalChildChain` / items | Direct child ordering fields on `Plan` under goals |
+| Precedence | Chain adjacency edges | Plan prerequisites + immediate touch prerequisites |
+| Plan relationships | No plan-level prereq DAG | Unordered plan prerequisite DAG (cycle-checked) |
+| Calendar | Task `CalendarEntry` only | Task calendar + separate `BlockCalendarEntry` |
+| Scheduling | Single task assignment pass | Two-phase: blocks then tasks |
+| Migration slices | Sometimes bundled in one slice | Five-step: pre-alembic → preview → edit → continue → post-alembic |
+
+**Aligns with:** [00-project-source-of-truth](../rules/00-project-source-of-truth.mdc); V2 implementation guide §0.

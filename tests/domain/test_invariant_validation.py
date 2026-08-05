@@ -8,9 +8,9 @@ from datetime import UTC, datetime
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.invariant_validation import validate_master_tree_graph
-from calendar_backend.models.chains import GoalChildChain, GoalChildChainItem
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
+from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 
 _NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
@@ -94,33 +94,17 @@ def _repetition_instance(
     )
 
 
-def _attach_chain_item(
+def _attach_ordered_child(
     goal: Plan,
     *,
-    child_plan_id: uuid.UUID,
+    child: Plan,
     is_critical: bool = False,
     sort_order: int = 0,
-    position: int = 0,
 ) -> None:
-    chain_id = uuid.uuid4()
-    chain = GoalChildChain(
-        goal_child_chain_id=chain_id,
-        parent_goal_id=goal.plan_id,
-        is_critical=is_critical,
-        sort_order=sort_order,
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
-    chain.items = [
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=chain_id,
-            child_plan_id=child_plan_id,
-            position=position,
-        )
-    ]
     assert goal.goal_plan is not None
-    goal.goal_plan.chains = [*goal.goal_plan.chains, chain]
+    child.parent_id = goal.plan_id
+    child.goal_is_critical = is_critical
+    child.goal_sort_order = sort_order
 
 
 def _valid_repetition_create_graph() -> tuple[Plan, ...]:
@@ -135,7 +119,7 @@ def _valid_repetition_create_graph() -> tuple[Plan, ...]:
 
     goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
     _attach_goal(goal)
-    _attach_chain_item(master, child_plan_id=goal_id)
+    _attach_ordered_child(master, child=goal)
 
     template = _plan(
         template_id,
@@ -149,7 +133,7 @@ def _valid_repetition_create_graph() -> tuple[Plan, ...]:
     repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION, parent_id=goal_id)
     _attach_repetition(repetition, template_id)
 
-    _attach_chain_item(goal, child_plan_id=repetition_id)
+    _attach_ordered_child(goal, child=repetition)
 
     return (master, goal, template, repetition)
 
@@ -167,12 +151,12 @@ def _valid_repetition_graph() -> tuple[Plan, ...]:
 
     goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
     _attach_goal(goal)
-    _attach_chain_item(master, child_plan_id=goal_id)
+    _attach_ordered_child(master, child=goal)
 
     repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION, parent_id=goal_id)
     repetition_plan = _attach_repetition(repetition, template_id)
     repetition_plan.generated_at = _utc(10, 0)
-    _attach_chain_item(goal, child_plan_id=repetition_id)
+    _attach_ordered_child(goal, child=repetition)
 
     template = _plan(
         template_id,
@@ -403,48 +387,7 @@ def test_validate_master_tree_graph_reports_unmerged_user_windows() -> None:
     )
 
 
-def test_validate_master_tree_graph_reports_chain_child_wrong_parent() -> None:
-    master_id = uuid.uuid4()
-    goal_id = uuid.uuid4()
-    child_id = uuid.uuid4()
-    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
-    _attach_goal(master)
-    master.constraint_groups = [_horizon_group(master_id)]
-    goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
-    _attach_goal(goal)
-    child = _plan(child_id, plan_kind=PlanKind.TASK, parent_id=master_id)
-    _attach_task(child)
-
-    chain_id = uuid.uuid4()
-    chain = GoalChildChain(
-        goal_child_chain_id=chain_id,
-        parent_goal_id=goal_id,
-        is_critical=False,
-        sort_order=0,
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
-    chain.items = [
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=chain_id,
-            child_plan_id=child_id,
-            position=0,
-        )
-    ]
-    assert goal.goal_plan is not None
-    goal.goal_plan.chains = [chain]
-
-    violations = validate_master_tree_graph((master, goal, child))
-
-    assert any(
-        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
-        and "direct child of the parent goal" in v.message
-        for v in violations
-    )
-
-
-def test_validate_master_tree_graph_reports_non_dense_chain_position() -> None:
+def test_validate_master_tree_graph_reports_non_dense_goal_sort_order() -> None:
     master_id = uuid.uuid4()
     goal_id = uuid.uuid4()
     child_a_id = uuid.uuid4()
@@ -458,37 +401,13 @@ def test_validate_master_tree_graph_reports_non_dense_chain_position() -> None:
     _attach_task(child_a)
     child_b = _plan(child_b_id, plan_kind=PlanKind.TASK, parent_id=goal_id)
     _attach_task(child_b)
-
-    chain_id = uuid.uuid4()
-    chain = GoalChildChain(
-        goal_child_chain_id=chain_id,
-        parent_goal_id=goal_id,
-        is_critical=False,
-        sort_order=0,
-        created_at=_NOW,
-        updated_at=_NOW,
-    )
-    chain.items = [
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=chain_id,
-            child_plan_id=child_a_id,
-            position=0,
-        ),
-        GoalChildChainItem(
-            goal_child_chain_item_id=uuid.uuid4(),
-            chain_id=chain_id,
-            child_plan_id=child_b_id,
-            position=2,
-        ),
-    ]
-    assert goal.goal_plan is not None
-    goal.goal_plan.chains = [chain]
+    _attach_ordered_child(goal, child=child_a, sort_order=0)
+    _attach_ordered_child(goal, child=child_b, sort_order=2)
 
     violations = validate_master_tree_graph((master, goal, child_a, child_b))
 
     assert any(
-        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "positions must be dense" in v.message
+        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "sort_order must be dense" in v.message
         for v in violations
     )
 
@@ -565,13 +484,13 @@ def test_validate_master_tree_graph_accepts_linked_and_detached_sibling_instance
 
     goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
     _attach_goal(goal)
-    _attach_chain_item(master, child_plan_id=goal_id)
+    _attach_ordered_child(master, child=goal)
 
     repetition = _plan(repetition_id, plan_kind=PlanKind.REPETITION, parent_id=goal_id)
     repetition_plan = _attach_repetition(repetition, template_id)
     repetition_plan.generated_at = _utc(10, 0)
     repetition_plan.manual_count = 2
-    _attach_chain_item(goal, child_plan_id=repetition_id)
+    _attach_ordered_child(goal, child=repetition)
 
     template = _plan(
         template_id,
@@ -632,7 +551,7 @@ def test_validate_master_tree_graph_accepts_linked_and_detached_sibling_instance
     )
 
 
-def test_validate_master_tree_graph_reports_master_critical_chain() -> None:
+def test_validate_master_tree_graph_reports_master_critical_child() -> None:
     master_id = uuid.uuid4()
     child_id = uuid.uuid4()
     master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
@@ -640,18 +559,18 @@ def test_validate_master_tree_graph_reports_master_critical_chain() -> None:
     master.constraint_groups = [_horizon_group(master_id)]
     child = _plan(child_id, plan_kind=PlanKind.TASK, parent_id=master_id)
     _attach_task(child)
-    _attach_chain_item(master, child_plan_id=child_id, is_critical=True)
+    _attach_ordered_child(master, child=child, is_critical=True)
 
     violations = validate_master_tree_graph((master, child))
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
-        and "Master goal child chains must be non-critical" in v.message
+        and "Master goal direct children must be non-critical" in v.message
         for v in violations
     )
 
 
-def test_validate_master_tree_graph_reports_goal_child_missing_chain_item() -> None:
+def test_validate_master_tree_graph_reports_goal_child_missing_ordering_fields() -> None:
     master_id = uuid.uuid4()
     goal_id = uuid.uuid4()
     child_id = uuid.uuid4()
@@ -666,33 +585,34 @@ def test_validate_master_tree_graph_reports_goal_child_missing_chain_item() -> N
     violations = validate_master_tree_graph((master, goal, child))
 
     assert any(
-        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
-        and "exactly one goal child chain item" in v.message
+        v.code == MessageCode.CHAIN_INVARIANT_VIOLATION and "goal ordering fields set" in v.message
         for v in violations
     )
 
 
-def test_validate_master_tree_graph_reports_goal_child_with_two_chain_items() -> None:
+def test_validate_master_tree_graph_reports_duplicate_goal_sort_order_in_bucket() -> None:
     master_id = uuid.uuid4()
     goal_id = uuid.uuid4()
-    child_id = uuid.uuid4()
+    child_a_id = uuid.uuid4()
+    child_b_id = uuid.uuid4()
     master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
     _attach_goal(master)
     master.constraint_groups = [_horizon_group(master_id)]
     goal = _plan(goal_id, plan_kind=PlanKind.GOAL, parent_id=master_id)
     _attach_goal(goal)
-    _attach_chain_item(master, child_plan_id=goal_id)
-    child = _plan(child_id, plan_kind=PlanKind.TASK, parent_id=goal_id)
-    _attach_task(child)
-    _attach_chain_item(goal, child_plan_id=child_id)
-    _attach_chain_item(goal, child_plan_id=child_id)
+    _attach_ordered_child(master, child=goal)
+    child_a = _plan(child_a_id, plan_kind=PlanKind.TASK, parent_id=goal_id)
+    _attach_task(child_a)
+    child_b = _plan(child_b_id, plan_kind=PlanKind.TASK, parent_id=goal_id)
+    _attach_task(child_b)
+    _attach_ordered_child(goal, child=child_a, sort_order=0)
+    _attach_ordered_child(goal, child=child_b, sort_order=0)
 
-    violations = validate_master_tree_graph((master, goal, child))
+    violations = validate_master_tree_graph((master, goal, child_a, child_b))
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
-        and "exactly one goal child chain item" in v.message
-        and v.details.get("chain_item_count") == "2"
+        and "sort_order must be unique within bucket" in v.message
         for v in violations
     )
 
@@ -710,15 +630,16 @@ def test_validate_master_tree_graph_reports_repetition_template_wrong_parent() -
     )
 
 
-def test_validate_master_tree_graph_reports_repetition_template_in_chain() -> None:
+def test_validate_master_tree_graph_reports_repetition_template_with_ordering_fields() -> None:
     master, goal, template, repetition = _valid_repetition_create_graph()
-    _attach_chain_item(goal, child_plan_id=template.plan_id)
+    template.goal_is_critical = False
+    template.goal_sort_order = 0
 
     violations = validate_master_tree_graph((master, goal, template, repetition))
 
     assert any(
         v.code == MessageCode.CHAIN_INVARIANT_VIOLATION
-        and "template root must not appear in a goal child chain" in v.message
+        and "template root must not have goal-child ordering fields" in v.message
         for v in violations
     )
 
@@ -894,4 +815,68 @@ def test_validate_master_tree_graph_reports_incomplete_task_with_completed_at() 
         v.code == MessageCode.TASK_COMPLETION_INVARIANT_VIOLATION
         and "must not have completed_at" in v.message
         for v in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_plan_prerequisite_cycle() -> None:
+    master_id = uuid.uuid4()
+    plan_a_id = uuid.uuid4()
+    plan_b_id = uuid.uuid4()
+    plan_c_id = uuid.uuid4()
+
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id)]
+
+    plan_a = _plan(plan_a_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    plan_b = _plan(plan_b_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    plan_c = _plan(plan_c_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    _attach_task(plan_a)
+    _attach_task(plan_b)
+    _attach_task(plan_c)
+
+    plan_a.prerequisite_edges = [
+        PlanPrerequisite(plan_id=plan_a_id, prerequisite_plan_id=plan_b_id)
+    ]
+    plan_b.prerequisite_edges = [
+        PlanPrerequisite(plan_id=plan_b_id, prerequisite_plan_id=plan_c_id)
+    ]
+    plan_c.prerequisite_edges = [
+        PlanPrerequisite(plan_id=plan_c_id, prerequisite_plan_id=plan_a_id)
+    ]
+
+    violations = validate_master_tree_graph((master, plan_a, plan_b, plan_c))
+
+    assert any(
+        violation.code == MessageCode.PREREQUISITE_INVARIANT_VIOLATION
+        and "acyclic" in violation.message
+        for violation in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_plan_prerequisite_trace_mismatch() -> None:
+    graph = list(_valid_repetition_create_graph())
+    master = graph[0]
+    template_goal = next(plan for plan in graph if plan.clone_status == CloneStatus.TEMPLATE)
+    master_task_id = uuid.uuid4()
+    master_task = _plan(
+        master_task_id,
+        plan_kind=PlanKind.TASK,
+        parent_id=master.plan_id,
+    )
+    _attach_task(master_task)
+    graph.append(master_task)
+    master_task.prerequisite_edges = [
+        PlanPrerequisite(
+            plan_id=master_task_id,
+            prerequisite_plan_id=template_goal.plan_id,
+        )
+    ]
+
+    violations = validate_master_tree_graph(tuple(graph))
+
+    assert any(
+        violation.code == MessageCode.PREREQUISITE_INVARIANT_VIOLATION
+        and "Plan prerequisite edge requires matching template traces" in violation.message
+        for violation in violations
     )

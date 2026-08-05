@@ -41,6 +41,25 @@ def run_checks(*, skip_tests: bool) -> None:
         run(["uv", "run", "pytest", "-m", "not slow and not failure_expected"])
 
 
+def stage_all_working_tree_changes() -> None:
+    run(["git", "add", "-A"])
+
+
+def run_non_interactive_commit(*, message: str) -> int:
+    stage_all_working_tree_changes()
+    staged = subprocess.run(["git", "diff", "--cached", "--quiet"], check=False).returncode != 0
+    if not staged:
+        print("No staged changes after staging all working-tree files.")
+        return 0
+
+    print("\n## Staged diff")
+    run(["git", "diff", "--cached", "--stat"], check=False)
+    run(["git", "diff", "--cached", "--name-status"], check=False)
+    run(["git", "commit", "-m", message])
+    print("Committed all staged working-tree changes.")
+    return 0
+
+
 def run_staging_loop() -> int:
     while True:
         answer = input("Open interactive staging now? [y/N] ").strip().lower()
@@ -89,7 +108,23 @@ def main() -> int:
         action="store_true",
         help="Show status and suggested process without staging or committing.",
     )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Stage all working-tree changes and commit without prompts.",
+    )
+    parser.add_argument(
+        "--message",
+        help="Commit message (required with --non-interactive).",
+    )
     args = parser.parse_args()
+
+    if args.non_interactive and not args.message:
+        print("error: --message is required with --non-interactive", file=sys.stderr)
+        return 1
+    if args.message and not args.non_interactive:
+        print("error: --message requires --non-interactive", file=sys.stderr)
+        return 1
 
     if not has_changes():
         print("No changes to commit.")
@@ -124,6 +159,9 @@ Use `git add -p` for patch-level staging.
 
     if args.dry_run:
         return 0
+
+    if args.non_interactive:
+        return run_non_interactive_commit(message=args.message or "")
 
     return run_staging_loop()
 
