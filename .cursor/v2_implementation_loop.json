@@ -126,6 +126,6 @@
   ],
   "alembic_group": null,
   "plan_mode_escape_hatches": [],
-  "pause_auto_resume": false,
-  "active_batch_mode": "agent"
+  "pause_auto_resume": true,
+  "active_batch_mode": null
 }
