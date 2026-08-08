@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "branch": "main",
+  "next_required_mode": "agent",
+  "next_step": "v3_agent_block",
+  "current_plan_path": "docs/plans/v3_frontend_integration.md",
+  "current_slice_id": null,
+  "skip_tests_on_commit": true,
+  "completed_steps": [],
+  "alembic_group": null,
+  "pause_auto_resume": false,
+  "active_batch_mode": null
+}

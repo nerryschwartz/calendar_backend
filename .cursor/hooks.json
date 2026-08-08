@@ -4,11 +4,18 @@
     "beforeSubmitPrompt": [
       {
         "command": ".cursor/hooks/v2-loop-clear-on-other-prompt.sh"
+      },
+      {
+        "command": ".cursor/hooks/v3-loop-clear-on-other-prompt.sh"
       }
     ],
     "stop": [
       {
         "command": ".cursor/hooks/v2-loop-auto-resume.sh",
+        "loop_limit": 50
+      },
+      {
+        "command": ".cursor/hooks/v3-loop-auto-resume.sh",
         "loop_limit": 50
       }
     ]
