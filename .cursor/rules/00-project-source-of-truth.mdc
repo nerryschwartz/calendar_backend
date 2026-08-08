@@ -3,9 +3,9 @@ description: Project source of truth and implementation boundaries
 alwaysApply: true
 ---
 
-**Precedence:** [`.cursor/repo_conventions.md`](../repo_conventions.md) overrides everything below. Then other `.cursor/rules`, then `docs/v2_cursor_implementation_guide.md` and finalized plans, then `docs/v2_engineering_design.md`, then archived V1 guide/PDF, then existing code (update code when conventions change).
+**Precedence:** [`.cursor/repo_conventions.md`](../repo_conventions.md) overrides everything below. Then other `.cursor/rules`, then `docs/v3_cursor_implementation_guide.md` and finalized plans, then `docs/v3_engineering_design.md`, then V2 guides/design (historical for V3 work), then archived V1 guide/PDF, then existing code (update code when conventions change).
 
-[`docs/v2_engineering_design.md`](../../docs/v2_engineering_design.md) is the architectural source of truth when no repo convention or V2 guide deviation applies.
+[`docs/v3_engineering_design.md`](../../docs/v3_engineering_design.md) is the architectural source of truth when no repo convention or V3 guide deviation applies.
 
 Project identity:
 - Python service-layer backend named calendar_backend.
@@ -14,15 +14,16 @@ Project identity:
 - ORM models are persistence records, not behavior-heavy domain objects.
 - DTOs/result objects use frozen dataclasses where practical.
 - Scheduling components must be isolated from persistence.
-- V2 prioritizes correctness, readability, deterministic behavior, and explicit invariants.
+- V3 adds FastAPI HTTP boundary for frontend integration; V2 scheduling/plan-tree behavior preserved.
+- V3 prioritizes correctness, readability, deterministic behavior, and explicit invariants.
 
-Do not implement V2 non-goals unless explicitly asked (see V2 design §2):
-- No production HTTP API or mobile frontend.
-- No OS notification scheduler.
+Do not implement V3 non-goals unless explicitly asked (see V3 design §2):
+- No production authentication or multi-user tenancy.
+- No OS-level notification delivery (browser API is frontend).
 - No external calendar sync.
-- No recurring availability constraints (beyond repetition instances).
-- No undo/audit/soft-delete/history system.
-- No orphan active plans.
-- No mutable plan type or plan type conversion.
+- No server-side draft sessions for plan tree edit mode.
+- No mobile native frontend.
 - No sub-minute scheduling.
-- No blocks on the user-facing task calendar export.
+- No blocks on user-facing task calendar export.
+
+Historical V2 non-goals remain in [`docs/v2_engineering_design.md`](../../docs/v2_engineering_design.md) §2 for V2-only work.
