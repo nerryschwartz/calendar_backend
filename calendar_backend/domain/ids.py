@@ -13,6 +13,7 @@ BlockCalendarEntryID = NewType("BlockCalendarEntryID", UUID)
 FreeTimeActivityID = NewType("FreeTimeActivityID", UUID)
 FreeTimeActivityPrerequisiteID = NewType("FreeTimeActivityPrerequisiteID", UUID)
 CalendarRunID = NewType("CalendarRunID", UUID)
+NotificationQueueItemID = NewType("NotificationQueueItemID", UUID)
 
 
 def new_id[IdT](id_type: Callable[[UUID], IdT]) -> IdT:

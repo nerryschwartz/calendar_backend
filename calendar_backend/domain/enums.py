@@ -63,3 +63,14 @@ class FreeTimeWeekStartDay(StrEnum):
     FRIDAY = "FRIDAY"
     SATURDAY = "SATURDAY"
     SUNDAY = "SUNDAY"
+
+
+class TimerSourceKind(StrEnum):
+    TASK = "TASK"
+    BLOCK = "BLOCK"
+    FREE_TIME = "FREE_TIME"
+
+
+class NotificationSourceKind(StrEnum):
+    TASK = "TASK"
+    BLOCK = "BLOCK"
