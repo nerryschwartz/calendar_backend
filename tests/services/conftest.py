@@ -51,13 +51,13 @@ class FakeClock:
         return self.fixed
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def service_db_url() -> Generator[str]:
     with tempfile.TemporaryDirectory() as tmpdir:
         yield f"sqlite:///{Path(tmpdir) / 'service_test.sqlite3'}"
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def service_db_engine(service_db_url: str) -> Generator[Engine]:
     engine = create_engine_for_url(service_db_url)
     Base.metadata.create_all(engine)
