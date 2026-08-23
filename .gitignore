@@ -15,6 +15,7 @@ htmlcov/
 *.sqlite3
 *.db
 local_data/
+.codex/plans/
 
 # OS/editor noise
 .DS_Store
