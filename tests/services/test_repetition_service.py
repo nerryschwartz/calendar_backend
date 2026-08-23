@@ -781,6 +781,7 @@ def test_refresh_materializes_new_template_goal_child_on_linked_instances(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_refresh_adds_instances_when_master_horizon_expands(
     service_db_session: Session,
     master_plan_id: PlanID,

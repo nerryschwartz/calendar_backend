@@ -244,6 +244,7 @@ def _two_tasks_same_chain(session: Session, master_plan_id: PlanID) -> tuple[Pla
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_rename_plan_persists_name(service_db_session: Session, master_plan_id: PlanID) -> None:
     created = _goal_service(service_db_session).create_child(
         master_plan_id,
@@ -263,6 +264,7 @@ def test_rename_plan_persists_name(service_db_session: Session, master_plan_id: 
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_rename_plan_master_forbidden(service_db_session: Session, master_plan_id: PlanID) -> None:
     result = _plan_tree_service(service_db_session).rename_plan(master_plan_id, "renamed")
     assert not result.success
@@ -270,6 +272,7 @@ def test_rename_plan_master_forbidden(service_db_session: Session, master_plan_i
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_preview_delete_leaf_plan(service_db_session: Session, master_plan_id: PlanID) -> None:
     created = _goal_service(service_db_session).create_child(
         master_plan_id,
@@ -543,6 +546,7 @@ def test_delete_plan_parity_critical_siblings(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_delete_plan_parity_calendar_entries(
     service_db_session: Session,
     master_plan_id: PlanID,
