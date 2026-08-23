@@ -120,7 +120,9 @@ def get_plan(
 def validate_tree(
     session: Annotated[Session, Depends(get_db_session)],
 ) -> dict[str, str]:
-    unwrap_result(PlanTreeInvariantService(session).validate_master_tree())
+    result = PlanTreeInvariantService(session).validate_master_tree()
+    if not result.success:
+        raise service_result_http_error(result)
     return {"status": "ok"}
 
 

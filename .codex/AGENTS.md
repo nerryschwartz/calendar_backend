@@ -13,3 +13,11 @@ Before committing repository changes, use this workflow:
    - `uv run pytest -m "not slow and not failure_expected"`
 
 For this repository, the pre-commit checks are steps 2 and 3: the abstraction review and the local validation command sequence.
+
+## Test Markers
+
+- Mark tests with `@pytest.mark.slow` when they take more than 1 second on the local suite.
+- Mark tests with `@pytest.mark.failure_expected` only when a change makes the test temporarily fail by design and the test is expected to pass again before the pull request is complete.
+- Remove `failure_expected` before completing the pull request.
+- During branch-loop work, non-final passes should run only tests/checks relevant to the current change, including slow tests when they are relevant.
+- The final branch-loop pass must run the full default validation suite: `uv run ruff format .` and `uv run pytest -m "not slow and not failure_expected"`.

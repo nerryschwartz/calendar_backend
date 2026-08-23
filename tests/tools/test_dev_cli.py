@@ -72,6 +72,7 @@ def test_build_parser_refresh_schedule_accepts_run_started_at() -> None:
     assert args.run_started_at == "2026-06-07T10:00:00+00:00"
 
 
+@pytest.mark.slow
 def test_dispatch_db_init_empty_schema(capsys: pytest.CaptureFixture[str]) -> None:
     exit_code = dispatch(["db", "init"])
 
@@ -81,6 +82,7 @@ def test_dispatch_db_init_empty_schema(capsys: pytest.CaptureFixture[str]) -> No
     assert_empty_application_schema(cli_support.DATABASE_URL)
 
 
+@pytest.mark.slow
 def test_dispatch_db_reset_empty_schema(capsys: pytest.CaptureFixture[str]) -> None:
     assert dispatch(["db", "init"]) == 0
     exit_code = dispatch(["db", "reset"])
@@ -91,6 +93,7 @@ def test_dispatch_db_reset_empty_schema(capsys: pytest.CaptureFixture[str]) -> N
     assert_empty_application_schema(cli_support.DATABASE_URL)
 
 
+@pytest.mark.slow
 def test_dispatch_db_status_after_init(capsys: pytest.CaptureFixture[str]) -> None:
     assert dispatch(["db", "init"]) == 0
     exit_code = dispatch(["db", "status"])
@@ -310,6 +313,7 @@ def test_dispatch_refresh_schedule_stubbed_failure(
     assert "INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT" in captured.err
 
 
+@pytest.mark.slow
 def test_subprocess_root_help_exits_zero(project_root: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "tools.dev_cli", "--help"],
@@ -323,6 +327,7 @@ def test_subprocess_root_help_exits_zero(project_root: Path) -> None:
     assert "calendar-backend-dev" in result.stdout
 
 
+@pytest.mark.slow
 def test_subprocess_refresh_schedule_help_exits_zero(project_root: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "tools.dev_cli", "refresh", "schedule", "--help"],
