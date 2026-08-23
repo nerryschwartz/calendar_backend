@@ -24,10 +24,11 @@ from calendar_backend.domain.plan_read import (
     PlanSearchResultDTO,
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
-from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.domain.time import Clock, SystemClock, truncate_to_minute
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import Plan
 from calendar_backend.models.prerequisites import PlanPrerequisite
+from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.task_resolution import load_plan_graph
 
@@ -41,6 +42,11 @@ class PlanTreeReadService:
         master_result = MasterPlanService(self._session, self._clock).ensure_master_exists()
         if not master_result.success or master_result.value is None:
             return fail(*master_result.errors)
+        horizon_result = MasterHorizonService(self._session, self._clock).refresh_master_horizon(
+            truncate_to_minute(self._clock.now_utc())
+        )
+        if not horizon_result.success:
+            return fail(*horizon_result.errors)
         return ok(master_result.value.plan_id)
 
     def get_plan_detail(self, plan_id: PlanID) -> ServiceResult[PlanDetailDTO]:
