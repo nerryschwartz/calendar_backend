@@ -301,6 +301,7 @@ def _solve_assignment(
             runtime_ms = int((time.perf_counter() - started) * 1000)
             return exact_result, runtime_ms
 
+        all_warnings.extend(exact_result.warnings)
         component_input = decomposition.assignment_input_from_component(component)
         heuristic_result = HeuristicAssignmentSolver().solve(component_input)
         if heuristic_result.status == SolverStatus.INFEASIBLE:

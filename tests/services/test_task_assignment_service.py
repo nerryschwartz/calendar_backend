@@ -598,7 +598,9 @@ def test_assign_tasks_model_size_guard_falls_back_to_heuristic_without_mock(
 
     assert result.success and result.value is not None
     assert result.value.optimization_status == SolverStatus.FEASIBLE
-    assert any(warning.code == MessageCode.HEURISTIC_FEASIBLE for warning in result.value.warnings)
+    warning_codes = {warning.code for warning in result.value.warnings}
+    assert MessageCode.SOLVER_LIMIT_REACHED in warning_codes
+    assert MessageCode.HEURISTIC_FEASIBLE in warning_codes
 
 
 @pytest.mark.integration

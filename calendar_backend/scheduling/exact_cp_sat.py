@@ -1051,7 +1051,16 @@ def _exact_guard_not_usable_result() -> AssignmentSolverResult:
     return AssignmentSolverResult(
         status=SolverStatus.INFEASIBLE,
         assignments=(),
-        warnings=(),
+        warnings=(
+            ServiceMessage(
+                code=MessageCode.SOLVER_LIMIT_REACHED,
+                message=(
+                    "Exact solver skipped because the estimated model size exceeded "
+                    "the configured limit"
+                ),
+                details={},
+            ),
+        ),
         failure=None,
     )
 
