@@ -19,8 +19,11 @@ from sqlalchemy.orm import Session
 
 
 class ApiTestClock:
+    def __init__(self, now: datetime | None = None) -> None:
+        self._now = now or datetime(2026, 6, 7, 10, 0, tzinfo=UTC)
+
     def now_utc(self) -> datetime:
-        return datetime(2026, 6, 7, 10, 0, tzinfo=UTC)
+        return self._now
 
 
 @pytest.fixture
@@ -36,6 +39,18 @@ def api_db_engine() -> Generator[Engine]:
 
 @pytest.fixture
 def api_client(api_db_engine: Engine) -> Generator[TestClient]:
+    yield from _api_client_for_clock(api_db_engine, ApiTestClock())
+
+
+@pytest.fixture
+def non_minute_api_client(api_db_engine: Engine) -> Generator[TestClient]:
+    yield from _api_client_for_clock(
+        api_db_engine,
+        ApiTestClock(datetime(2026, 6, 7, 10, 0, 37, 123456, tzinfo=UTC)),
+    )
+
+
+def _api_client_for_clock(api_db_engine: Engine, clock: Clock) -> Generator[TestClient]:
     app = create_app()
     session_factory = create_session_factory(api_db_engine)
 
@@ -47,7 +62,7 @@ def api_client(api_db_engine: Engine) -> Generator[TestClient]:
             session.close()
 
     def override_get_clock() -> Clock:
-        return ApiTestClock()
+        return clock
 
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_clock] = override_get_clock
