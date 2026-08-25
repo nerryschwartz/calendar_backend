@@ -22,3 +22,12 @@ def test_saved_non_critical_master_goal_sequence_refreshes_with_non_minute_clock
 
     refresh_response = non_minute_api_client.post("/api/schedule/refresh")
     assert refresh_response.status_code == 200
+
+
+def test_refresh_schedule_response_uses_minute_aligned_run_timestamp(
+    non_minute_api_client: TestClient,
+) -> None:
+    response = non_minute_api_client.post("/api/schedule/refresh")
+
+    assert response.status_code == 200
+    assert response.json()["run_started_at"] == "2026-06-07T10:00:00+00:00"
