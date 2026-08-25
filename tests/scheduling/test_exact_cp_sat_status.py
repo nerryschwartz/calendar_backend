@@ -7,6 +7,7 @@ from calendar_backend.domain.errors import MessageCode
 from calendar_backend.scheduling.exact_cp_sat import (
     ExactAssignmentSolver,
     _ComponentSolveResult,  # pyright: ignore[reportPrivateUsage]
+    solve_exact_component,
 )
 from calendar_backend.scheduling.feasibility import validate_full_assignment
 from calendar_backend.scheduling.input import SolverLimits
@@ -20,6 +21,7 @@ from calendar_backend.scheduling.types import (
 )
 
 from .conftest import (
+    assignment_component,
     assignment_input,
     plan_id,
     schedulable_task,
@@ -119,6 +121,25 @@ def test_solve_model_size_guard_returns_not_usable_without_failure() -> None:
 
     assert result.status == SolverStatus.INFEASIBLE
     assert result.assignments == ()
+    assert [warning.code for warning in result.warnings] == [MessageCode.SOLVER_LIMIT_REACHED]
+    assert result.failure is None
+    assert is_usable_solver_result(result) is False
+
+
+def test_solve_exact_component_model_size_guard_skips_model_construction() -> None:
+    task = schedulable_task(
+        duration_minutes=60,
+        effective_time_windows=(window(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 18, 0)),),
+    )
+    limits = SolverLimits(time_limit_seconds=30, model_size_limit=1)
+    component = assignment_component(tasks=(task,), solver_limits_value=limits)
+
+    with patch("calendar_backend.scheduling.exact_cp_sat._build_component_context") as build:
+        result = solve_exact_component(component)
+
+    build.assert_not_called()
+    assert result.status == SolverStatus.INFEASIBLE
+    assert [warning.code for warning in result.warnings] == [MessageCode.SOLVER_LIMIT_REACHED]
     assert result.failure is None
     assert is_usable_solver_result(result) is False
 
