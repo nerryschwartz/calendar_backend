@@ -7,7 +7,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from calendar_backend.db.session import transaction
-from calendar_backend.domain.enums import CalendarEntryType, CloneStatus, PlanKind, RepeatMode
+from calendar_backend.domain.enums import (
+    CalendarEntryType,
+    CloneStatus,
+    PlanKind,
+    RepeatMode,
+)
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import CalendarEntryID, PlanID
 from calendar_backend.domain.plan_create import (
@@ -15,8 +20,11 @@ from calendar_backend.domain.plan_create import (
     RepetitionCreatePayload,
     TaskCreatePayload,
 )
+from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.calendar import CalendarEntry
-from calendar_backend.models.plans import Plan, RepetitionPlan
+from calendar_backend.models.constraints import TimeConstraintGroup
+from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
+from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import AppSettingsService
@@ -27,6 +35,7 @@ from calendar_backend.services.plan_tree import PlanTreeService
 from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
+from calendar_backend.services.time_constraint import TimeConstraintService
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -561,6 +570,53 @@ def test_delete_plan_parity_calendar_entries(
         root_plan_id=created.value.plan_id,
         master_plan_id=master_plan_id,
     )
+
+
+@pytest.mark.integration
+def test_delete_plan_removes_related_rows_and_preserves_validation(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    deleted_id, dependent_id = _two_tasks_same_chain(service_db_session, master_plan_id)
+    entry_id = _add_calendar_entry(service_db_session, source_plan_id=deleted_id)
+    constraint = TimeConstraintService(service_db_session, FakeClock(RUN_AT)).add_user_group(
+        deleted_id,
+        (TimeWindow(start_time=RUN_AT, end_time=RUN_AT + timedelta(hours=1)),),
+    )
+    assert constraint.success and constraint.value is not None
+    group_id = constraint.value.constraint_group_id
+    window_id = constraint.value.windows[0].time_window_id
+    assert (
+        _plan_tree_service(service_db_session)
+        .add_plan_prerequisite(dependent_id, deleted_id)
+        .success
+    )
+    assert (
+        _task_service(service_db_session)
+        .set_immediate_prerequisite(dependent_id, deleted_id)
+        .success
+    )
+
+    result = _plan_tree_service(service_db_session).delete_plan(deleted_id)
+
+    assert result.success
+    assert service_db_session.get(Plan, deleted_id) is None
+    assert service_db_session.get(CalendarEntry, entry_id) is None
+    assert service_db_session.get(TimeConstraintGroup, group_id) is None
+    assert service_db_session.get(TimeWindowRow, window_id) is None
+    assert (
+        service_db_session.scalar(
+            select(PlanPrerequisite).where(
+                (PlanPrerequisite.plan_id == deleted_id)
+                | (PlanPrerequisite.prerequisite_plan_id == deleted_id)
+            )
+        )
+        is None
+    )
+    dependent_task = service_db_session.get(TaskPlan, dependent_id)
+    assert dependent_task is not None
+    assert dependent_task.immediate_prerequisite_plan_id is None
+    _assert_tree_invariant(service_db_session)
 
 
 @pytest.mark.integration
