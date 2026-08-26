@@ -31,3 +31,33 @@ def test_get_master_create_non_critical_goal_and_validate(api_client: TestClient
     validate_response = api_client.post("/api/plans/validate")
     assert validate_response.status_code == 200
     assert validate_response.json() == {"status": "ok"}
+
+
+def test_delete_non_master_child_then_validate_returns_structured_missing_plan(
+    api_client: TestClient,
+) -> None:
+    master_response = api_client.get("/api/plans/master")
+    assert master_response.status_code == 200
+    master_id = master_response.json()["master_plan_id"]
+
+    child_response = api_client.post(
+        f"/api/plans/{master_id}/children",
+        json={"kind": "GOAL", "is_critical": False, "name": "temporary goal"},
+    )
+    assert child_response.status_code == 200
+    child_id = child_response.json()["plan_id"]
+
+    delete_response = api_client.delete(f"/api/plans/{child_id}")
+    assert delete_response.status_code == 200, delete_response.json()
+    assert delete_response.json() == {"status": "ok"}
+
+    validate_response = api_client.post("/api/plans/validate")
+    assert validate_response.status_code == 200
+    assert validate_response.json() == {"status": "ok"}
+
+    for stale_response in (
+        api_client.delete(f"/api/plans/{child_id}"),
+        api_client.get(f"/api/plans/{child_id}"),
+    ):
+        assert stale_response.status_code == 422
+        assert stale_response.json()["detail"]["errors"][0]["code"] == "PLAN_NOT_FOUND"

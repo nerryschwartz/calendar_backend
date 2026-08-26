@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 
 def unwrap_result[T](result: ServiceResult[T]) -> T:
-    if result.success and result.value is not None:
+    if result.success:
         return result.value
     raise service_result_http_error(result)
 
