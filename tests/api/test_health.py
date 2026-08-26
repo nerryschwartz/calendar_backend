@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from fastapi.testclient import TestClient
 
 
@@ -61,3 +63,18 @@ def test_delete_non_master_child_then_validate_returns_structured_missing_plan(
     ):
         assert stale_response.status_code == 422
         assert stale_response.json()["detail"]["errors"][0]["code"] == "PLAN_NOT_FOUND"
+
+
+def test_missing_plan_delete_and_detail_use_service_error_envelope(
+    api_client: TestClient,
+) -> None:
+    missing_plan_id = uuid.uuid4()
+
+    for response in (
+        api_client.delete(f"/api/plans/{missing_plan_id}"),
+        api_client.get(f"/api/plans/{missing_plan_id}"),
+    ):
+        assert response.status_code == 422
+        error = response.json()["detail"]["errors"][0]
+        assert error["code"] == "PLAN_NOT_FOUND"
+        assert error["details"] == {"plan_id": str(missing_plan_id)}
