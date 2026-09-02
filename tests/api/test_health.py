@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 
 def test_health(api_client: TestClient) -> None:
