@@ -143,6 +143,22 @@ def test_update_settings_rejects_invalid_timezone(service_db_session: Session) -
 
 
 @pytest.mark.integration
+def test_update_settings_rejects_fixed_timezone_abbreviation(
+    service_db_session: Session,
+) -> None:
+    clock = FakeClock(datetime(2026, 6, 7, 12, 0, tzinfo=UTC))
+    service = AppSettingsService(service_db_session, clock)
+    assert service.get_settings().success
+
+    result = service.update_settings(local_timezone="EST")
+
+    assert result.success is False
+    assert result.errors
+    assert result.errors[0].code == MessageCode.INVALID_TIME_WINDOW
+    assert result.errors[0].details == {"local_timezone": "EST"}
+
+
+@pytest.mark.integration
 def test_update_settings_advances_updated_at_with_fake_clock(service_db_session: Session) -> None:
     bootstrap_clock = FakeClock(datetime(2026, 6, 7, 12, 0, tzinfo=UTC))
     service = AppSettingsService(service_db_session, bootstrap_clock)

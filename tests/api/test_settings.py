@@ -35,3 +35,25 @@ def test_settings_reject_non_positive_master_horizon_duration(
     error = response.json()["detail"]["errors"][0]
     assert error["code"] == "INVALID_DURATION"
     assert error["details"] == {"master_horizon_duration_minutes": str(minutes)}
+
+
+def test_settings_accepts_iana_timezone(api_client: TestClient) -> None:
+    response = api_client.patch(
+        "/api/settings",
+        json={"local_timezone": "America/New_York"},
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["local_timezone"] == "America/New_York"
+
+
+def test_settings_rejects_fixed_timezone_abbreviation(api_client: TestClient) -> None:
+    response = api_client.patch(
+        "/api/settings",
+        json={"local_timezone": "EST"},
+    )
+
+    assert response.status_code == 422
+    error = response.json()["detail"]["errors"][0]
+    assert error["code"] == "INVALID_TIME_WINDOW"
+    assert error["details"] == {"local_timezone": "EST"}
