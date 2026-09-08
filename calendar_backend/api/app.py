@@ -35,7 +35,9 @@ def create_app() -> FastAPI:
     )
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error(request: Request, exc: RequestValidationError):
+    async def validation_error(  # pyright: ignore[reportUnusedFunction]
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
         if request.url.path == "/api/free-time/activities/draft-edits":
             return JSONResponse(
                 status_code=422,
