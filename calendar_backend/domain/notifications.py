@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from calendar_backend.domain.enums import NotificationSourceKind, TimerSourceKind
+from calendar_backend.domain.enums import LastFailureReason, NotificationSourceKind, TimerSourceKind
 from calendar_backend.domain.ids import (
     BlockCalendarEntryID,
     CalendarEntryID,
+    CalendarRunID,
     NotificationQueueItemID,
     PlanID,
 )
@@ -25,6 +26,22 @@ class ActiveTimerDTO:
     window_end_at: datetime
     calendar_entry_id: CalendarEntryID | None
     block_calendar_entry_id: BlockCalendarEntryID | None
+
+
+@dataclass(frozen=True)
+class TimerDiagnosticsDTO:
+    backend_now: datetime
+    active_calendar_run_id: CalendarRunID | None
+    last_refresh_failed: bool
+    last_failure_at: datetime | None
+    last_failure_reason: LastFailureReason | None
+    nearby_entries: tuple[ActiveTimerDTO, ...]
+
+
+@dataclass(frozen=True)
+class ActiveTimersDTO:
+    timers: tuple[ActiveTimerDTO, ...]
+    diagnostics: TimerDiagnosticsDTO
 
 
 @dataclass(frozen=True)

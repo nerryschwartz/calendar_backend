@@ -9,10 +9,12 @@ from uuid import UUID
 from calendar_backend.api.deps import get_clock, get_db_session
 from calendar_backend.api.errors import unwrap_result
 from calendar_backend.api.serialize import dto_to_json
+from calendar_backend.domain.free_time_draft import FreeTimeDraftBody, FreeTimeDraftResult
 from calendar_backend.domain.ids import FreeTimeActivityID, FreeTimeActivityPrerequisiteID, PlanID
 from calendar_backend.domain.time import Clock
 from calendar_backend.services.free_time_activity import FreeTimeActivityService
-from fastapi import APIRouter, Depends
+from calendar_backend.services.free_time_draft import FreeTimeDraftService
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -71,6 +73,25 @@ def create_activity(
     )
 
 
+@router.post("/activities/draft-edits", response_model=FreeTimeDraftResult)
+def apply_draft_edits(
+    body: FreeTimeDraftBody,
+    session: Annotated[Session, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> FreeTimeDraftResult:
+    result = FreeTimeDraftService(session, clock).apply_edits(body.edits)
+    if not result.success:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "applied_count": 0,
+                "errors": dto_to_json(result.errors),
+            },
+        )
+    assert result.value is not None
+    return result.value
+
+
 @router.get("/activities/{activity_id}")
 def get_activity(
     activity_id: UUID,
@@ -82,6 +103,18 @@ def get_activity(
             FreeTimeActivityService(session, clock).get_activity(FreeTimeActivityID(activity_id))
         )
     )
+
+
+@router.delete("/activities/{activity_id}")
+def delete_activity(
+    activity_id: UUID,
+    session: Annotated[Session, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> dict[str, str]:
+    unwrap_result(
+        FreeTimeActivityService(session, clock).delete_activity(FreeTimeActivityID(activity_id))
+    )
+    return {"status": "ok"}
 
 
 @router.patch("/activities/{activity_id}")

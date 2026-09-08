@@ -5,6 +5,9 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+import calendar_backend.models.calendar  # pyright: ignore[reportUnusedImport]
+import calendar_backend.models.constraints  # pyright: ignore[reportUnusedImport]
+import calendar_backend.models.repetitions  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from calendar_backend.domain.enums import CloneStatus, PlanKind
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.prerequisites import (

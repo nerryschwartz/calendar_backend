@@ -108,6 +108,15 @@ def create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> P
     return result.value.plan_id
 
 
+def bootstrap_goal_with_horizon(session: Session) -> PlanID:
+    master_id = bootstrap_master_with_horizon(session)
+    result = goal_service(session).create_child(
+        master_id, PlanKind.GOAL, GoalCreatePayload("constrained goal"), is_critical=False
+    )
+    assert result.success and result.value is not None
+    return result.value.plan_id
+
+
 def create_block(
     session: Session,
     parent_id: PlanID,
@@ -175,13 +184,13 @@ def create_two_enabled_activities(
 
 
 def bootstrap_narrow_assignable_task(session: Session) -> tuple[PlanID, PlanID]:
-    master_id = bootstrap_master_with_horizon(session)
+    parent_id = bootstrap_goal_with_horizon(session)
     TimeConstraintService(session, clock()).add_user_group(
-        master_id,
+        parent_id,
         (window(RUN_AT, RUN_AT + timedelta(hours=2)),),
     )
-    task_id = create_task(session, master_id)
-    return master_id, task_id
+    task_id = create_task(session, parent_id)
+    return parent_id, task_id
 
 
 def enable_heuristic_fallback_settings(session: Session) -> None:
@@ -348,14 +357,14 @@ def add_calendar_entry(
 
 
 def bootstrap_assignable_task(session: Session) -> tuple[PlanID, PlanID]:
-    master_id = bootstrap_master_with_horizon(session)
-    task_id = create_task(session, master_id)
+    parent_id = bootstrap_goal_with_horizon(session)
+    task_id = create_task(session, parent_id)
     TimeConstraintService(session, clock()).add_user_group(
-        master_id,
+        parent_id,
         (window(RUN_AT, RUN_AT + timedelta(hours=2)),),
     )
     create_enabled_activity(session)
-    return master_id, task_id
+    return parent_id, task_id
 
 
 def invalid_incomplete_task() -> tuple[ResolvedTask, ...]:

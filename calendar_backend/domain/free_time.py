@@ -24,7 +24,7 @@ from calendar_backend.domain.task_families import (
     FREE_TIME_BLOCK_FAMILY,
     BlockPlacementSnapshot,
 )
-from calendar_backend.domain.time import TimeWindow, gaps_in_window
+from calendar_backend.domain.time import TimeWindow, gaps_in_window, sqlite_utc
 from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import Plan
 
@@ -617,8 +617,8 @@ def free_time_activity_dto_from_row(activity: FreeTimeActivity) -> FreeTimeActiv
         minimum_block_size_minutes=activity.minimum_block_size_minutes,
         prerequisite_plan_ids=prerequisite_plan_ids,
         allowed_block_families=effective_activity_block_families(activity.allowed_block_families),
-        created_at=activity.created_at,
-        updated_at=activity.updated_at,
+        created_at=sqlite_utc(activity.created_at),
+        updated_at=sqlite_utc(activity.updated_at),
     )
 
 

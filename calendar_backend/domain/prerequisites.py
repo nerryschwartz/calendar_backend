@@ -113,7 +113,7 @@ def plan_prerequisite_edges_from_plans(plans: Iterable[Plan]) -> tuple[PlanPrere
     return tuple(sorted(edges, key=lambda edge: (str(edge[0]), str(edge[1]))))
 
 
-def validate_plan_prerequisite_link(
+def validate_plan_prerequisite_link(  # noqa: PLR0911
     *,
     dependent_id: PlanID,
     prerequisite_id: PlanID,
@@ -140,12 +140,24 @@ def validate_plan_prerequisite_link(
             },
         )
 
-    if plans_by_id.get(dependent_id) is None or plans_by_id.get(prerequisite_id) is None:
-        missing_id = dependent_id if plans_by_id.get(dependent_id) is None else prerequisite_id
+    dependent_plan = plans_by_id.get(dependent_id)
+    prerequisite_plan = plans_by_id.get(prerequisite_id)
+    if dependent_plan is None or prerequisite_plan is None:
+        missing_id = dependent_id if dependent_plan is None else prerequisite_id
         return ServiceMessage(
             code=MessageCode.PLAN_NOT_FOUND,
             message="Plan not found",
             details={"plan_id": str(missing_id)},
+        )
+
+    if dependent_plan.is_master:
+        return ServiceMessage(
+            code=MessageCode.MASTER_MUTATION_FORBIDDEN,
+            message="Master plan cannot have plan prerequisites",
+            details={
+                "plan_id": str(dependent_id),
+                "prerequisite_plan_id": str(prerequisite_id),
+            },
         )
 
     dependent_trace = compute_template_trace(dependent_id, plans_by_id)

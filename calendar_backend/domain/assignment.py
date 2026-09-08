@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID
 
 from calendar_backend.domain.deletion import AssignmentConflict, build_assignment_conflict
@@ -17,7 +17,7 @@ from calendar_backend.domain.ids import (
     PlanID,
 )
 from calendar_backend.domain.resolution import ResolvedTask, ResolveTasksResult
-from calendar_backend.domain.time import TimeWindow
+from calendar_backend.domain.time import TimeWindow, sqlite_utc
 from calendar_backend.models.calendar import CalendarEntry
 from calendar_backend.scheduling.feasibility import diagnose_assignment_input
 from calendar_backend.scheduling.input import AssignmentInput, OccupiedInterval
@@ -68,8 +68,8 @@ def calendar_entry_dto_from_row(entry: CalendarEntry) -> CalendarEntryDTO:
     return CalendarEntryDTO(
         calendar_entry_id=CalendarEntryID(entry.calendar_entry_id),
         entry_type=entry.entry_type,
-        start_time=entry.start_time,
-        end_time=entry.end_time,
+        start_time=sqlite_utc(entry.start_time),
+        end_time=sqlite_utc(entry.end_time),
         source_plan_id=PlanID(entry.source_plan_id) if entry.source_plan_id is not None else None,
         source_free_time_activity_id=(
             FreeTimeActivityID(entry.source_free_time_activity_id)
@@ -365,8 +365,3 @@ def previous_placements_from_future_task_entries(
         )
         for plan_id, segments in sorted(segments_by_plan_id.items(), key=lambda item: str(item[0]))
     )
-
-
-def sqlite_utc(dt: datetime) -> datetime:
-    """Normalize SQLite-read naive datetimes to UTC for comparisons."""
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import available_timezones
 
 from sqlalchemy.orm import Session
 
@@ -102,15 +102,12 @@ def _validate_settings_update(
     exact_solver_time_limit_seconds: int | None,
     exact_solver_model_size_limit: int | None,
 ) -> ServiceMessage | None:
-    if local_timezone is not None:
-        try:
-            ZoneInfo(local_timezone)
-        except ZoneInfoNotFoundError:
-            return ServiceMessage(
-                code=MessageCode.INVALID_TIME_WINDOW,
-                message="Invalid local_timezone",
-                details={"local_timezone": local_timezone},
-            )
+    if local_timezone is not None and not _is_valid_local_timezone(local_timezone):
+        return ServiceMessage(
+            code=MessageCode.INVALID_TIME_WINDOW,
+            message="Invalid local_timezone",
+            details={"local_timezone": local_timezone},
+        )
 
     for field_name, value in (
         ("master_horizon_duration_minutes", master_horizon_duration_minutes),
@@ -125,3 +122,9 @@ def _validate_settings_update(
             )
 
     return None
+
+
+def _is_valid_local_timezone(local_timezone: str) -> bool:
+    return local_timezone == "UTC" or (
+        "/" in local_timezone and local_timezone in available_timezones()
+    )

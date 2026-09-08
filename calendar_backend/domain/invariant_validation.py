@@ -731,6 +731,18 @@ def _check_constraints(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
                         )
                     )
             elif group.constraint_kind == ConstraintKind.USER:
+                if plan.is_master:
+                    violations.append(
+                        ServiceMessage(
+                            code=MessageCode.CONSTRAINT_INVARIANT_VIOLATION,
+                            message="Master plan cannot have USER constraint groups",
+                            details={
+                                "plan_id": str(plan.plan_id),
+                                "constraint_group_id": str(group.time_constraint_group_id),
+                            },
+                        )
+                    )
+                    continue
                 if not group.windows:
                     violations.append(
                         ServiceMessage(
@@ -793,6 +805,19 @@ def _check_plan_prerequisites(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
         )
 
     for dependent_id, prerequisite_id in edges:
+        dependent_plan = plans_by_id.get(dependent_id)
+        if dependent_plan is not None and dependent_plan.is_master:
+            violations.append(
+                ServiceMessage(
+                    code=MessageCode.PREREQUISITE_INVARIANT_VIOLATION,
+                    message="Master plan cannot have plan prerequisites",
+                    details={
+                        "plan_id": str(dependent_id),
+                        "prerequisite_plan_id": str(prerequisite_id),
+                    },
+                )
+            )
+            continue
         dependent_trace = compute_template_trace(dependent_id, plans_by_id)
         prerequisite_trace = compute_template_trace(prerequisite_id, plans_by_id)
         if traces_match(dependent_trace, prerequisite_trace):

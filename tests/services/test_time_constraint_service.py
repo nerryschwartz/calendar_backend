@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from calendar_backend.domain.enums import ConstraintKind
+from calendar_backend.domain.assignment import sqlite_utc
+from calendar_backend.domain.enums import ConstraintKind, PlanKind
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID, TimeConstraintGroupID, TimeWindowID
+from calendar_backend.domain.plan_create import TaskCreatePayload
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
+from calendar_backend.models.plans import Plan
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.time_constraint import TimeConstraintService
@@ -43,29 +47,77 @@ def _user_group_count(session: Session) -> int:
 
 
 @pytest.fixture
-def master_plan_id(service_db_session: Session) -> PlanID:
+def constraint_plan_id(service_db_session: Session) -> PlanID:
     clock = FakeClock(RUN_AT)
-    MasterPlanService(service_db_session, clock).ensure_master_exists()
+    master = MasterPlanService(service_db_session, clock).ensure_master_exists()
+    assert master.success and master.value is not None
     AppSettingsService(service_db_session, clock).get_settings()
-    result = MasterPlanService(service_db_session, clock).ensure_master_exists()
-    assert result.success and result.value is not None
-    return result.value.plan_id
+    child = GoalService(service_db_session, clock).create_child(
+        master.value.plan_id,
+        PlanKind.TASK,
+        TaskCreatePayload("constrained task", 30, False, None),
+        is_critical=False,
+    )
+    assert child.success and child.value is not None
+    return child.value.plan_id
 
 
 def _user_window_count(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(TimeWindowRow)) or 0
 
 
+@pytest.mark.parametrize(
+    "mutation", ["create", "replace", "add_window", "remove_window", "remove_last", "remove_group"]
+)
+def test_constraint_mutations_touch_owning_plan(
+    service_db_session: Session, constraint_plan_id: PlanID, mutation: str
+) -> None:
+    window = _window(_utc(2026, 6, 7, 13, 0), _utc(2026, 6, 7, 14, 0))
+    initial = TimeConstraintService(service_db_session, FakeClock(RUN_AT)).add_user_group(
+        constraint_plan_id, (window,)
+    )
+    assert initial.success and initial.value is not None
+    group_id = initial.value.constraint_group_id
+    now = RUN_AT + timedelta(minutes=1)
+    service = TimeConstraintService(service_db_session, FakeClock(now))
+    if mutation == "create":
+        result = service.add_user_group(constraint_plan_id, (window,))
+    elif mutation == "replace":
+        result = service.update_user_group(group_id, (window,))
+    elif mutation == "add_window":
+        result = service.add_user_window(group_id, window)
+    elif mutation == "remove_group":
+        result = service.remove_user_group(group_id)
+    else:
+        window_id = initial.value.windows[0].time_window_id
+        if mutation == "remove_window":
+            expanded = service.add_user_window(
+                group_id, _window(_utc(2026, 6, 7, 15, 0), _utc(2026, 6, 7, 16, 0))
+            )
+            assert expanded.success and expanded.value is not None
+            window_id = expanded.value.windows[0].time_window_id
+            plan = service_db_session.get(Plan, constraint_plan_id)
+            assert plan is not None
+            plan.updated_at = RUN_AT
+            service_db_session.commit()
+        result = service.remove_user_window(group_id, window_id)
+    assert result.success
+    service_db_session.expire_all()
+    plan = service_db_session.get(Plan, constraint_plan_id)
+    assert plan is not None
+    assert sqlite_utc(plan.updated_at) == now
+
+
 @pytest.mark.integration
 def test_add_user_group_merges_overlapping_windows_on_create(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     service = TimeConstraintService(service_db_session, clock)
 
     result = service.add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (
             _window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),
             _window(_utc(2026, 6, 7, 11, 0), _utc(2026, 6, 7, 14, 0)),
@@ -81,12 +133,12 @@ def test_add_user_group_merges_overlapping_windows_on_create(
 @pytest.mark.integration
 def test_update_user_group_replaces_and_merges_windows(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     service = TimeConstraintService(service_db_session, clock)
     created = service.add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     assert created.success and created.value is not None
@@ -108,12 +160,12 @@ def test_update_user_group_replaces_and_merges_windows(
 @pytest.mark.integration
 def test_remove_user_group_deletes_group_and_windows(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     service = TimeConstraintService(service_db_session, clock)
     created = service.add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     assert created.success and created.value is not None
@@ -129,12 +181,12 @@ def test_remove_user_group_deletes_group_and_windows(
 @pytest.mark.integration
 def test_add_user_group_rejects_empty_windows(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     before_groups = _user_group_count(service_db_session)
 
-    result = TimeConstraintService(service_db_session, clock).add_user_group(master_plan_id, ())
+    result = TimeConstraintService(service_db_session, clock).add_user_group(constraint_plan_id, ())
 
     assert not result.success
     assert result.errors[0].code == MessageCode.EMPTY_CONSTRAINT_GROUP
@@ -144,14 +196,14 @@ def test_add_user_group_rejects_empty_windows(
 @pytest.mark.integration
 def test_add_user_group_rejects_naive_datetime(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     before_groups = _user_group_count(service_db_session)
     naive = datetime(2026, 6, 7, 9, 0)
 
     result = TimeConstraintService(service_db_session, clock).add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (_window(naive, _utc(2026, 6, 7, 12, 0)),),
     )
 
@@ -163,13 +215,13 @@ def test_add_user_group_rejects_naive_datetime(
 @pytest.mark.integration
 def test_add_user_group_rejects_inverted_window(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     before_groups = _user_group_count(service_db_session)
 
     result = TimeConstraintService(service_db_session, clock).add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (_window(_utc(2026, 6, 7, 12, 0), _utc(2026, 6, 7, 9, 0)),),
     )
 
@@ -194,6 +246,25 @@ def test_add_user_group_no_partial_persistence_when_plan_missing(
 
     assert not result.success
     assert result.errors[0].code == MessageCode.PLAN_NOT_FOUND
+    assert _user_group_count(service_db_session) == before_groups
+    assert _user_window_count(service_db_session) == before_windows
+
+
+@pytest.mark.integration
+def test_add_user_group_rejects_master_plan(service_db_session: Session) -> None:
+    clock = FakeClock(RUN_AT)
+    master = MasterPlanService(service_db_session, clock).ensure_master_exists()
+    assert master.success and master.value is not None
+    before_groups = _user_group_count(service_db_session)
+    before_windows = _user_window_count(service_db_session)
+
+    result = TimeConstraintService(service_db_session, clock).add_user_group(
+        master.value.plan_id,
+        (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
+    )
+
+    assert not result.success
+    assert result.errors[0].code == MessageCode.MASTER_MUTATION_FORBIDDEN
     assert _user_group_count(service_db_session) == before_groups
     assert _user_window_count(service_db_session) == before_windows
 
@@ -224,12 +295,12 @@ def test_group_mutations_reject_system_horizon_group(service_db_session: Session
 @pytest.mark.integration
 def test_add_user_window_merges_with_existing_windows(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     service = TimeConstraintService(service_db_session, clock)
     initial = service.add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     assert initial.success and initial.value is not None
@@ -248,12 +319,12 @@ def test_add_user_window_merges_with_existing_windows(
 @pytest.mark.integration
 def test_remove_user_window_returns_updated_group(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     service = TimeConstraintService(service_db_session, clock)
     created = service.add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (
             _window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),
             _window(_utc(2026, 6, 7, 13, 0), _utc(2026, 6, 7, 15, 0)),
@@ -272,12 +343,12 @@ def test_remove_user_window_returns_updated_group(
 @pytest.mark.integration
 def test_remove_user_window_deletes_group_when_last_window_removed(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     service = TimeConstraintService(service_db_session, clock)
     created = service.add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     assert created.success and created.value is not None
@@ -294,12 +365,12 @@ def test_remove_user_window_deletes_group_when_last_window_removed(
 @pytest.mark.integration
 def test_add_user_window_rejects_invalid_window(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     service = TimeConstraintService(service_db_session, clock)
     created = service.add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     assert created.success and created.value is not None
@@ -340,12 +411,12 @@ def test_window_mutations_reject_system_horizon_group(service_db_session: Sessio
 @pytest.mark.integration
 def test_remove_user_window_rejects_missing_window(
     service_db_session: Session,
-    master_plan_id: PlanID,
+    constraint_plan_id: PlanID,
 ) -> None:
     clock = FakeClock(RUN_AT)
     service = TimeConstraintService(service_db_session, clock)
     created = service.add_user_group(
-        master_plan_id,
+        constraint_plan_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     assert created.success and created.value is not None

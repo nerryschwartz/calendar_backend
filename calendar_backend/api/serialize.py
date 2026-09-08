@@ -8,6 +8,8 @@ from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID
 
+from calendar_backend.domain.time import sqlite_utc
+
 
 def dto_to_json(value: object) -> Any:  # noqa: PLR0911
     if value is None:
@@ -16,10 +18,12 @@ def dto_to_json(value: object) -> Any:  # noqa: PLR0911
         return {key: dto_to_json(item) for key, item in asdict(cast(Any, value)).items()}
     if isinstance(value, tuple | list):
         return [dto_to_json(item) for item in value]
+    if isinstance(value, dict):
+        return {key: dto_to_json(item) for key, item in value.items()}
     if isinstance(value, StrEnum):
         return value.value
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, datetime):
-        return value.isoformat()
+        return sqlite_utc(value).isoformat()
     return value

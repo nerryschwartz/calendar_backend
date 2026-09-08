@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
@@ -103,13 +103,18 @@ class FreeTimeActivityService:
             if validation_error is not None:
                 return fail(validation_error)
 
-            loaded.name = next_name
-            loaded.real_fraction = next_fraction
-            loaded.minimum_block_size_minutes = next_minimum_block
-            fraction_error = _validate_global_enabled_fractions(txn)
+            prospective = FreeTimeActivity(
+                free_time_activity_id=activity_id,
+                enabled=loaded.enabled,
+                real_fraction=next_fraction,
+            )
+            fraction_error = _validate_global_enabled_fractions(txn, prospective=(prospective,))
             if fraction_error is not None:
                 return fail(fraction_error)
 
+            loaded.name = next_name
+            loaded.real_fraction = next_fraction
+            loaded.minimum_block_size_minutes = next_minimum_block
             loaded.updated_at = self._clock.now_utc()
             txn.flush()
             return ok(free_time_activity_dto_from_row(loaded))
@@ -133,11 +138,16 @@ class FreeTimeActivityService:
             if validation_error is not None:
                 return fail(validation_error)
 
-            loaded.enabled = enabled
-            fraction_error = _validate_global_enabled_fractions(txn)
+            prospective = FreeTimeActivity(
+                free_time_activity_id=activity_id,
+                enabled=enabled,
+                real_fraction=loaded.real_fraction,
+            )
+            fraction_error = _validate_global_enabled_fractions(txn, prospective=(prospective,))
             if fraction_error is not None:
                 return fail(fraction_error)
 
+            loaded.enabled = enabled
             loaded.updated_at = self._clock.now_utc()
             txn.flush()
             return ok(free_time_activity_dto_from_row(loaded))
@@ -174,7 +184,7 @@ class FreeTimeActivityService:
                         )
                     )
 
-            txn.add(
+            loaded.prerequisites.append(
                 FreeTimeActivityPrerequisite(
                     prerequisite_id=new_id(FreeTimeActivityPrerequisiteID),
                     free_time_activity_id=activity_id,
@@ -217,6 +227,20 @@ class FreeTimeActivityService:
             reloaded = _load_activity(txn, activity_id)
             assert reloaded is not None
             return ok(free_time_activity_dto_from_row(reloaded))
+
+    def delete_activity(self, activity_id: FreeTimeActivityID) -> ServiceResult[None]:
+        with transaction(self._session) as txn:
+            activity = _load_activity(txn, activity_id)
+            if activity is None:
+                return fail(_activity_not_found(activity_id))
+            remaining = tuple(
+                row for row in load_all_activities(txn) if row.free_time_activity_id != activity_id
+            )
+            error = validate_enabled_fractions_sum_to_one(remaining)
+            if error is not None:
+                return fail(error)
+            delete_activity_rows(txn, activity, now=self._clock.now_utc())
+            return ok(None)
 
     def get_activity(
         self,
@@ -281,6 +305,30 @@ class FreeTimeActivityService:
             reloaded = _load_activity(txn, activity_id)
             assert reloaded is not None
             return ok(free_time_activity_dto_from_row(reloaded))
+
+
+def delete_activity_rows(txn: Session, activity: FreeTimeActivity, *, now: datetime) -> None:
+    """Remove future bookings and detach historical evidence before deleting an activity."""
+    activity_id = activity.free_time_activity_id
+    txn.execute(
+        delete(CalendarEntry).where(
+            CalendarEntry.source_free_time_activity_id == activity_id,
+            CalendarEntry.start_time >= now,
+        )
+    )
+    txn.execute(
+        update(CalendarEntry)
+        .where(
+            CalendarEntry.source_free_time_activity_id == activity_id,
+        )
+        .values(source_free_time_activity_id=None)
+    )
+    for prerequisite in activity.prerequisites:
+        txn.delete(prerequisite)
+    txn.flush()
+    txn.expire(activity, ("prerequisites",))
+    txn.delete(activity)
+    txn.flush()
 
 
 def cleanup_orphaned_activities_after_plan_delete(
@@ -348,12 +396,9 @@ def _validate_global_enabled_fractions(
     *,
     prospective: tuple[FreeTimeActivity, ...] = (),
 ) -> ServiceMessage | None:
-    existing = list(load_all_activities(txn))
-    existing_ids = {activity.free_time_activity_id for activity in existing}
-    for activity in prospective:
-        if activity.free_time_activity_id not in existing_ids:
-            existing.append(activity)
-    return validate_enabled_fractions_sum_to_one(tuple(existing))
+    existing = {activity.free_time_activity_id: activity for activity in load_all_activities(txn)}
+    existing.update({activity.free_time_activity_id: activity for activity in prospective})
+    return validate_enabled_fractions_sum_to_one(tuple(existing.values()))
 
 
 def _activity_not_found(activity_id: FreeTimeActivityID) -> ServiceMessage:

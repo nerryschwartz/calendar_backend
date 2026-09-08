@@ -28,6 +28,11 @@ def truncate_to_minute(dt: datetime) -> datetime:
     return dt.replace(second=0, microsecond=0)
 
 
+def sqlite_utc(dt: datetime) -> datetime:
+    """Restore UTC to SQLite-read timestamps and normalize aware timestamps to UTC."""
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
 def is_minute_aligned(dt: datetime) -> bool:
     return dt.second == 0 and dt.microsecond == 0
 

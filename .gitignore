@@ -16,6 +16,7 @@ htmlcov/
 *.db
 local_data/
 .codex/plans/
+.tmp/
 
 # OS/editor noise
 .DS_Store

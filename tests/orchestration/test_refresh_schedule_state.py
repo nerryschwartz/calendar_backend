@@ -44,8 +44,8 @@ def test_refresh_schedule_success_clears_last_refresh_failed(
 def test_refresh_schedule_solver_failure_preserves_active_calendar_run_id(
     service_db_session: Session,
 ) -> None:
-    master_id = oh.bootstrap_master_with_horizon(service_db_session)
-    oh.create_task(service_db_session, master_id, name="solo")
+    parent_id = oh.bootstrap_goal_with_horizon(service_db_session)
+    oh.create_task(service_db_session, parent_id, name="solo")
     oh.create_enabled_activity(service_db_session)
     success = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
     assert success.success
@@ -53,10 +53,10 @@ def test_refresh_schedule_solver_failure_preserves_active_calendar_run_id(
     assert state is not None
 
     TimeConstraintService(service_db_session, oh.clock()).add_user_group(
-        master_id,
+        parent_id,
         (oh.window(oh.RUN_AT, oh.RUN_AT + timedelta(minutes=30)),),
     )
-    oh.create_task(service_db_session, master_id, name="extra")
+    oh.create_task(service_db_session, parent_id, name="extra")
     failure = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
 
     assert not failure.success
