@@ -1,21 +1,97 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import calendar_backend.services.plan_tree_read as plan_tree_read_module
+import pytest
 from calendar_backend.domain.enums import ConstraintKind, PlanKind
 from calendar_backend.domain.plan_create import GoalCreatePayload
 from calendar_backend.domain.time import Clock
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
+from calendar_backend.models.plans import Plan
 from calendar_backend.services.goal import GoalService
+from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from calendar_backend.services.plan_tree_read import PlanTreeReadService
-from sqlalchemy import func, select
+from calendar_backend.services.task_resolution import load_plan_graph
+from sqlalchemy import event, func, select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .conftest import FakeClock
 
 RUN_AT = datetime(2026, 6, 7, 10, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("reader", ["graph", "detail"])
+def test_plan_reads_normalize_windows_without_updates(
+    service_db_session: Session, reader: str
+) -> None:
+    read = PlanTreeReadService(service_db_session, FakeClock(RUN_AT))
+    master = read.ensure_master_and_get_id()
+    assert master.success and master.value is not None
+    service_db_session.commit()
+    service_db_session.expire_all()
+    statements: list[str] = []
+    connection = service_db_session.connection()
+
+    def capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        if reader == "graph":
+            plans = load_plan_graph(service_db_session)
+            windows = [
+                window
+                for plan in plans
+                for group in plan.constraint_groups
+                for window in group.windows
+            ]
+            assert windows
+            assert all(
+                window.start_time.tzinfo is UTC and window.end_time.tzinfo is UTC
+                for window in windows
+            )
+        else:
+            result = read.get_plan_detail(master.value)
+            assert result.success
+        assert not service_db_session.dirty
+        service_db_session.flush()
+        assert not any(statement.lstrip().upper().startswith("UPDATE ") for statement in statements)
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+
+
+def test_plan_detail_does_not_flush_concurrently_replaced_horizon(
+    service_db_session: Session, service_db_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read = PlanTreeReadService(service_db_session, FakeClock(RUN_AT))
+    master = read.ensure_master_and_get_id()
+    assert master.success and master.value is not None
+    service_db_session.commit()
+    service_db_session.expire_all()
+    replaced = False
+
+    def load_then_refresh(session: Session) -> tuple[Plan, ...]:
+        nonlocal replaced
+        plans = load_plan_graph(session)
+        with Session(service_db_engine) as writer:
+            refreshed = MasterHorizonService(writer, FakeClock(RUN_AT)).refresh_master_horizon(
+                RUN_AT + timedelta(minutes=1)
+            )
+            assert refreshed.success
+            writer.commit()
+        replaced = True
+        return plans
+
+    monkeypatch.setattr(plan_tree_read_module, "load_plan_graph", load_then_refresh)
+    result = read.get_plan_detail(master.value)
+    assert replaced
+    assert result.success and result.value is not None
+    assert not service_db_session.dirty
+    service_db_session.flush()
 
 
 def _horizon_group_count(session: Session) -> int:

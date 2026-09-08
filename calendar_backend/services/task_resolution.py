@@ -12,6 +12,7 @@ from datetime import datetime
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.assignment import sqlite_utc
@@ -147,9 +148,11 @@ def load_plan_graph(session: Session) -> tuple[Plan, ...]:
 
 
 def _normalize_sqlite_constraint_window_timezones(plans: tuple[Plan, ...]) -> None:
-    """SQLite stores UTC datetimes as naive; resolution requires timezone-aware windows."""
+    """Restore SQLite UTC timestamps without turning graph reads into pending writes."""
     for plan in plans:
         for group in plan.constraint_groups:
             for window in group.windows:
-                window.start_time = sqlite_utc(window.start_time)
-                window.end_time = sqlite_utc(window.end_time)
+                if window.start_time.tzinfo is None:
+                    set_committed_value(window, "start_time", sqlite_utc(window.start_time))
+                if window.end_time.tzinfo is None:
+                    set_committed_value(window, "end_time", sqlite_utc(window.end_time))
