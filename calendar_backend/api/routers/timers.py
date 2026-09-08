@@ -20,8 +20,8 @@ def active_timers(
     session: Annotated[Session, Depends(get_db_session)],
     clock: Annotated[Clock, Depends(get_clock)],
 ) -> dict[str, Any]:
-    timers = unwrap_result(TimerService(session, clock).get_active_timers())
-    return {"timers": dto_to_json(timers)}
+    snapshot = unwrap_result(TimerService(session, clock).get_active_timer_snapshot())
+    return dto_to_json(snapshot)
 
 
 @router.post("/{timer_key}/complete")

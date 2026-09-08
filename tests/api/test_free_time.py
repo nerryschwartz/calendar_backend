@@ -51,6 +51,8 @@ def test_draft_create_then_edit_families_and_prerequisites(api_client: TestClien
     activity = response.json()["activities"][0]
     assert activity["name"] == "Books"
     assert activity["minimum_block_size_minutes"] == 20
+    assert activity["created_at"].endswith(("Z", "+00:00"))
+    assert activity["updated_at"].endswith(("Z", "+00:00"))
     assert activity["allowed_block_families"] == ["free-time", "focus"]
     assert activity["prerequisite_plan_ids"] == [master_id]
     activity_id = activity["free_time_activity_id"]
