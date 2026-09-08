@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from calendar_backend.domain.assignment import sqlite_utc
 from calendar_backend.domain.enums import ConstraintKind, PlanKind
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import PlanID, TimeConstraintGroupID, TimeWindowID
@@ -12,6 +13,7 @@ from calendar_backend.domain.plan_create import TaskCreatePayload
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
+from calendar_backend.models.plans import Plan
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
@@ -62,6 +64,48 @@ def constraint_plan_id(service_db_session: Session) -> PlanID:
 
 def _user_window_count(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(TimeWindowRow)) or 0
+
+
+@pytest.mark.parametrize(
+    "mutation", ["create", "replace", "add_window", "remove_window", "remove_last", "remove_group"]
+)
+def test_constraint_mutations_touch_owning_plan(
+    service_db_session: Session, constraint_plan_id: PlanID, mutation: str
+) -> None:
+    window = _window(_utc(2026, 6, 7, 13, 0), _utc(2026, 6, 7, 14, 0))
+    initial = TimeConstraintService(service_db_session, FakeClock(RUN_AT)).add_user_group(
+        constraint_plan_id, (window,)
+    )
+    assert initial.success and initial.value is not None
+    group_id = initial.value.constraint_group_id
+    now = RUN_AT + timedelta(minutes=1)
+    service = TimeConstraintService(service_db_session, FakeClock(now))
+    if mutation == "create":
+        result = service.add_user_group(constraint_plan_id, (window,))
+    elif mutation == "replace":
+        result = service.update_user_group(group_id, (window,))
+    elif mutation == "add_window":
+        result = service.add_user_window(group_id, window)
+    elif mutation == "remove_group":
+        result = service.remove_user_group(group_id)
+    else:
+        window_id = initial.value.windows[0].time_window_id
+        if mutation == "remove_window":
+            expanded = service.add_user_window(
+                group_id, _window(_utc(2026, 6, 7, 15, 0), _utc(2026, 6, 7, 16, 0))
+            )
+            assert expanded.success and expanded.value is not None
+            window_id = expanded.value.windows[0].time_window_id
+            plan = service_db_session.get(Plan, constraint_plan_id)
+            assert plan is not None
+            plan.updated_at = RUN_AT
+            service_db_session.commit()
+        result = service.remove_user_window(group_id, window_id)
+    assert result.success
+    service_db_session.expire_all()
+    plan = service_db_session.get(Plan, constraint_plan_id)
+    assert plan is not None
+    assert sqlite_utc(plan.updated_at) == now
 
 
 @pytest.mark.integration

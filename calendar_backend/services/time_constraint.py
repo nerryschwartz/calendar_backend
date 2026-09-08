@@ -66,6 +66,7 @@ class TimeConstraintService:
             )
             txn.add(group)
             window_rows = _insert_windows(txn, group_id=group_id, windows=merged_windows)
+            plan.updated_at = self._clock.now_utc()
             txn.flush()
             return ok(time_constraint_group_dto_from_rows(group, window_rows))
 
@@ -87,6 +88,7 @@ class TimeConstraintService:
             group = loaded
 
             window_rows = _replace_group_windows(txn, group, merged_windows)
+            group.plan.updated_at = self._clock.now_utc()
             txn.flush()
             return ok(time_constraint_group_dto_from_rows(group, window_rows))
 
@@ -102,6 +104,7 @@ class TimeConstraintService:
                     TimeWindowRow.group_id == group.time_constraint_group_id
                 )
             )
+            group.plan.updated_at = self._clock.now_utc()
             txn.delete(group)
             txn.flush()
             return ok(None)
@@ -126,6 +129,7 @@ class TimeConstraintService:
             )
             merged_windows = merge_or_windows((*existing_windows, window))
             window_rows = _replace_group_windows(txn, group, merged_windows)
+            group.plan.updated_at = self._clock.now_utc()
             txn.flush()
             return ok(time_constraint_group_dto_from_rows(group, window_rows))
 
@@ -153,6 +157,7 @@ class TimeConstraintService:
                     )
                 )
 
+            group.plan.updated_at = self._clock.now_utc()
             txn.delete(window_row)
             txn.flush()
 
