@@ -13,8 +13,11 @@ from calendar_backend.api.routers import (
     settings,
     timers,
 )
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 
 def create_app() -> FastAPI:
@@ -30,6 +33,27 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        if request.url.path == "/api/free-time/activities/draft-edits":
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "applied_count": 0,
+                        "errors": [
+                            {
+                                "code": "INVALID_FREE_TIME_DRAFT",
+                                "message": error["msg"],
+                                "details": {"location": ".".join(map(str, error["loc"]))},
+                            }
+                            for error in exc.errors()
+                        ],
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
 
     @app.get("/health")
     def health() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]

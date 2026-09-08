@@ -87,6 +87,21 @@ def test_update_activity_rejects_invalid_fraction_sum(service_db_session: Sessio
 
     assert not result.success
     assert any(error.code == MessageCode.INVALID_FREE_TIME_FRACTIONS for error in result.errors)
+    service_db_session.commit()
+    reloaded = service.get_activity(created.value.free_time_activity_id)
+    assert reloaded.success and reloaded.value is not None
+    assert reloaded.value.real_fraction == Decimal("1")
+
+
+def test_failed_enable_does_not_persist(service_db_session: Session) -> None:
+    service = _service(service_db_session)
+    created = service.create_activity("reading", Decimal("0.5"), 0, enabled=False)
+    assert created.success and created.value is not None
+    assert not service.set_enabled(created.value.free_time_activity_id, True).success
+    service_db_session.commit()
+    reloaded = service.get_activity(created.value.free_time_activity_id)
+    assert reloaded.success and reloaded.value is not None
+    assert not reloaded.value.enabled
 
 
 @pytest.mark.integration
