@@ -207,3 +207,13 @@ def test_failed_draft_preserves_existing_activity(api_client: TestClient) -> Non
     )
     assert response.status_code == 422
     assert api_client.get(f"/api/free-time/activities/{activity_id}").json() == before
+
+
+def test_delete_activity_route_and_not_found(api_client: TestClient) -> None:
+    activity = api_client.post(DRAFT_URL, json={"edits": [_create()]}).json()["activities"][0]
+    activity_id = activity["free_time_activity_id"]
+    assert api_client.delete(f"/api/free-time/activities/{activity_id}").json() == {"status": "ok"}
+    assert api_client.get("/api/free-time/activities").json()["activities"] == []
+    response = api_client.delete(f"/api/free-time/activities/{activity_id}")
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "FREE_TIME_ACTIVITY_NOT_FOUND"

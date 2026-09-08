@@ -228,6 +228,20 @@ class FreeTimeActivityService:
             assert reloaded is not None
             return ok(free_time_activity_dto_from_row(reloaded))
 
+    def delete_activity(self, activity_id: FreeTimeActivityID) -> ServiceResult[None]:
+        with transaction(self._session) as txn:
+            activity = _load_activity(txn, activity_id)
+            if activity is None:
+                return fail(_activity_not_found(activity_id))
+            remaining = tuple(
+                row for row in load_all_activities(txn) if row.free_time_activity_id != activity_id
+            )
+            error = validate_enabled_fractions_sum_to_one(remaining)
+            if error is not None:
+                return fail(error)
+            delete_activity_rows(txn, activity, now=self._clock.now_utc())
+            return ok(None)
+
     def get_activity(
         self,
         activity_id: FreeTimeActivityID,

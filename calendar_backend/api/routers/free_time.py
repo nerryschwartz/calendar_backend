@@ -105,6 +105,18 @@ def get_activity(
     )
 
 
+@router.delete("/activities/{activity_id}")
+def delete_activity(
+    activity_id: UUID,
+    session: Annotated[Session, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> dict[str, str]:
+    unwrap_result(
+        FreeTimeActivityService(session, clock).delete_activity(FreeTimeActivityID(activity_id))
+    )
+    return {"status": "ok"}
+
+
 @router.patch("/activities/{activity_id}")
 def update_activity(
     activity_id: UUID,
