@@ -120,14 +120,14 @@ def test_refresh_schedule_invalid_incomplete_blocks_before_assignment(
 def test_refresh_schedule_infeasible_assignment_returns_conflicts(
     service_db_session: Session,
 ) -> None:
-    master_id = oh.bootstrap_master_with_horizon(service_db_session)
+    parent_id = oh.bootstrap_goal_with_horizon(service_db_session)
     oh.create_enabled_activity(service_db_session)
     TimeConstraintService(service_db_session, oh.clock()).add_user_group(
-        master_id,
+        parent_id,
         (oh.window(oh.RUN_AT, oh.RUN_AT + timedelta(minutes=30)),),
     )
-    oh.create_task(service_db_session, master_id, name="first")
-    oh.create_task(service_db_session, master_id, name="second")
+    oh.create_task(service_db_session, parent_id, name="first")
+    oh.create_task(service_db_session, parent_id, name="second")
 
     result = oh.orchestration_service(service_db_session).refresh_schedule(oh.RUN_AT)
 
@@ -144,10 +144,10 @@ def test_refresh_schedule_infeasible_assignment_returns_conflicts(
 def test_refresh_schedule_partial_free_time_failure_preserves_future_tasks_only(
     service_db_session: Session,
 ) -> None:
-    master_id = oh.bootstrap_master_with_horizon(service_db_session)
-    task_id = oh.create_task(service_db_session, master_id)
+    parent_id = oh.bootstrap_goal_with_horizon(service_db_session)
+    task_id = oh.create_task(service_db_session, parent_id)
     TimeConstraintService(service_db_session, oh.clock()).add_user_group(
-        master_id,
+        parent_id,
         (oh.window(oh.RUN_AT, oh.RUN_AT + timedelta(hours=2)),),
     )
     oh.create_two_enabled_activities(service_db_session)
@@ -584,11 +584,11 @@ def test_refresh_schedule_repetition_refresh_failure_aborts_before_assignment(
 def test_refresh_schedule_v2_happy_path_uses_single_calendar_run(
     service_db_session: Session,
 ) -> None:
-    master_id = oh.bootstrap_master_with_horizon(service_db_session)
-    oh.create_block(service_db_session, master_id)
-    task_id = oh.create_task(service_db_session, master_id)
+    parent_id = oh.bootstrap_goal_with_horizon(service_db_session)
+    oh.create_block(service_db_session, parent_id)
+    task_id = oh.create_task(service_db_session, parent_id)
     TimeConstraintService(service_db_session, oh.clock()).add_user_group(
-        master_id,
+        parent_id,
         (oh.window(oh.RUN_AT, oh.RUN_AT + timedelta(hours=2)),),
     )
     oh.create_enabled_activity(service_db_session)

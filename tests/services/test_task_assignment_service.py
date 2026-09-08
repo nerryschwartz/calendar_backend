@@ -102,6 +102,15 @@ def _repetition_service(session: Session) -> RepetitionService:
     return RepetitionService(session, _clock())
 
 
+def _bootstrap_goal_with_horizon(session: Session) -> PlanID:
+    master_id = _bootstrap_master_with_horizon(session)
+    result = _goal_service(session).create_child(
+        master_id, PlanKind.GOAL, GoalCreatePayload("constrained goal"), is_critical=False
+    )
+    assert result.success and result.value is not None
+    return result.value.plan_id
+
+
 def _create_task(session: Session, parent_id: PlanID, *, name: str = "task") -> PlanID:
     result = _goal_service(session).create_child(
         parent_id,
@@ -232,13 +241,13 @@ def _instance_root_clone_goal_id(session: Session, repetition_id: PlanID) -> Pla
 
 
 def _bootstrap_narrow_assignable_task(session: Session) -> tuple[PlanID, PlanID]:
-    master_id = _bootstrap_master_with_horizon(session)
+    parent_id = _bootstrap_goal_with_horizon(session)
     TimeConstraintService(session, _clock()).add_user_group(
-        master_id,
+        parent_id,
         (_window(RUN_AT, RUN_AT + timedelta(hours=2)),),
     )
-    task_id = _create_task(session, master_id)
-    return master_id, task_id
+    task_id = _create_task(session, parent_id)
+    return parent_id, task_id
 
 
 def _normalize_plan_window_timezones(plans: tuple[Plan, ...]) -> tuple[Plan, ...]:
@@ -999,11 +1008,11 @@ def test_assign_tasks_empty_valid_incomplete_clears_future_tasks(
 def test_assign_tasks_divisible_task_produces_multiple_calendar_entries(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
-    task_id = _create_task(service_db_session, master_id, name="divisible")
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, parent_id, name="divisible")
     clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (
             _window(_utc(2026, 6, 7, 10, 0), _utc(2026, 6, 7, 11, 0)),
             _window(_utc(2026, 6, 7, 12, 0), _utc(2026, 6, 7, 13, 0)),
@@ -1058,14 +1067,14 @@ def test_assign_tasks_success_sets_active_calendar_run_id(
 def test_assign_tasks_failure_leaves_calendar_unchanged(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
     clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(RUN_AT, RUN_AT + timedelta(minutes=30)),),
     )
-    _create_task(service_db_session, master_id, name="first")
-    _create_task(service_db_session, master_id, name="second")
+    _create_task(service_db_session, parent_id, name="first")
+    _create_task(service_db_session, parent_id, name="second")
     entry_id = _add_calendar_entry(
         service_db_session,
         entry_type=CalendarEntryType.TASK,
@@ -1088,14 +1097,14 @@ def test_assign_tasks_failure_leaves_calendar_unchanged(
 def test_assign_tasks_failure_persists_failed_run_and_last_refresh_failed(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
     clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(RUN_AT, RUN_AT + timedelta(minutes=30)),),
     )
-    _create_task(service_db_session, master_id, name="first")
-    _create_task(service_db_session, master_id, name="second")
+    _create_task(service_db_session, parent_id, name="first")
+    _create_task(service_db_session, parent_id, name="second")
 
     result = _assignment_service(service_db_session).assign_tasks(
         _resolve_seam(service_db_session),
@@ -1171,14 +1180,14 @@ def test_assign_tasks_failure_preserves_active_calendar_run_id(
 def test_assign_tasks_failure_returns_conflicts_in_result_value(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
     clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(RUN_AT, RUN_AT + timedelta(minutes=30)),),
     )
-    _create_task(service_db_session, master_id, name="first")
-    _create_task(service_db_session, master_id, name="second")
+    _create_task(service_db_session, parent_id, name="first")
+    _create_task(service_db_session, parent_id, name="second")
 
     result = _assignment_service(service_db_session).assign_tasks(
         _resolve_seam(service_db_session),
@@ -1196,11 +1205,11 @@ def test_assign_tasks_failure_returns_conflicts_in_result_value(
 def test_assign_tasks_occupied_past_task_blocks_placement(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
-    task_id = _create_task(service_db_session, master_id)
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, parent_id)
     clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     _seed_active_calendar_state_with_past_task(
@@ -1224,11 +1233,11 @@ def test_assign_tasks_occupied_past_task_blocks_placement(
 def test_assign_tasks_occupied_past_block_blocks_placement(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
-    task_id = _create_task(service_db_session, master_id)
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, parent_id)
     clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
     _seed_past_block_calendar_entry(
@@ -1252,9 +1261,9 @@ def test_assign_tasks_occupied_past_block_blocks_placement(
 def test_assign_tasks_plan_prerequisite_orders_calendar(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
-    prereq_id = _create_task(service_db_session, master_id, name="prereq")
-    dependent_id = _create_task(service_db_session, master_id, name="dependent")
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
+    prereq_id = _create_task(service_db_session, parent_id, name="prereq")
+    dependent_id = _create_task(service_db_session, parent_id, name="dependent")
     clock = _clock()
     assert (
         PlanTreeService(service_db_session, clock)
@@ -1262,7 +1271,7 @@ def test_assign_tasks_plan_prerequisite_orders_calendar(
         .success
     )
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(_utc(2026, 6, 7, 10, 0), _utc(2026, 6, 7, 12, 0)),),
     )
 
@@ -1283,9 +1292,9 @@ def test_assign_tasks_repetition_clone_immediate_prerequisite_orders_calendar(
     service_db_session: Session,
 ) -> None:
     """Immediate prerequisite on repetition clone tasks constrains calendar ordering."""
-    master_id = _bootstrap_master_with_horizon(service_db_session)
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
     repetition_id, _, first_template_id, second_template_id = (
-        _create_goal_template_repetition_with_ordered_tasks(service_db_session, master_id)
+        _create_goal_template_repetition_with_ordered_tasks(service_db_session, parent_id)
     )
     clock = _clock()
     assert (
@@ -1306,7 +1315,7 @@ def test_assign_tasks_repetition_clone_immediate_prerequisite_orders_calendar(
         template_plan_id=second_template_id,
     )
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(_utc(2026, 6, 7, 10, 0), _utc(2026, 6, 7, 12, 0)),),
     )
 
@@ -1328,11 +1337,11 @@ def test_assign_tasks_repetition_clone_immediate_prerequisite_orders_calendar(
 def test_assign_tasks_infeasible_when_past_task_fills_narrow_window(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
-    task_id = _create_task(service_db_session, master_id)
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
+    task_id = _create_task(service_db_session, parent_id)
     clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(RUN_AT, RUN_AT + timedelta(minutes=30)),),
     )
     _seed_active_calendar_state_with_past_task(
@@ -1359,9 +1368,9 @@ def test_assign_tasks_infeasible_when_past_task_fills_narrow_window(
 def test_assign_tasks_persists_only_instance_clone_source_plan_ids(
     service_db_session: Session,
 ) -> None:
-    master_id = _bootstrap_master_with_horizon(service_db_session)
+    parent_id = _bootstrap_goal_with_horizon(service_db_session)
     repetition_id, template_goal_id, template_task_id = (
-        _create_goal_template_repetition_with_task_child(service_db_session, master_id)
+        _create_goal_template_repetition_with_task_child(service_db_session, parent_id)
     )
     _generate_instances(service_db_session, repetition_id)
     clone_goal_id = _instance_root_clone_goal_id(service_db_session, repetition_id)
@@ -1372,7 +1381,7 @@ def test_assign_tasks_persists_only_instance_clone_source_plan_ids(
     )
     clock = _clock()
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        parent_id,
         (_window(_utc(2026, 6, 7, 9, 0), _utc(2026, 6, 7, 12, 0)),),
     )
 

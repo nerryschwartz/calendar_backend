@@ -331,18 +331,22 @@ def test_validate_master_tree_graph_reports_missing_master_horizon() -> None:
 
 def test_validate_master_tree_graph_reports_empty_user_group() -> None:
     master_id = uuid.uuid4()
+    child_id = uuid.uuid4()
     master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
     _attach_goal(master)
-    horizon = _horizon_group(master_id)
+    child = _plan(child_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    _attach_task(child)
+    _attach_ordered_child(master, child=child)
     empty_user = TimeConstraintGroup(
         time_constraint_group_id=uuid.uuid4(),
-        plan_id=master_id,
+        plan_id=child_id,
         constraint_kind=ConstraintKind.USER,
     )
     empty_user.windows = []
-    master.constraint_groups = [horizon, empty_user]
+    master.constraint_groups = [_horizon_group(master_id)]
+    child.constraint_groups = [empty_user]
 
-    violations = validate_master_tree_graph((master,))
+    violations = validate_master_tree_graph((master, child))
 
     assert any(
         v.code == MessageCode.CONSTRAINT_INVARIANT_VIOLATION
@@ -353,13 +357,16 @@ def test_validate_master_tree_graph_reports_empty_user_group() -> None:
 
 def test_validate_master_tree_graph_reports_unmerged_user_windows() -> None:
     master_id = uuid.uuid4()
+    child_id = uuid.uuid4()
     master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
     _attach_goal(master)
-    horizon = _horizon_group(master_id)
+    child = _plan(child_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    _attach_task(child)
+    _attach_ordered_child(master, child=child)
     group_id = uuid.uuid4()
     user_group = TimeConstraintGroup(
         time_constraint_group_id=group_id,
-        plan_id=master_id,
+        plan_id=child_id,
         constraint_kind=ConstraintKind.USER,
     )
     user_group.windows = [
@@ -376,13 +383,43 @@ def test_validate_master_tree_graph_reports_unmerged_user_windows() -> None:
             end_time=_utc(15, 0),
         ),
     ]
-    master.constraint_groups = [horizon, user_group]
+    master.constraint_groups = [_horizon_group(master_id)]
+    child.constraint_groups = [user_group]
+
+    violations = validate_master_tree_graph((master, child))
+
+    assert any(
+        v.code == MessageCode.CONSTRAINT_INVARIANT_VIOLATION
+        and "merged and non-overlapping" in v.message
+        for v in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_master_user_group() -> None:
+    master_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    user_group = TimeConstraintGroup(
+        time_constraint_group_id=group_id,
+        plan_id=master_id,
+        constraint_kind=ConstraintKind.USER,
+    )
+    user_group.windows = [
+        TimeWindow(
+            time_window_id=uuid.uuid4(),
+            group_id=group_id,
+            start_time=_utc(9, 0),
+            end_time=_utc(12, 0),
+        )
+    ]
+    master.constraint_groups = [_horizon_group(master_id), user_group]
 
     violations = validate_master_tree_graph((master,))
 
     assert any(
         v.code == MessageCode.CONSTRAINT_INVARIANT_VIOLATION
-        and "merged and non-overlapping" in v.message
+        and "Master plan cannot have USER constraint groups" in v.message
         for v in violations
     )
 
@@ -814,6 +851,26 @@ def test_validate_master_tree_graph_reports_incomplete_task_with_completed_at() 
     assert any(
         v.code == MessageCode.TASK_COMPLETION_INVARIANT_VIOLATION
         and "must not have completed_at" in v.message
+        for v in violations
+    )
+
+
+def test_validate_master_tree_graph_reports_master_prerequisite() -> None:
+    master_id = uuid.uuid4()
+    child_id = uuid.uuid4()
+    master = _plan(master_id, plan_kind=PlanKind.GOAL, is_master=True)
+    _attach_goal(master)
+    master.constraint_groups = [_horizon_group(master_id)]
+    child = _plan(child_id, plan_kind=PlanKind.TASK, parent_id=master_id)
+    _attach_task(child)
+    _attach_ordered_child(master, child=child)
+    master.prerequisite_edges = [PlanPrerequisite(plan_id=master_id, prerequisite_plan_id=child_id)]
+
+    violations = validate_master_tree_graph((master, child))
+
+    assert any(
+        v.code == MessageCode.PREREQUISITE_INVARIANT_VIOLATION
+        and v.message == "Master plan cannot have plan prerequisites"
         for v in violations
     )
 

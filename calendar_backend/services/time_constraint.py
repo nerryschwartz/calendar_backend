@@ -40,11 +40,20 @@ class TimeConstraintService:
         merged_windows = merge_or_windows(windows)
 
         with transaction(self._session) as txn:
-            if txn.get(Plan, plan_id) is None:
+            plan = txn.get(Plan, plan_id)
+            if plan is None:
                 return fail(
                     ServiceMessage(
                         code=MessageCode.PLAN_NOT_FOUND,
                         message="Plan not found",
+                        details={"plan_id": str(plan_id)},
+                    )
+                )
+            if plan.is_master:
+                return fail(
+                    ServiceMessage(
+                        code=MessageCode.MASTER_MUTATION_FORBIDDEN,
+                        message="Master plan cannot have user constraint groups",
                         details={"plan_id": str(plan_id)},
                     )
                 )

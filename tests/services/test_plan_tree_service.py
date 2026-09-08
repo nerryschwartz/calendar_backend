@@ -851,6 +851,23 @@ def test_add_plan_prerequisite_master_goals_happy_path(
     _assert_tree_invariant(service_db_session)
 
 
+def test_add_plan_prerequisite_rejects_master_plan(
+    service_db_session: Session,
+    master_plan_id: PlanID,
+) -> None:
+    prerequisite_id = _create_goal_under_master(
+        service_db_session, master_plan_id, name="prerequisite"
+    )
+
+    result = _plan_tree_service(service_db_session).add_plan_prerequisite(
+        master_plan_id,
+        prerequisite_id,
+    )
+
+    assert not result.success
+    assert result.errors[0].code == MessageCode.MASTER_MUTATION_FORBIDDEN
+
+
 def test_add_plan_prerequisite_matching_template_traces(
     service_db_session: Session,
     master_plan_id: PlanID,

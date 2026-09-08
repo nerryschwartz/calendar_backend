@@ -393,10 +393,10 @@ def test_resolve_tasks_populates_effective_windows_and_constraint_sources(
     service_db_session: Session,
 ) -> None:
     master_id = _bootstrap_master(service_db_session)
-    _create_task(service_db_session, master_id)
+    task_id = _create_task(service_db_session, master_id)
     clock = FakeClock(RUN_AT)
     TimeConstraintService(service_db_session, clock).add_user_group(
-        master_id,
+        task_id,
         (
             TimeWindow(
                 start_time=RUN_AT,
@@ -598,7 +598,7 @@ def test_resolve_tasks_intersects_repetition_horizon_and_user_windows(
     clock = FakeClock(RUN_AT)
     assert (
         TimeConstraintService(service_db_session, clock)
-        .add_user_group(master_id, (TimeWindow(start_time=user_start, end_time=user_end),))
+        .add_user_group(repetition_id, (TimeWindow(start_time=user_start, end_time=user_end),))
         .success
     )
 
@@ -693,7 +693,7 @@ def test_resolve_tasks_narrows_effective_windows_from_block_calendar(
         end_time=RUN_AT + timedelta(hours=3),
     )
     TimeConstraintService(service_db_session, FakeClock(RUN_AT)).add_user_group(
-        master_id,
+        task_id,
         (user_window,),
     )
     block_id = _create_block(
