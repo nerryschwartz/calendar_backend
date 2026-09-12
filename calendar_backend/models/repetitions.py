@@ -63,3 +63,15 @@ class RepetitionGenerationReceipt(Base):
     )
     request_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     reference_map: Mapped[dict[str, dict[str, str]]] = mapped_column(JSON, nullable=False)
+
+
+class RepetitionSkippedOccurrence(Base):
+    __tablename__ = "repetition_skipped_occurrence"
+    __table_args__ = (CheckConstraint("instance_index >= 0", name="instance_index_non_negative"),)
+
+    repetition_plan_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("repetition_plan.plan_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    instance_index: Mapped[int] = mapped_column(Integer, primary_key=True)

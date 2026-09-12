@@ -40,7 +40,11 @@ from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
-from calendar_backend.models.repetitions import RepetitionGenerationReceipt, RepetitionInstance
+from calendar_backend.models.repetitions import (
+    RepetitionGenerationReceipt,
+    RepetitionInstance,
+    RepetitionSkippedOccurrence,
+)
 from calendar_backend.models.settings import AppSettings
 from calendar_backend.services.app_settings import (
     DEFAULT_LOCAL_TIMEZONE,
@@ -401,12 +405,17 @@ def commit_generation(  # noqa: PLR0911, PLR0912
             valid_indices = {instance.instance_index for instance in preview.instances}
             if not set(body.omitted_instance_indices).issubset(valid_indices):
                 raise ValueError("Omitted occurrence index is not in this preview")
-            if body.omitted_instance_indices:
-                raise ValueError(
-                    "Omitting occurrences is not supported until omission storage is available"
+            omitted = set(body.omitted_instance_indices)
+            for index in omitted:
+                txn.add(
+                    RepetitionSkippedOccurrence(
+                        repetition_plan_id=repetition_id, instance_index=index
+                    )
                 )
             refs = {"plans": {}, "groups": {}, "windows": {}}
             for instance in preview.instances:
+                if instance.instance_index in omitted:
+                    continue
                 created = materialize_instance(
                     txn,
                     preview.input,

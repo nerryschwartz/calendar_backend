@@ -3,14 +3,18 @@
 from uuid import UUID
 
 from calendar_backend.models.plans import Plan, RepetitionPlan
-from calendar_backend.models.repetitions import RepetitionGenerationReceipt, RepetitionInstance
+from calendar_backend.models.repetitions import (
+    RepetitionGenerationReceipt,
+    RepetitionInstance,
+    RepetitionSkippedOccurrence,
+)
 from calendar_backend.models.settings import AppSettings
 from calendar_backend.services.repetition_projection import snapshot_repetition
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 
-def create_input(client, engine):
+def create_input(client, engine, **overrides):
     master = client.get("/api/plans/master").json()["master_plan_id"]
     response = client.post(
         f"/api/plans/{master}/children",
@@ -25,6 +29,7 @@ def create_input(client, engine):
             "template_type": "TASK",
             "template_name": "Lunch template",
             "template_duration_minutes": 30,
+            **overrides,
         },
     )
     assert response.status_code == 200, response.json()
@@ -114,3 +119,74 @@ def test_draft_reference_resolution_ignores_saved_uuids(api_client, api_db_engin
         },
     )
     assert response.status_code == 200, response.json()
+
+
+def test_omissions_survive_refresh_and_cleanup(api_client, api_db_engine):
+    rep_id, value = create_input(api_client, api_db_engine)
+    preview = api_client.post("/api/repetitions/preview-instances", json=value).json()
+    body = {"preview": preview, "resolved_refs": {}, "omitted_instance_indices": [1]}
+    response = api_client.post(f"/api/repetitions/{rep_id}/commit-generation", json=body)
+    assert response.status_code == 200, response.json()
+    assert len(response.json()["reference_map"]["plans"]) == 1
+    for _ in range(2):
+        assert api_client.post(f"/api/repetitions/{rep_id}/refresh").status_code == 200
+    with Session(api_db_engine) as session:
+        assert session.scalar(select(func.count()).select_from(RepetitionInstance)) == 1
+        assert session.scalar(select(func.count()).select_from(RepetitionSkippedOccurrence)) == 1
+    assert api_client.delete(f"/api/plans/{rep_id}").status_code == 200
+    with Session(api_db_engine) as session:
+        assert session.scalar(select(func.count()).select_from(RepetitionGenerationReceipt)) == 0
+        assert session.scalar(select(func.count()).select_from(RepetitionSkippedOccurrence)) == 0
+
+
+def test_deleting_saved_occurrence_does_not_recreate_it(api_client, api_db_engine):
+    rep_id, value = create_input(api_client, api_db_engine)
+    preview = api_client.post("/api/repetitions/preview-instances", json=value).json()
+    body = {"preview": preview, "resolved_refs": {}}
+    assert (
+        api_client.post(f"/api/repetitions/{rep_id}/commit-generation", json=body).status_code
+        == 200
+    )
+    root = preview["instances"][0]["root_ref"]
+    assert api_client.delete(f"/api/plans/{root}").status_code == 200
+    assert api_client.post(f"/api/repetitions/{rep_id}/refresh").status_code == 200
+    with Session(api_db_engine) as session:
+        assert session.get(Plan, UUID(root)) is None
+        assert session.scalar(select(func.count()).select_from(RepetitionInstance)) == 1
+
+
+def test_deleting_linked_child_detaches_parent_subtree(api_client, api_db_engine):
+    rep_id, value = create_input(
+        api_client, api_db_engine, template_type="GOAL", template_duration_minutes=None
+    )
+    template_id = value["template"]["root_ref"]
+    for name in ("First", "Second"):
+        assert (
+            api_client.post(
+                f"/api/plans/{template_id}/children",
+                json={"kind": "TASK", "name": name, "is_critical": False, "duration_minutes": 30},
+            ).status_code
+            == 200
+        )
+    with Session(api_db_engine) as session:
+        value = snapshot_repetition(session, session.get(RepetitionPlan, UUID(rep_id))).model_dump(
+            mode="json"
+        )
+    preview = api_client.post("/api/repetitions/preview-instances", json=value).json()
+    assert (
+        api_client.post(
+            f"/api/repetitions/{rep_id}/commit-generation",
+            json={"preview": preview, "resolved_refs": {}},
+        ).status_code
+        == 200
+    )
+    nodes = preview["instances"][0]["nodes"]
+    root, child = nodes[0]["ref"], nodes[1]["ref"]
+    assert api_client.delete(f"/api/plans/{child}").status_code == 200
+    assert api_client.post(f"/api/repetitions/{rep_id}/refresh").status_code == 200
+    assert api_client.get(f"/api/plans/{root}").json()["clone_status"] == "DETACHED"
+    with Session(api_db_engine) as session:
+        assert session.get(Plan, UUID(child)) is None
+        assert len(session.scalars(select(Plan).where(Plan.parent_id == UUID(root))).all()) == 1
+    sibling = preview["instances"][1]["root_ref"]
+    assert api_client.get(f"/api/plans/{sibling}").json()["clone_status"] == "LINKED"

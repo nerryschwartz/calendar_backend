@@ -40,7 +40,7 @@ from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
 from calendar_backend.models.free_time import FreeTimeActivityPrerequisite
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
-from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.models.repetitions import RepetitionInstance, RepetitionSkippedOccurrence
 from calendar_backend.services.free_time_activity import (
     cleanup_orphaned_activities_after_plan_delete,
 )
@@ -482,6 +482,37 @@ def _execute_plan_deletes(
 
     affected_set = set(affected_plan_ids)
     plans_by_id = {plan.plan_id: plan for plan in plans}
+
+    # An explicit linked-child deletion must not be recreated on template refresh.
+    requested = plans_by_id.get(preview.root_plan_id)
+    is_instance_root = (
+        txn.scalar(
+            select(RepetitionInstance.repetition_instance_id).where(
+                RepetitionInstance.root_clone_id == preview.root_plan_id
+            )
+        )
+        is not None
+    )
+    if (
+        requested is not None
+        and requested.clone_status == CloneStatus.LINKED
+        and not is_instance_root
+    ):
+        parent = plans_by_id.get(requested.parent_id)
+        if parent is not None and parent.plan_id not in affected_set:
+            detach_linked_self_and_descendants(txn, parent, updated_at)
+    for instance in txn.scalars(
+        select(RepetitionInstance).where(RepetitionInstance.root_clone_id.in_(affected_plan_ids))
+    ):
+        if instance.repetition_plan_id not in affected_set:
+            key = (instance.repetition_plan_id, instance.instance_index)
+            if txn.get(RepetitionSkippedOccurrence, key) is None:
+                txn.add(
+                    RepetitionSkippedOccurrence(
+                        repetition_plan_id=instance.repetition_plan_id,
+                        instance_index=instance.instance_index,
+                    )
+                )
 
     if preview.affected_calendar_entry_ids:
         txn.execute(

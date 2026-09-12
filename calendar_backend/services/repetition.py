@@ -40,7 +40,7 @@ from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
-from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.models.repetitions import RepetitionInstance, RepetitionSkippedOccurrence
 from calendar_backend.services.master_horizon import (
     MasterHorizonService,
     get_master_horizon_end,
@@ -367,7 +367,16 @@ def _refresh_repetition_in_txn(  # noqa: PLR0911
         return fail(desired_indices)
 
     existing_indices = {instance.instance_index for instance in instances}
-    missing_indices = [index for index in desired_indices if index not in existing_indices]
+    skipped_indices = set(
+        txn.scalars(
+            select(RepetitionSkippedOccurrence.instance_index).where(
+                RepetitionSkippedOccurrence.repetition_plan_id == repetition_plan_id
+            )
+        )
+    )
+    missing_indices = [
+        index for index in desired_indices if index not in existing_indices | skipped_indices
+    ]
     if missing_indices:
         projection = snapshot_repetition(txn, repetition_plan)
         sort_order_by_critical = _next_sort_orders_by_critical(tuple(instances))
