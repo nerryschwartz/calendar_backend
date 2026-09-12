@@ -85,3 +85,12 @@ def test_invalid_template_and_minute_alignment():
     raw["template"]["nodes"].append(raw["template"]["nodes"][0])
     with pytest.raises(ValidationError, match="unique"):
         PreviewInput.model_validate(raw)
+
+
+def test_preview_normalizes_overlapping_windows_like_constraint_writes():
+    raw = preview_input().model_dump()
+    group = raw["template"]["nodes"][0]["constraint_groups"][0]
+    duplicate = {**group["windows"][0], "ref": "duplicate-window"}
+    group["windows"].append(duplicate)
+    value = PreviewInput.model_validate(raw)
+    assert len(value.template.nodes[0].constraint_groups[0].windows) == 1

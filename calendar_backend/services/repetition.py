@@ -46,7 +46,10 @@ from calendar_backend.services.master_horizon import (
     get_master_horizon_end,
     validate_run_started_at,
 )
-from calendar_backend.services.plan_tree import load_plan_with_subtype
+from calendar_backend.services.plan_tree import (
+    detach_linked_self_and_descendants,
+    load_plan_with_subtype,
+)
 from calendar_backend.services.repetition_projection import (
     materialize_instance,
     snapshot_repetition,
@@ -180,6 +183,7 @@ class RepetitionService:
             repetition_plan.end_time = proposed.end_time
             repetition_plan.default_instance_critical = proposed.default_instance_critical
             plan.updated_at = now
+            detach_linked_self_and_descendants(txn, plan, now)
             txn.flush()
             return ok(repetition_plan_dto_from_rows(plan, repetition_plan))
 
@@ -242,18 +246,10 @@ class RepetitionService:
         if isinstance(indices_result, ServiceMessage):
             raise ServiceTransactionAborted((indices_result,))
 
-        template_plans = _collect_template_subtree(txn, template_root_id)
-        template_windows = _load_user_window_groups(txn, tuple(p.plan_id for p in template_plans))
         projection = snapshot_repetition(txn, repetition_plan)
         for sort_order, instance_index in enumerate(indices_result):
             add_error = _add_repetition_instance(
                 txn,
-                plan=plan,
-                repetition_plan=repetition_plan,
-                repetition_plan_id=repetition_plan_id,
-                template_root_id=template_root_id,
-                template_plans=template_plans,
-                template_windows=template_windows,
                 instance_index=instance_index,
                 sort_order=sort_order,
                 is_critical=repetition_plan.default_instance_critical,
@@ -387,12 +383,6 @@ def _refresh_repetition_in_txn(  # noqa: PLR0911
             sort_order_by_critical[is_critical] += 1
             add_error = _add_repetition_instance(
                 txn,
-                plan=plan,
-                repetition_plan=repetition_plan,
-                repetition_plan_id=repetition_plan_id,
-                template_root_id=template_root_id,
-                template_plans=template_plans,
-                template_windows=template_windows,
                 instance_index=instance_index,
                 sort_order=sort_order,
                 is_critical=is_critical,
@@ -452,24 +442,24 @@ def _next_sort_orders_by_critical(
 def _add_repetition_instance(
     txn: Session,
     *,
-    plan: Plan,
-    repetition_plan: RepetitionPlan,
-    repetition_plan_id: PlanID,
-    template_root_id: PlanID,
-    template_plans: tuple[Plan, ...],
-    template_windows: dict[uuid.UUID, WindowGroups],
     instance_index: int,
     sort_order: int,
     is_critical: bool,
     now: datetime,
-    projection: PreviewInput | None = None,
+    projection: PreviewInput,
 ) -> ServiceMessage | None:
-    del plan, template_root_id, template_plans, template_windows, repetition_plan_id
-    value = projection or snapshot_repetition(txn, repetition_plan)
     preview = project_instances(
-        value, FrozenHorizon(run_started_at=now), instance_indices=(instance_index,)
+        projection, FrozenHorizon(run_started_at=now), instance_indices=(instance_index,)
     )
-    materialize_instance(txn, value, preview.instances[0], preview.generation_key, {}, now)
+    materialize_instance(
+        txn,
+        projection,
+        preview.instances[0],
+        preview.generation_key,
+        {},
+        now,
+        sort_order=sort_order,
+    )
     instance = txn.scalar(
         select(RepetitionInstance).where(
             RepetitionInstance.root_clone_id == uuid.UUID(preview.instances[0].root_ref)

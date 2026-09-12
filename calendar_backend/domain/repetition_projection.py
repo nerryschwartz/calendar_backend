@@ -10,6 +10,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from calendar_backend.domain.constraints import merge_or_windows
 from calendar_backend.domain.enums import ConstraintKind, PlanKind, RepeatMode
 from calendar_backend.domain.errors import ServiceMessage
 from calendar_backend.domain.repetitions import (
@@ -17,6 +18,7 @@ from calendar_backend.domain.repetitions import (
     compute_instance_indices,
     validate_repetition_settings_update,
 )
+from calendar_backend.domain.time import TimeWindow
 
 
 class ProjectionModel(BaseModel):
@@ -61,6 +63,27 @@ class ProjectionGroup(ProjectionModel):
     ref: str = Field(min_length=1)
     constraint_kind: ConstraintKind = ConstraintKind.USER
     windows: list[ProjectionWindow] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def normalize_windows(self) -> Self:
+        ordered = sorted(
+            self.windows, key=lambda window: (window.start_time, window.end_time, window.ref)
+        )
+        merged = merge_or_windows(
+            tuple(
+                TimeWindow(start_time=window.start_time, end_time=window.end_time)
+                for window in ordered
+            )
+        )
+        self.windows = [
+            ProjectionWindow(
+                ref=next(window.ref for window in ordered if window.start_time == span.start_time),
+                start_time=span.start_time,
+                end_time=span.end_time,
+            )
+            for span in merged
+        ]
+        return self
 
 
 class ProjectionNode(ProjectionModel):
@@ -150,10 +173,38 @@ class PreviewInput(ProjectionModel):
     settings: ProjectionSettings
     template: ProjectionTemplate
 
+    @model_validator(mode="after")
+    def validate_refs(self) -> Self:
+        refs = [node.ref for node in self.template.nodes]
+        refs.extend(group.ref for node in self.template.nodes for group in node.constraint_groups)
+        refs.extend(
+            window.ref
+            for node in self.template.nodes
+            for group in node.constraint_groups
+            for window in group.windows
+        )
+        if self.repetition_ref in refs or any(ref.startswith("system:") for ref in refs):
+            raise ValueError("Template refs cannot reuse repetition or reserved system refs")
+        return self
+
 
 class FrozenHorizon(ProjectionModel):
     run_started_at: datetime
     master_horizon_end: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_times(self) -> Self:
+        for value in (self.run_started_at, self.master_horizon_end):
+            if value is not None and (
+                value.tzinfo is None
+                or value.utcoffset() != timedelta(0)
+                or value.second
+                or value.microsecond
+            ):
+                raise ValueError("Frozen horizon times must be minute-aligned UTC")
+        if self.master_horizon_end is not None and self.master_horizon_end <= self.run_started_at:
+            raise ValueError("Frozen horizon must end after its start")
+        return self
 
 
 class ProjectedInstance(ProjectionModel):

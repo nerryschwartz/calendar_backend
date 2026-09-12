@@ -33,6 +33,7 @@ from calendar_backend.domain.plan_create import (
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.plans import GoalPlan, Plan
+from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.plan_tree import PlanTreeService, detach_linked_self_and_descendants
 
 _APPEND_POSITION = -1
@@ -127,6 +128,19 @@ class GoalService:
         position: int | None = None,
     ) -> ServiceResult[None]:
         with transaction(self._session) as txn:
+            instance = txn.scalar(
+                select(RepetitionInstance).where(RepetitionInstance.root_clone_id == plan_id)
+            )
+            if instance is not None:
+                return _move_repetition_instance(
+                    txn,
+                    instance,
+                    position=is_critical_or_position if position is None else position,
+                    is_critical=instance.is_critical
+                    if position is None
+                    else bool(is_critical_or_position),
+                    now=self._clock.now_utc(),
+                )
             if position is None:
                 assert isinstance(is_critical_or_position, int)
                 return _move_within_bucket(
@@ -145,6 +159,46 @@ class GoalService:
             )
 
 
+def _move_repetition_instance(
+    txn: Session, instance: RepetitionInstance, *, position: int, is_critical: bool, now: datetime
+) -> ServiceResult[None]:
+    siblings = list(
+        txn.scalars(
+            select(RepetitionInstance)
+            .where(RepetitionInstance.repetition_plan_id == instance.repetition_plan_id)
+            .order_by(RepetitionInstance.sort_order, RepetitionInstance.instance_index)
+        )
+    )
+    target = [item for item in siblings if item.is_critical == is_critical and item is not instance]
+    index = len(target) if position == _APPEND_POSITION else position
+    if index < 0 or index > len(target):
+        return fail(
+            ServiceMessage(
+                code=MessageCode.INVALID_MOVE,
+                message="Position out of range for repetition-instance move",
+                details={},
+            )
+        )
+    if instance.is_critical == is_critical and instance.sort_order == index:
+        return ok(None)
+    source = [
+        item
+        for item in siblings
+        if item.is_critical == instance.is_critical and item is not instance
+    ]
+    for order, item in enumerate(source):
+        item.sort_order = order
+    instance.is_critical = is_critical
+    target.insert(index, instance)
+    for order, item in enumerate(target):
+        item.sort_order = order
+    plan = txn.get(Plan, instance.root_clone_id)
+    assert plan is not None
+    detach_linked_self_and_descendants(txn, plan, now)
+    txn.flush()
+    return ok(None)
+
+
 def _persist_create_child(
     plan_tree: PlanTreeService,
     txn: Session,
@@ -155,6 +209,9 @@ def _persist_create_child(
     is_critical: bool,
     now: datetime,
 ) -> ServiceResult[GoalPlanDTO | TaskPlanDTO | BlockPlanDTO | RepetitionPlanDTO]:
+    parent = txn.get(Plan, parent_id)
+    if parent is not None:
+        detach_linked_self_and_descendants(txn, parent, now)
     created = plan_tree.make_from_create_payload(
         txn,
         kind=kind,

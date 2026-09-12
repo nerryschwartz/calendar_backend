@@ -14,6 +14,7 @@ from calendar_backend.domain.invariant_validation import validate_master_tree_gr
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import Plan, RepetitionPlan
+from calendar_backend.models.repetitions import RepetitionSkippedOccurrence
 
 
 class PlanTreeInvariantService:
@@ -36,7 +37,12 @@ class PlanTreeInvariantService:
                     )
                 ).all()
             )
-            violations = validate_master_tree_graph(plans)
+            skipped = {}
+            for row in txn.scalars(select(RepetitionSkippedOccurrence)):
+                skipped.setdefault(row.repetition_plan_id, []).append(row.instance_index)
+            violations = validate_master_tree_graph(
+                plans, {key: tuple(values) for key, values in skipped.items()}
+            )
             if violations:
                 return fail(*violations)
             return ok(None)

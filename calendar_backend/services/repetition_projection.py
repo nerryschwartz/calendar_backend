@@ -215,6 +215,7 @@ def materialize_instance(
     generation_key: str,
     resolved_refs: dict[str, str],
     now: datetime,
+    sort_order: int | None = None,
 ) -> dict[str, dict[str, str]]:
     """Persist one authoritative projection; generated keys are also its stable UUIDs."""
     refs = {"plans": {}, "groups": {}, "windows": {}}
@@ -329,7 +330,7 @@ def materialize_instance(
             root_clone_id=UUID(instance.root_ref),
             instance_start_time=instance.instance_start_time,
             is_critical=value.settings.default_instance_critical,
-            sort_order=instance.instance_index,
+            sort_order=instance.instance_index if sort_order is None else sort_order,
         )
     )
     session.flush()
@@ -413,6 +414,7 @@ def commit_generation(  # noqa: PLR0911, PLR0912
                     )
                 )
             refs = {"plans": {}, "groups": {}, "windows": {}}
+            sort_order = 0
             for instance in preview.instances:
                 if instance.instance_index in omitted:
                     continue
@@ -423,7 +425,9 @@ def commit_generation(  # noqa: PLR0911, PLR0912
                     preview.generation_key,
                     body.resolved_refs,
                     truncate_to_minute(now),
+                    sort_order=sort_order,
                 )
+                sort_order += 1
                 for kind, mapping in created.items():
                     refs[kind].update(mapping)
             repetition.generated_at = truncate_to_minute(now)

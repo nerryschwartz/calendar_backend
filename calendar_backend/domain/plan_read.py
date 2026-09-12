@@ -40,6 +40,14 @@ class PlanPrerequisiteSummaryDTO:
 
 
 @dataclass(frozen=True)
+class RepetitionInstanceSummaryDTO:
+    repetition_plan_id: PlanID
+    instance_index: int
+    is_critical: bool
+    sort_order: int
+
+
+@dataclass(frozen=True)
 class PlanDetailDTO:
     plan_id: PlanID
     name: str
@@ -61,6 +69,7 @@ class PlanDetailDTO:
     repetition_detail: RepetitionPlanDTO | None
     clone_status: CloneStatus = CloneStatus.NOT_CLONED
     cloned_from_id: PlanID | None = None
+    repetition_instance: RepetitionInstanceSummaryDTO | None = None
 
 
 @dataclass(frozen=True)
