@@ -17,6 +17,7 @@ from calendar_backend.models.repetitions import (
 )
 from calendar_backend.models.settings import AppSettings
 from calendar_backend.services import repetition_projection as projection_service
+from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.repetition_projection import snapshot_repetition
 from ortools.sat.python import cp_model
 from sqlalchemy import func, select
@@ -230,31 +231,38 @@ def test_commit_rollback_includes_receipt_and_omissions(api_client, api_db_engin
         assert session.scalar(select(func.count()).select_from(Plan)) == 3
 
 
-@pytest.mark.parametrize("different_keys", [False, True])
-def test_concurrent_generation_has_one_batch(api_client, api_db_engine, different_keys):
+@pytest.mark.parametrize("mode", ["same", "different", "legacy"])
+def test_concurrent_generation_has_one_batch(api_client, api_db_engine, mode):
     rep_id, value = create_input(api_client, api_db_engine)
     preview = api_client.post("/api/repetitions/preview-instances", json=value).json()
     other = (
         api_client.post("/api/repetitions/preview-instances", json=value).json()
-        if different_keys
+        if mode == "different"
         else preview
     )
     gate = Barrier(2)
 
-    def commit(p):
+    def commit(args):
+        index, p = args
         body = CommitGenerationInput.model_validate({"preview": p, "resolved_refs": {}})
         with Session(api_db_engine) as session:
             gate.wait(timeout=5)
+            if mode == "legacy" and index == 1:
+                return RepetitionService(session).generate_instances(
+                    PlanID(UUID(rep_id)), datetime(2026, 9, 12, tzinfo=UTC)
+                )
             return projection_service.commit_generation(
                 session, PlanID(UUID(rep_id)), body, datetime(2026, 9, 12, tzinfo=UTC)
             )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(commit, [preview, other]))
-    assert sum(result.success for result in results) == (1 if different_keys else 2)
+        results = list(pool.map(commit, enumerate([preview, other])))
+    assert sum(result.success for result in results) == (2 if mode == "same" else 1)
     with Session(api_db_engine) as session:
         assert session.scalar(select(func.count()).select_from(RepetitionInstance)) == 2
-        assert session.scalar(select(func.count()).select_from(RepetitionGenerationReceipt)) == 1
+        assert session.scalar(select(func.count()).select_from(RepetitionGenerationReceipt)) == (
+            1 if mode != "legacy" or results[0].success else 0
+        )
 
 
 def test_receipt_key_conflict_does_not_rewrite_existing_batch(api_client, api_db_engine):

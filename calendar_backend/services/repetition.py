@@ -7,7 +7,7 @@ from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
@@ -205,6 +205,11 @@ class RepetitionService:
     def _generate_instances_in_txn(
         self, txn: Session, repetition_plan_id: PlanID, run_started_at: datetime
     ) -> ServiceResult[RepetitionPlanDTO]:
+        txn.execute(
+            update(RepetitionPlan)
+            .where(RepetitionPlan.plan_id == repetition_plan_id)
+            .values(generated_at=RepetitionPlan.generated_at)
+        )
         loaded = _load_repetition_plan(txn, repetition_plan_id)
         if isinstance(loaded, ServiceMessage):
             return fail(loaded)

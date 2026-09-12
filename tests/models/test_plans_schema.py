@@ -578,6 +578,7 @@ def test_check_goal_sort_order_non_negative(plan_schema_engine: Engine) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_alembic_upgrade_plan_has_goal_ordering_columns(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -929,6 +930,7 @@ def test_relationships_navigate_repetition_plan_template_root(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_alembic_upgrade_creates_plan_tables(
     temp_sqlite_url: str,
     monkeypatch: pytest.MonkeyPatch,
