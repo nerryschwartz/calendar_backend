@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from zoneinfo import available_timezones
 
 from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.domain.dtos import AppSettingsDTO, app_settings_dto_from_row
 from calendar_backend.domain.enums import FreeTimeWeekStartDay
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
@@ -15,7 +17,7 @@ from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.settings import AppSettings
 
 DEFAULT_LOCAL_TIMEZONE = "UTC"
-DEFAULT_MASTER_HORIZON_DURATION_MINUTES = 1_051_200
+DEFAULT_MASTER_HORIZON_DURATION = CalendarDuration(years=2)
 DEFAULT_EXACT_SOLVER_TIME_LIMIT_SECONDS = 30
 DEFAULT_EXACT_SOLVER_MODEL_SIZE_LIMIT = 1000
 DEFAULT_HEURISTIC_ENABLED = True
@@ -36,7 +38,7 @@ class AppSettingsService:
         self,
         *,
         local_timezone: str | None = None,
-        master_horizon_duration_minutes: int | None = None,
+        master_horizon_duration: CalendarDuration | None = None,
         exact_solver_time_limit_seconds: int | None = None,
         exact_solver_model_size_limit: int | None = None,
         heuristic_enabled: bool | None = None,
@@ -44,7 +46,6 @@ class AppSettingsService:
     ) -> ServiceResult[AppSettingsDTO]:
         validation_error = _validate_settings_update(
             local_timezone=local_timezone,
-            master_horizon_duration_minutes=master_horizon_duration_minutes,
             exact_solver_time_limit_seconds=exact_solver_time_limit_seconds,
             exact_solver_model_size_limit=exact_solver_model_size_limit,
         )
@@ -53,9 +54,24 @@ class AppSettingsService:
 
         with transaction(self._session) as txn:
             row = _load_or_create_settings(txn, self._clock)
+            if master_horizon_duration is not None:
+                try:
+                    master_horizon_duration.end_at(
+                        self._clock.now_utc(), local_timezone or row.local_timezone
+                    )
+                except (ValueError, OverflowError):
+                    return fail(
+                        ServiceMessage(
+                            code=MessageCode.INVALID_DURATION,
+                            message="Master horizon exceeds the supported calendar range",
+                            details={},
+                        )
+                    )
             updates = {
                 "local_timezone": local_timezone,
-                "master_horizon_duration_minutes": master_horizon_duration_minutes,
+                "master_horizon_duration": (
+                    asdict(master_horizon_duration) if master_horizon_duration is not None else None
+                ),
                 "exact_solver_time_limit_seconds": exact_solver_time_limit_seconds,
                 "exact_solver_model_size_limit": exact_solver_model_size_limit,
                 "heuristic_enabled": heuristic_enabled,
@@ -83,7 +99,7 @@ def _load_or_create_settings(session: Session, clock: Clock) -> AppSettings:
     row = AppSettings(
         singleton_id=1,
         local_timezone=DEFAULT_LOCAL_TIMEZONE,
-        master_horizon_duration_minutes=DEFAULT_MASTER_HORIZON_DURATION_MINUTES,
+        master_horizon_duration=asdict(DEFAULT_MASTER_HORIZON_DURATION),
         exact_solver_time_limit_seconds=DEFAULT_EXACT_SOLVER_TIME_LIMIT_SECONDS,
         exact_solver_model_size_limit=DEFAULT_EXACT_SOLVER_MODEL_SIZE_LIMIT,
         heuristic_enabled=DEFAULT_HEURISTIC_ENABLED,
@@ -98,7 +114,6 @@ def _load_or_create_settings(session: Session, clock: Clock) -> AppSettings:
 def _validate_settings_update(
     *,
     local_timezone: str | None,
-    master_horizon_duration_minutes: int | None,
     exact_solver_time_limit_seconds: int | None,
     exact_solver_model_size_limit: int | None,
 ) -> ServiceMessage | None:
@@ -110,7 +125,6 @@ def _validate_settings_update(
         )
 
     for field_name, value in (
-        ("master_horizon_duration_minutes", master_horizon_duration_minutes),
         ("exact_solver_time_limit_seconds", exact_solver_time_limit_seconds),
         ("exact_solver_model_size_limit", exact_solver_model_size_limit),
     ):

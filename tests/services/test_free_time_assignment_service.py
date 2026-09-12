@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.assignment import CalendarEntryDTO
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.domain.enums import (
     CalendarEntryType,
     CalendarRunStatus,
@@ -84,7 +85,7 @@ def _bootstrap_master_with_short_horizon(
     AppSettingsService(session, clock).get_settings()
     assert (
         AppSettingsService(session, clock)
-        .update_settings(master_horizon_duration_minutes=duration_minutes)
+        .update_settings(master_horizon_duration=CalendarDuration(minutes=duration_minutes))
         .success
     )
     assert MasterHorizonService(session, clock).refresh_master_horizon(RUN_AT).success

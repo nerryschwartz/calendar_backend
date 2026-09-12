@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.assignment import CalendarEntryDTO
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.domain.enums import (
     CalendarEntryType,
     CloneStatus,
@@ -206,7 +207,7 @@ def bootstrap_multi_activity_refresh_fixture(
     master_id = bootstrap_master_with_horizon(session)
     assert (
         AppSettingsService(session, clock())
-        .update_settings(master_horizon_duration_minutes=240)
+        .update_settings(master_horizon_duration=CalendarDuration(minutes=240))
         .success
     )
     assert MasterHorizonService(session, clock()).refresh_master_horizon(RUN_AT).success

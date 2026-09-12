@@ -11,7 +11,7 @@ from calendar_backend.api.errors import unwrap_result
 from calendar_backend.api.serialize import dto_to_json
 from calendar_backend.domain.enums import RepeatMode
 from calendar_backend.domain.ids import PlanID
-from calendar_backend.domain.time import Clock
+from calendar_backend.domain.time import Clock, truncate_to_minute
 from calendar_backend.services.repetition import RepetitionService
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -29,6 +29,13 @@ class UpdateRepetitionSettingsBody(BaseModel):
     default_instance_critical: bool | None = None
 
 
+@router.get("/generation-status")
+def generation_status(
+    session: Annotated[Session, Depends(get_db_session)],
+) -> dict[str, Any]:
+    return {"repetitions": dto_to_json(RepetitionService(session).generation_status())}
+
+
 @router.patch("/{repetition_id}/settings")
 def update_settings(
     repetition_id: UUID,
@@ -40,12 +47,7 @@ def update_settings(
         unwrap_result(
             RepetitionService(session, clock).update_settings(
                 PlanID(repetition_id),
-                repeat_mode=body.repeat_mode,
-                start_time=body.start_time,
-                repeat_interval_minutes=body.repeat_interval_minutes,
-                manual_count=body.manual_count,
-                end_time=body.end_time,
-                default_instance_critical=body.default_instance_critical,
+                **body.model_dump(exclude_unset=True),
             )
         )
     )
@@ -60,7 +62,7 @@ def generate_instances(
     return dto_to_json(
         unwrap_result(
             RepetitionService(session, clock).generate_instances(
-                PlanID(repetition_id), clock.now_utc()
+                PlanID(repetition_id), truncate_to_minute(clock.now_utc())
             )
         )
     )
@@ -73,7 +75,9 @@ def refresh_repetition(
     clock: Annotated[Clock, Depends(get_clock)],
 ) -> dict[str, str]:
     unwrap_result(
-        RepetitionService(session, clock).refresh_repetition(PlanID(repetition_id), clock.now_utc())
+        RepetitionService(session, clock).refresh_repetition(
+            PlanID(repetition_id), truncate_to_minute(clock.now_utc())
+        )
     )
     return {"status": "ok"}
 
@@ -83,5 +87,9 @@ def refresh_all_repetitions(
     session: Annotated[Session, Depends(get_db_session)],
     clock: Annotated[Clock, Depends(get_clock)],
 ) -> dict[str, str]:
-    unwrap_result(RepetitionService(session, clock).refresh_all_repetitions(clock.now_utc()))
+    unwrap_result(
+        RepetitionService(session, clock).refresh_all_repetitions(
+            truncate_to_minute(clock.now_utc())
+        )
+    )
     return {"status": "ok"}

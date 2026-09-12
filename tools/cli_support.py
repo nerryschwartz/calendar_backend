@@ -201,7 +201,7 @@ def print_goal_plan_dto(dto: GoalPlanDTO) -> None:
 
 def print_app_settings_dto(dto: AppSettingsDTO) -> None:
     print(f"local_timezone: {dto.local_timezone}")
-    print(f"master_horizon_duration_minutes: {dto.master_horizon_duration_minutes}")
+    print(f"master_horizon_duration: {dto.master_horizon_duration}")
     print(f"exact_solver_time_limit_seconds: {dto.exact_solver_time_limit_seconds}")
     print(f"exact_solver_model_size_limit: {dto.exact_solver_model_size_limit}")
     print(f"heuristic_enabled: {dto.heuristic_enabled}")

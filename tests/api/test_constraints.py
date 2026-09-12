@@ -32,7 +32,9 @@ def test_constraint_changes_affect_schedule_refresh(
     api_client: TestClient, kind: str, calendar: str
 ) -> None:
     assert (
-        api_client.patch("/api/settings", json={"master_horizon_duration_minutes": 180}).status_code
+        api_client.patch(
+            "/api/settings", json={"master_horizon_duration": {"minutes": 180}}
+        ).status_code
         == 200
     )
     master_id = api_client.get("/api/plans/master").json()["master_plan_id"]

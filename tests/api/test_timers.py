@@ -231,7 +231,10 @@ def test_refresh_then_poll_sqlite_timers_regression(api_client: TestClient) -> N
     assert (
         api_client.patch(
             "/api/settings",
-            json={"master_horizon_duration_minutes": 180, "exact_solver_time_limit_seconds": 2},
+            json={
+                "master_horizon_duration": {"minutes": 180},
+                "exact_solver_time_limit_seconds": 2,
+            },
         ).status_code
         == 200
     )

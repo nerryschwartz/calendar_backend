@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Integer, String
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Enum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from calendar_backend.db.base import Base
@@ -22,7 +22,7 @@ class AppSettings(Base):
 
     singleton_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     local_timezone: Mapped[str] = mapped_column(String, nullable=False)
-    master_horizon_duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    master_horizon_duration: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False)
     exact_solver_time_limit_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     exact_solver_model_size_limit: Mapped[int] = mapped_column(Integer, nullable=False)
     heuristic_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)

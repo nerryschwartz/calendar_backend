@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.domain.dtos import AppSettingsDTO
 from calendar_backend.domain.enums import FreeTimeWeekStartDay
 from calendar_backend.domain.errors import MessageCode
@@ -13,7 +14,7 @@ from calendar_backend.services.app_settings import (
     DEFAULT_FREE_TIME_WEEK_START_DAY,
     DEFAULT_HEURISTIC_ENABLED,
     DEFAULT_LOCAL_TIMEZONE,
-    DEFAULT_MASTER_HORIZON_DURATION_MINUTES,
+    DEFAULT_MASTER_HORIZON_DURATION,
     AppSettingsService,
 )
 from sqlalchemy import func, select
@@ -30,7 +31,7 @@ def test_get_settings_bootstraps_defaults(service_db_session: Session) -> None:
     assert result.success and result.value is not None
     dto = result.value
     assert dto.local_timezone == DEFAULT_LOCAL_TIMEZONE
-    assert dto.master_horizon_duration_minutes == DEFAULT_MASTER_HORIZON_DURATION_MINUTES
+    assert dto.master_horizon_duration == DEFAULT_MASTER_HORIZON_DURATION
     assert dto.exact_solver_time_limit_seconds == DEFAULT_EXACT_SOLVER_TIME_LIMIT_SECONDS
     assert dto.exact_solver_model_size_limit == DEFAULT_EXACT_SOLVER_MODEL_SIZE_LIMIT
     assert dto.heuristic_enabled == DEFAULT_HEURISTIC_ENABLED
@@ -52,10 +53,7 @@ def test_get_settings_returns_dto_after_bootstrap(service_db_session: Session) -
     assert second.success and second.value is not None
     assert isinstance(second.value, AppSettingsDTO)
     assert second.value.local_timezone == bootstrap.value.local_timezone
-    assert (
-        second.value.master_horizon_duration_minutes
-        == bootstrap.value.master_horizon_duration_minutes
-    )
+    assert second.value.master_horizon_duration == bootstrap.value.master_horizon_duration
     assert (
         second.value.exact_solver_time_limit_seconds
         == bootstrap.value.exact_solver_time_limit_seconds
@@ -77,7 +75,7 @@ def test_update_settings_updates_each_field(service_db_session: Session) -> None
     service = AppSettingsService(service_db_session, later)
     result = service.update_settings(
         local_timezone="America/New_York",
-        master_horizon_duration_minutes=120,
+        master_horizon_duration=CalendarDuration(minutes=120),
         exact_solver_time_limit_seconds=45,
         exact_solver_model_size_limit=500,
         heuristic_enabled=False,
@@ -87,7 +85,7 @@ def test_update_settings_updates_each_field(service_db_session: Session) -> None
     assert result.success and result.value is not None
     dto = result.value
     assert dto.local_timezone == "America/New_York"
-    assert dto.master_horizon_duration_minutes == 120
+    assert dto.master_horizon_duration == CalendarDuration(minutes=120)
     assert dto.exact_solver_time_limit_seconds == 45
     assert dto.exact_solver_model_size_limit == 500
     assert dto.heuristic_enabled is False
@@ -99,8 +97,6 @@ def test_update_settings_updates_each_field(service_db_session: Session) -> None
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
-        ("master_horizon_duration_minutes", 0),
-        ("master_horizon_duration_minutes", -1),
         ("exact_solver_time_limit_seconds", 0),
         ("exact_solver_model_size_limit", -5),
     ],
@@ -115,8 +111,6 @@ def test_update_settings_rejects_non_positive_limits(
     assert service.get_settings().success
 
     match field_name:
-        case "master_horizon_duration_minutes":
-            result = service.update_settings(master_horizon_duration_minutes=value)
         case "exact_solver_time_limit_seconds":
             result = service.update_settings(exact_solver_time_limit_seconds=value)
         case "exact_solver_model_size_limit":
