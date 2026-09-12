@@ -112,6 +112,8 @@ class PlanTreeReadService:
                 task_detail=task_detail,
                 block_detail=block_detail,
                 repetition_detail=repetition_detail,
+                clone_status=plan.clone_status,
+                cloned_from_id=PlanID(plan.cloned_from_id) if plan.cloned_from_id else None,
             )
         )
 

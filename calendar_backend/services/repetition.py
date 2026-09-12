@@ -20,15 +20,18 @@ from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind,
 from calendar_backend.domain.errors import MessageCode, ServiceMessage, ServiceTransactionAborted
 from calendar_backend.domain.ids import (
     PlanID,
-    RepetitionInstanceID,
     TimeConstraintGroupID,
     TimeWindowID,
     new_id,
 )
+from calendar_backend.domain.repetition_projection import (
+    FrozenHorizon,
+    PreviewInput,
+    project_instances,
+)
 from calendar_backend.domain.repetitions import (
     RepetitionSettingsState,
     compute_instance_indices,
-    instance_start_time,
     validate_repetition_settings_update,
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
@@ -44,6 +47,10 @@ from calendar_backend.services.master_horizon import (
     validate_run_started_at,
 )
 from calendar_backend.services.plan_tree import load_plan_with_subtype
+from calendar_backend.services.repetition_projection import (
+    materialize_instance,
+    snapshot_repetition,
+)
 
 
 class _UnsetType:
@@ -237,6 +244,7 @@ class RepetitionService:
 
         template_plans = _collect_template_subtree(txn, template_root_id)
         template_windows = _load_user_window_groups(txn, tuple(p.plan_id for p in template_plans))
+        projection = snapshot_repetition(txn, repetition_plan)
         for sort_order, instance_index in enumerate(indices_result):
             add_error = _add_repetition_instance(
                 txn,
@@ -250,6 +258,7 @@ class RepetitionService:
                 sort_order=sort_order,
                 is_critical=repetition_plan.default_instance_critical,
                 now=run_started_at,
+                projection=projection,
             )
             if add_error is not None:
                 raise ServiceTransactionAborted((add_error,))
@@ -360,6 +369,7 @@ def _refresh_repetition_in_txn(  # noqa: PLR0911
     existing_indices = {instance.instance_index for instance in instances}
     missing_indices = [index for index in desired_indices if index not in existing_indices]
     if missing_indices:
+        projection = snapshot_repetition(txn, repetition_plan)
         sort_order_by_critical = _next_sort_orders_by_critical(tuple(instances))
         is_critical = repetition_plan.default_instance_critical
         sort_order_by_critical.setdefault(is_critical, 0)
@@ -378,6 +388,7 @@ def _refresh_repetition_in_txn(  # noqa: PLR0911
                 sort_order=sort_order,
                 is_critical=is_critical,
                 now=run_started_at,
+                projection=projection,
             )
             if add_error is not None:
                 return fail(add_error)
@@ -442,41 +453,22 @@ def _add_repetition_instance(
     sort_order: int,
     is_critical: bool,
     now: datetime,
+    projection: PreviewInput | None = None,
 ) -> ServiceMessage | None:
-    root_clone_result = _clone_template_subtree(
-        txn,
-        template_root_id=template_root_id,
-        template_plans=template_plans,
-        template_windows=template_windows,
-        offset=timedelta(minutes=instance_index * repetition_plan.repeat_interval_minutes),
-        repetition_plan_id=repetition_plan_id,
-        now=now,
+    del plan, template_root_id, template_plans, template_windows, repetition_plan_id
+    value = projection or snapshot_repetition(txn, repetition_plan)
+    preview = project_instances(
+        value, FrozenHorizon(run_started_at=now), instance_indices=(instance_index,)
     )
-    if isinstance(root_clone_result, ServiceMessage):
-        return root_clone_result
-    root_clone_id = root_clone_result
-    instance_start = instance_start_time(
-        sqlite_utc(repetition_plan.start_time),
-        repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
-        instance_index=instance_index,
-    )
-    txn.add(
-        RepetitionInstance(
-            repetition_instance_id=new_id(RepetitionInstanceID),
-            repetition_plan_id=repetition_plan.plan_id,
-            instance_index=instance_index,
-            root_clone_id=root_clone_id,
-            instance_start_time=instance_start,
-            is_critical=is_critical,
-            sort_order=sort_order,
+    materialize_instance(txn, value, preview.instances[0], preview.generation_key, {}, now)
+    instance = txn.scalar(
+        select(RepetitionInstance).where(
+            RepetitionInstance.root_clone_id == uuid.UUID(preview.instances[0].root_ref)
         )
     )
-    _upsert_repetition_instance_window(
-        txn,
-        instance_root_plan_id=PlanID(root_clone_id),
-        window_start=instance_start,
-        window_end=instance_start + timedelta(minutes=repetition_plan.repeat_interval_minutes),
-    )
+    assert instance is not None
+    instance.sort_order = sort_order
+    instance.is_critical = is_critical
     return None
 
 
@@ -785,101 +777,6 @@ def _sync_clone_goal_child_order(
         clone_child.goal_is_critical = template_child.goal_is_critical
         clone_child.goal_sort_order = template_child.goal_sort_order
         clone_child.updated_at = now
-
-
-def _upsert_repetition_instance_window(
-    session: Session,
-    *,
-    instance_root_plan_id: PlanID,
-    window_start: datetime,
-    window_end: datetime,
-) -> None:
-    group = session.scalar(
-        select(TimeConstraintGroup)
-        .where(TimeConstraintGroup.plan_id == instance_root_plan_id)
-        .where(TimeConstraintGroup.constraint_kind == ConstraintKind.SYSTEM_REPETITION_WINDOW)
-    )
-    if group is None:
-        group = TimeConstraintGroup(
-            time_constraint_group_id=new_id(TimeConstraintGroupID),
-            plan_id=instance_root_plan_id,
-            constraint_kind=ConstraintKind.SYSTEM_REPETITION_WINDOW,
-        )
-        session.add(group)
-
-    session.execute(delete(TimeWindow).where(TimeWindow.group_id == group.time_constraint_group_id))
-
-    session.add(
-        TimeWindow(
-            time_window_id=new_id(TimeWindowID),
-            group_id=group.time_constraint_group_id,
-            start_time=window_start,
-            end_time=window_end,
-        )
-    )
-
-
-def _clone_template_subtree(
-    txn: Session,
-    *,
-    template_root_id: PlanID,
-    template_plans: tuple[Plan, ...],
-    template_windows: dict[uuid.UUID, WindowGroups],
-    offset: timedelta,
-    repetition_plan_id: PlanID,
-    now: datetime,
-) -> uuid.UUID | ServiceMessage:
-    clone_by_template_id: dict[uuid.UUID, uuid.UUID] = {}
-
-    for template_plan in template_plans:
-        parent_id = (
-            repetition_plan_id
-            if template_plan.plan_id == template_root_id
-            else clone_by_template_id[template_plan.parent_id]  # pyright: ignore[reportArgumentType]  # type checker: parent cloned earlier in BFS order
-        )
-        clone_plan_id = _insert_linked_clone_plan(
-            txn,
-            template_plan=template_plan,
-            parent_id=PlanID(parent_id),
-            now=now,
-        )
-        clone_by_template_id[template_plan.plan_id] = clone_plan_id
-        _sync_user_windows(
-            txn, PlanID(clone_plan_id), template_windows.get(template_plan.plan_id, ()), offset
-        )
-
-    for template_plan in template_plans:
-        clone_plan_id = clone_by_template_id[template_plan.plan_id]
-        template_plan_id = PlanID(template_plan.plan_id)
-
-        clone_repetition = txn.get(RepetitionPlan, clone_plan_id)
-        if clone_repetition is not None:
-            source_repetition = txn.get(RepetitionPlan, template_plan_id)
-            assert source_repetition is not None  # type checker: clone has repetition row
-            cloned_template_root_id = clone_by_template_id.get(source_repetition.template_root_id)
-            if cloned_template_root_id is not None:
-                clone_repetition.template_root_id = cloned_template_root_id
-
-        if txn.get(GoalPlan, template_plan_id) is None:
-            continue
-
-        _sync_clone_goal_child_order(
-            txn,
-            template_goal_id=template_plan_id,
-            clone_goal_id=PlanID(clone_plan_id),
-            clone_by_template=clone_by_template_id,
-            now=now,
-        )
-
-    rewrite_error = _rewrite_clone_prerequisite_refs(
-        txn,
-        template_plans=template_plans,
-        clone_by_template=clone_by_template_id,
-    )
-    if rewrite_error is not None:
-        return rewrite_error
-
-    return clone_by_template_id[template_root_id]
 
 
 def _rewrite_clone_prerequisite_refs(

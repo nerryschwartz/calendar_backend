@@ -188,18 +188,26 @@ def generated_ref(generation_key: str, instance_index: int, source_ref: str) -> 
 
 
 def project_instances(
-    value: PreviewInput, horizon: FrozenHorizon, generation_key: str | None = None
+    value: PreviewInput,
+    horizon: FrozenHorizon,
+    generation_key: str | None = None,
+    *,
+    instance_indices: tuple[int, ...] | None = None,
 ) -> GenerationPreview:
     """Project only data: no session, clock lookup, solver, or persistence."""
     key = generation_key or str(uuid4())
     settings = value.settings
-    indices = compute_instance_indices(
-        repeat_mode=settings.repeat_mode,
-        start_time=settings.start_time,
-        repeat_interval_minutes=settings.repeat_interval_minutes,
-        manual_count=settings.manual_count,
-        end_time=settings.end_time,
-        master_horizon_end=horizon.master_horizon_end,
+    indices = (
+        instance_indices
+        if instance_indices is not None
+        else compute_instance_indices(
+            repeat_mode=settings.repeat_mode,
+            start_time=settings.start_time,
+            repeat_interval_minutes=settings.repeat_interval_minutes,
+            manual_count=settings.manual_count,
+            end_time=settings.end_time,
+            master_horizon_end=horizon.master_horizon_end,
+        )
     )
     if isinstance(indices, ServiceMessage):
         raise ValueError(indices.message)

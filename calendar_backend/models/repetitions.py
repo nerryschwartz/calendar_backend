@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Uuid
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from calendar_backend.db.base import Base
@@ -49,3 +49,17 @@ class RepetitionInstance(Base):
 
     repetition_plan: Mapped[RepetitionPlan] = relationship(back_populates="instances")
     root_clone: Mapped[Plan] = relationship(foreign_keys=[root_clone_id])
+
+
+class RepetitionGenerationReceipt(Base):
+    __tablename__ = "repetition_generation_receipt"
+
+    generation_key: Mapped[str] = mapped_column(String, primary_key=True)
+    repetition_plan_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("repetition_plan.plan_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    request_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    reference_map: Mapped[dict[str, dict[str, str]]] = mapped_column(JSON, nullable=False)

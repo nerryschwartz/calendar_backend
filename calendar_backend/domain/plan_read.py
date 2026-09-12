@@ -12,7 +12,7 @@ from calendar_backend.domain.dtos import (
     TaskPlanDTO,
     TimeConstraintGroupDTO,
 )
-from calendar_backend.domain.enums import PlanKind
+from calendar_backend.domain.enums import CloneStatus, PlanKind
 from calendar_backend.domain.ids import PlanID
 
 
@@ -59,6 +59,8 @@ class PlanDetailDTO:
     task_detail: TaskPlanDTO | None
     block_detail: BlockPlanDTO | None
     repetition_detail: RepetitionPlanDTO | None
+    clone_status: CloneStatus = CloneStatus.NOT_CLONED
+    cloned_from_id: PlanID | None = None
 
 
 @dataclass(frozen=True)
