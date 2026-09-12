@@ -21,6 +21,7 @@ from calendar_backend.domain.time import Clock, SystemClock, TimeWindow
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
 from calendar_backend.models.plans import Plan
+from calendar_backend.services.plan_tree import detach_linked_self_and_descendants
 
 
 class TimeConstraintService:
@@ -67,6 +68,7 @@ class TimeConstraintService:
             txn.add(group)
             window_rows = _insert_windows(txn, group_id=group_id, windows=merged_windows)
             plan.updated_at = self._clock.now_utc()
+            detach_linked_self_and_descendants(txn, plan, self._clock.now_utc())
             txn.flush()
             return ok(time_constraint_group_dto_from_rows(group, window_rows))
 
@@ -89,6 +91,7 @@ class TimeConstraintService:
 
             window_rows = _replace_group_windows(txn, group, merged_windows)
             group.plan.updated_at = self._clock.now_utc()
+            detach_linked_self_and_descendants(txn, group.plan, self._clock.now_utc())
             txn.flush()
             return ok(time_constraint_group_dto_from_rows(group, window_rows))
 
@@ -105,6 +108,7 @@ class TimeConstraintService:
                 )
             )
             group.plan.updated_at = self._clock.now_utc()
+            detach_linked_self_and_descendants(txn, group.plan, self._clock.now_utc())
             txn.delete(group)
             txn.flush()
             return ok(None)
@@ -130,6 +134,7 @@ class TimeConstraintService:
             merged_windows = merge_or_windows((*existing_windows, window))
             window_rows = _replace_group_windows(txn, group, merged_windows)
             group.plan.updated_at = self._clock.now_utc()
+            detach_linked_self_and_descendants(txn, group.plan, self._clock.now_utc())
             txn.flush()
             return ok(time_constraint_group_dto_from_rows(group, window_rows))
 
@@ -158,6 +163,7 @@ class TimeConstraintService:
                 )
 
             group.plan.updated_at = self._clock.now_utc()
+            detach_linked_self_and_descendants(txn, group.plan, self._clock.now_utc())
             txn.delete(window_row)
             txn.flush()
 

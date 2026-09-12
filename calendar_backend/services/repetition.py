@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.dtos import RepetitionPlanDTO, repetition_plan_dto_from_rows
@@ -30,6 +30,7 @@ from calendar_backend.domain.repetitions import (
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock, sqlite_utc
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
+from calendar_backend.models.blocks import BlockPlan
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
@@ -46,6 +47,8 @@ class _UnsetType:
 
 
 _UNSET = _UnsetType()
+
+type WindowGroups = tuple[tuple[tuple[datetime, datetime], ...], ...]
 
 
 class RepetitionService:
@@ -183,6 +186,8 @@ class RepetitionService:
         if isinstance(indices_result, ServiceMessage):
             raise ServiceTransactionAborted((indices_result,))
 
+        template_plans = _collect_template_subtree(txn, template_root_id)
+        template_windows = _load_user_window_groups(txn, tuple(p.plan_id for p in template_plans))
         for sort_order, instance_index in enumerate(indices_result):
             add_error = _add_repetition_instance(
                 txn,
@@ -190,6 +195,8 @@ class RepetitionService:
                 repetition_plan=repetition_plan,
                 repetition_plan_id=repetition_plan_id,
                 template_root_id=template_root_id,
+                template_plans=template_plans,
+                template_windows=template_windows,
                 instance_index=instance_index,
                 sort_order=sort_order,
                 is_critical=repetition_plan.default_instance_critical,
@@ -275,6 +282,7 @@ def _refresh_repetition_in_txn(  # noqa: PLR0911
         )
 
     template_plans = _collect_template_subtree(txn, template_root_id)
+    template_windows = _load_user_window_groups(txn, tuple(p.plan_id for p in template_plans))
     instances = txn.scalars(
         select(RepetitionInstance)
         .where(RepetitionInstance.repetition_plan_id == repetition_plan.plan_id)
@@ -286,6 +294,10 @@ def _refresh_repetition_in_txn(  # noqa: PLR0911
             txn,
             template_root_id=template_root_id,
             template_plans=template_plans,
+            template_windows=template_windows,
+            offset=timedelta(
+                minutes=instance.instance_index * repetition_plan.repeat_interval_minutes
+            ),
             root_clone_id=PlanID(instance.root_clone_id),
             now=run_started_at,
         )
@@ -311,6 +323,8 @@ def _refresh_repetition_in_txn(  # noqa: PLR0911
                 repetition_plan=repetition_plan,
                 repetition_plan_id=repetition_plan_id,
                 template_root_id=template_root_id,
+                template_plans=template_plans,
+                template_windows=template_windows,
                 instance_index=instance_index,
                 sort_order=sort_order,
                 is_critical=is_critical,
@@ -373,6 +387,8 @@ def _add_repetition_instance(
     repetition_plan: RepetitionPlan,
     repetition_plan_id: PlanID,
     template_root_id: PlanID,
+    template_plans: tuple[Plan, ...],
+    template_windows: dict[uuid.UUID, WindowGroups],
     instance_index: int,
     sort_order: int,
     is_critical: bool,
@@ -381,6 +397,9 @@ def _add_repetition_instance(
     root_clone_result = _clone_template_subtree(
         txn,
         template_root_id=template_root_id,
+        template_plans=template_plans,
+        template_windows=template_windows,
+        offset=timedelta(minutes=instance_index * repetition_plan.repeat_interval_minutes),
         repetition_plan_id=repetition_plan_id,
         now=now,
     )
@@ -388,7 +407,7 @@ def _add_repetition_instance(
         return root_clone_result
     root_clone_id = root_clone_result
     instance_start = instance_start_time(
-        repetition_plan.start_time,
+        sqlite_utc(repetition_plan.start_time),
         repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
         instance_index=instance_index,
     )
@@ -417,6 +436,8 @@ def _refresh_instance_clone_subtree(
     *,
     template_root_id: PlanID,
     template_plans: tuple[Plan, ...],
+    template_windows: dict[uuid.UUID, WindowGroups],
+    offset: timedelta,
     root_clone_id: PlanID,
     now: datetime,
 ) -> ServiceMessage | None:
@@ -448,6 +469,9 @@ def _refresh_instance_clone_subtree(
             clone_by_template=clone_by_template,
             now=now,
         )
+        _sync_user_windows(
+            txn, PlanID(clone_plan_id), template_windows.get(template_plan_id, ()), offset
+        )
         if txn.get(GoalPlan, template_plan_id) is not None:
             _sync_clone_goal_child_order(
                 txn,
@@ -459,7 +483,7 @@ def _refresh_instance_clone_subtree(
 
     return _rewrite_clone_prerequisite_refs(
         txn,
-        template_root_id=template_root_id,
+        template_plans=template_plans,
         clone_by_template=clone_by_template,
     )
 
@@ -542,6 +566,17 @@ def _propagate_linked_clone_from_template(
             clone_task.duration_minutes = task_plan.duration_minutes
             clone_task.divisible = task_plan.divisible
             clone_task.minimum_chunk_size_minutes = task_plan.minimum_chunk_size_minutes
+            clone_task.allowed_block_families = task_plan.allowed_block_families
+        return
+
+    block_plan = txn.get(BlockPlan, template_plan_id)
+    if block_plan is not None:
+        clone_block = txn.get(BlockPlan, clone_plan_id)
+        if clone_block is not None:
+            clone_block.duration_minutes = block_plan.duration_minutes
+            clone_block.divisible = block_plan.divisible
+            clone_block.minimum_chunk_size_minutes = block_plan.minimum_chunk_size_minutes
+            clone_block.block_family = block_plan.block_family
         return
 
     source_repetition = txn.get(RepetitionPlan, template_plan_id)
@@ -635,6 +670,22 @@ def _insert_linked_clone_plan(
                 duration_minutes=task_plan.duration_minutes,
                 divisible=task_plan.divisible,
                 minimum_chunk_size_minutes=task_plan.minimum_chunk_size_minutes,
+                allowed_block_families=task_plan.allowed_block_families,
+                user_completed=False,
+                completed_at=None,
+            )
+        )
+        return clone_plan_id
+
+    block_plan = txn.get(BlockPlan, template_plan_id)
+    if block_plan is not None:
+        txn.add(
+            BlockPlan(
+                plan_id=clone_plan_id,
+                duration_minutes=block_plan.duration_minutes,
+                divisible=block_plan.divisible,
+                minimum_chunk_size_minutes=block_plan.minimum_chunk_size_minutes,
+                block_family=block_plan.block_family,
                 user_completed=False,
                 completed_at=None,
             )
@@ -723,10 +774,12 @@ def _clone_template_subtree(
     txn: Session,
     *,
     template_root_id: PlanID,
+    template_plans: tuple[Plan, ...],
+    template_windows: dict[uuid.UUID, WindowGroups],
+    offset: timedelta,
     repetition_plan_id: PlanID,
     now: datetime,
 ) -> uuid.UUID | ServiceMessage:
-    template_plans = _collect_template_subtree(txn, template_root_id)
     clone_by_template_id: dict[uuid.UUID, uuid.UUID] = {}
 
     for template_plan in template_plans:
@@ -742,6 +795,9 @@ def _clone_template_subtree(
             now=now,
         )
         clone_by_template_id[template_plan.plan_id] = clone_plan_id
+        _sync_user_windows(
+            txn, PlanID(clone_plan_id), template_windows.get(template_plan.plan_id, ()), offset
+        )
 
     for template_plan in template_plans:
         clone_plan_id = clone_by_template_id[template_plan.plan_id]
@@ -768,7 +824,7 @@ def _clone_template_subtree(
 
     rewrite_error = _rewrite_clone_prerequisite_refs(
         txn,
-        template_root_id=template_root_id,
+        template_plans=template_plans,
         clone_by_template=clone_by_template_id,
     )
     if rewrite_error is not None:
@@ -780,13 +836,13 @@ def _clone_template_subtree(
 def _rewrite_clone_prerequisite_refs(
     txn: Session,
     *,
-    template_root_id: PlanID,
+    template_plans: tuple[Plan, ...],
     clone_by_template: dict[uuid.UUID, uuid.UUID],
 ) -> ServiceMessage | None:
-    template_subtree_ids = frozenset(
-        plan.plan_id for plan in _collect_template_subtree(txn, template_root_id)
-    )
+    template_subtree_ids = frozenset(plan.plan_id for plan in template_plans)
     for template_plan_id, clone_plan_id in clone_by_template.items():
+        if not _is_linked_for_refresh(txn, PlanID(clone_plan_id)):
+            continue
         sync_error = _sync_clone_prerequisite_refs_for_plan(
             txn,
             template_plan_id=template_plan_id,
@@ -832,8 +888,8 @@ def _sync_clone_prerequisite_refs_for_plan(
             )
         )
 
-    template_task = txn.get(TaskPlan, template_plan_id)
-    clone_task = txn.get(TaskPlan, clone_plan_id)
+    template_task = txn.get(TaskPlan, template_plan_id) or txn.get(BlockPlan, template_plan_id)
+    clone_task = txn.get(TaskPlan, clone_plan_id) or txn.get(BlockPlan, clone_plan_id)
     if template_task is None or clone_task is None:
         return None
 
@@ -875,6 +931,69 @@ def _rewrite_template_local_plan_reference(
             details={**details, "referenced_plan_id": str(plan_id)},
         )
     return clone_id
+
+
+def _load_user_window_groups(
+    txn: Session, plan_ids: tuple[uuid.UUID, ...]
+) -> dict[uuid.UUID, WindowGroups]:
+    by_plan: dict[uuid.UUID, list[tuple[tuple[datetime, datetime], ...]]] = {}
+    groups = txn.scalars(
+        select(TimeConstraintGroup)
+        .where(
+            TimeConstraintGroup.plan_id.in_(plan_ids),
+            TimeConstraintGroup.constraint_kind == ConstraintKind.USER,
+        )
+        .options(selectinload(TimeConstraintGroup.windows))
+        .execution_options(populate_existing=True)
+    ).all()
+    for group in groups:
+        by_plan.setdefault(group.plan_id, []).append(
+            tuple(
+                sorted(
+                    (sqlite_utc(window.start_time), sqlite_utc(window.end_time))
+                    for window in group.windows
+                )
+            )
+        )
+    return {plan_id: tuple(sorted(windows)) for plan_id, windows in by_plan.items()}
+
+
+def _sync_user_windows(
+    txn: Session, clone_id: PlanID, source: WindowGroups, offset: timedelta
+) -> None:
+    shifted = tuple(
+        tuple((start + offset, end + offset) for start, end in group) for group in source
+    )
+    if _load_user_window_groups(txn, (clone_id,)).get(clone_id, ()) == shifted:
+        return
+    group_ids = select(TimeConstraintGroup.time_constraint_group_id).where(
+        TimeConstraintGroup.plan_id == clone_id,
+        TimeConstraintGroup.constraint_kind == ConstraintKind.USER,
+    )
+    txn.execute(delete(TimeWindow).where(TimeWindow.group_id.in_(group_ids)))
+    txn.execute(
+        delete(TimeConstraintGroup).where(
+            TimeConstraintGroup.time_constraint_group_id.in_(group_ids)
+        )
+    )
+    for windows in shifted:
+        group_id = new_id(TimeConstraintGroupID)
+        txn.add(
+            TimeConstraintGroup(
+                time_constraint_group_id=group_id,
+                plan_id=clone_id,
+                constraint_kind=ConstraintKind.USER,
+            )
+        )
+        for start, end in windows:
+            txn.add(
+                TimeWindow(
+                    time_window_id=new_id(TimeWindowID),
+                    group_id=group_id,
+                    start_time=start,
+                    end_time=end,
+                )
+            )
 
 
 def _collect_template_subtree(txn: Session, template_root_id: PlanID) -> tuple[Plan, ...]:

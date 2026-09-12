@@ -10,6 +10,7 @@ from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind,
 from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
+    BlockCreatePayload,
     GoalCreatePayload,
     RepetitionCreatePayload,
     TaskCreatePayload,
@@ -29,6 +30,9 @@ from calendar_backend.services.plan_tree import PlanTreeService
 from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantService
 from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task import TaskService
+from calendar_backend.services.time_constraint import TimeConstraintService
+from calendar_backend.domain.time import TimeWindow as DomainWindow, sqlite_utc
+from calendar_backend.models.blocks import BlockPlan
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -69,7 +73,11 @@ def _repetition_payload(
     *,
     manual_count: int = 3,
     template_type: PlanKind = PlanKind.GOAL,
-    template_payload: GoalCreatePayload | TaskCreatePayload | RepetitionCreatePayload | None = None,
+    template_payload: GoalCreatePayload
+    | TaskCreatePayload
+    | BlockCreatePayload
+    | RepetitionCreatePayload
+    | None = None,
 ) -> RepetitionCreatePayload:
     if template_payload is None:
         template_payload = GoalCreatePayload(name="template")
@@ -102,6 +110,131 @@ def _create_repetition(
 def _assert_tree_invariant(session: Session) -> None:
     result = PlanTreeInvariantService(session).validate_master_tree()
     assert result.success, result.errors
+
+
+@pytest.mark.slow
+def test_template_windows_shift_sync_and_preserve_detached_clones(
+    service_db_session: Session, master_plan_id: PlanID
+) -> None:
+    session = service_db_session
+    rep_id = _create_repetition(session, master_plan_id, _repetition_payload(manual_count=2))
+    rep = session.get(RepetitionPlan, rep_id)
+    template_id = PlanID(rep.template_root_id)
+    constraints = TimeConstraintService(session, FakeClock(RUN_AT))
+    first = constraints.add_user_group(
+        template_id,
+        (
+            DomainWindow(_START, _START + timedelta(minutes=10)),
+            DomainWindow(_START + timedelta(minutes=20), _START + timedelta(minutes=50)),
+        ),
+    )
+    second = constraints.add_user_group(
+        template_id, (DomainWindow(_START, _START + timedelta(minutes=45)),)
+    )
+    assert first.success and second.success
+    service = _repetition_service(session)
+    assert service.generate_instances(rep_id, RUN_AT).success
+    clones = list(
+        session.scalars(
+            select(RepetitionInstance)
+            .where(RepetitionInstance.repetition_plan_id == rep_id)
+            .order_by(RepetitionInstance.instance_index)
+        )
+    )
+
+    def window_rows(clone_id):
+        return list(
+            session.scalars(
+                select(TimeWindow)
+                .join(TimeConstraintGroup)
+                .where(
+                    TimeConstraintGroup.plan_id == clone_id,
+                    TimeConstraintGroup.constraint_kind == ConstraintKind.USER,
+                )
+                .order_by(TimeWindow.start_time, TimeWindow.end_time)
+            )
+        )
+
+    for index, clone in enumerate(clones):
+        rows = window_rows(clone.root_clone_id)
+        assert len(rows) == 3
+        assert sqlite_utc(rows[0].start_time) == _START + timedelta(minutes=index * 60)
+    original_ids = {row.time_window_id for row in window_rows(clones[1].root_clone_id)}
+    assert service.refresh_repetition(rep_id, RUN_AT).success
+    assert {row.time_window_id for row in window_rows(clones[1].root_clone_id)} == original_ids
+
+    own = constraints.add_user_group(
+        PlanID(clones[0].root_clone_id), (DomainWindow(_START, _START + timedelta(minutes=5)),)
+    )
+    assert own.success
+    assert session.get(Plan, clones[0].root_clone_id).clone_status == CloneStatus.DETACHED
+    detached_ids = {row.time_window_id for row in window_rows(clones[0].root_clone_id)}
+    assert constraints.remove_user_group(second.value.constraint_group_id).success
+    assert constraints.update_user_group(
+        first.value.constraint_group_id,
+        (DomainWindow(_START + timedelta(minutes=5), _START + timedelta(minutes=15)),),
+    ).success
+    assert service.refresh_repetition(rep_id, RUN_AT).success
+    assert {row.time_window_id for row in window_rows(clones[0].root_clone_id)} == detached_ids
+    remaining = window_rows(clones[1].root_clone_id)
+    assert len(remaining) == 1
+    assert sqlite_utc(remaining[0].start_time) == _START + timedelta(minutes=65)
+    assert constraints.remove_user_group(first.value.constraint_group_id).success
+    assert service.refresh_repetition(rep_id, RUN_AT).success
+    assert window_rows(clones[1].root_clone_id) == []
+
+
+@pytest.mark.parametrize("kind", [PlanKind.TASK, PlanKind.BLOCK])
+def test_clone_preserves_scheduling_subtype_fields(
+    service_db_session: Session, master_plan_id: PlanID, kind: PlanKind
+) -> None:
+    payload = (
+        TaskCreatePayload(
+            name="template", duration_minutes=30, divisible=False, minimum_chunk_size_minutes=None
+        )
+        if kind == PlanKind.TASK
+        else BlockCreatePayload(
+            name="template",
+            duration_minutes=30,
+            divisible=False,
+            minimum_chunk_size_minutes=None,
+            block_family="lunch",
+        )
+    )
+    rep_id = _create_repetition(
+        service_db_session,
+        master_plan_id,
+        _repetition_payload(manual_count=1, template_type=kind, template_payload=payload),
+    )
+    rep = service_db_session.get(RepetitionPlan, rep_id)
+    if kind == PlanKind.TASK:
+        assert (
+            _task_service(service_db_session)
+            .set_allowed_block_families(PlanID(rep.template_root_id), ("lunch",))
+            .success
+        )
+    service = _repetition_service(service_db_session)
+    assert service.generate_instances(rep_id, RUN_AT).success
+    clone_id = service_db_session.scalar(
+        select(RepetitionInstance.root_clone_id).where(
+            RepetitionInstance.repetition_plan_id == rep_id
+        )
+    )
+    model = TaskPlan if kind == PlanKind.TASK else BlockPlan
+    clone = service_db_session.get(model, clone_id)
+    assert clone.duration_minutes == 30
+    if kind == PlanKind.TASK:
+        assert (
+            clone.allowed_block_families
+            == service_db_session.get(TaskPlan, rep.template_root_id).allowed_block_families
+        )
+    else:
+        assert clone.block_family == "lunch"
+    template = service_db_session.get(model, rep.template_root_id)
+    template.duration_minutes = 45
+    service_db_session.flush()
+    assert service.refresh_repetition(rep_id, RUN_AT).success
+    assert clone.duration_minutes == 45
 
 
 def test_generation_failure_rolls_back_all_clones(
