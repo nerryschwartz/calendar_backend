@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from calendar_backend.domain.dtos import AppSettingsDTO
 from calendar_backend.domain.calendar_duration import CalendarDuration
+from calendar_backend.domain.dtos import AppSettingsDTO
 from calendar_backend.domain.enums import FreeTimeWeekStartDay
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.models.settings import AppSettings

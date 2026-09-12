@@ -33,8 +33,8 @@ from calendar_backend.domain.repetitions import (
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock, sqlite_utc
-from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.blocks import BlockPlan
+from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
@@ -176,7 +176,7 @@ class RepetitionService:
             txn.flush()
             return ok(repetition_plan_dto_from_rows(plan, repetition_plan))
 
-    def generate_instances(  # noqa: PLR0911
+    def generate_instances(
         self,
         repetition_plan_id: PlanID,
         run_started_at: datetime,

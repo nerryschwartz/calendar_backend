@@ -1,7 +1,7 @@
 """Replace elapsed horizon minutes with calendar duration parts."""
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "b91f6d82a304"
 down_revision = "a8f3b2c1d4e5"

@@ -19,8 +19,8 @@ from calendar_backend.services.block_assignment import BlockAssignmentService
 from calendar_backend.services.block_resolution import BlockResolutionService
 from calendar_backend.services.calendar_state import load_or_create_active_calendar_state
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
-from calendar_backend.services.task_assignment import TaskAssignmentService
 from calendar_backend.services.repetition import RepetitionService
+from calendar_backend.services.task_assignment import TaskAssignmentService
 from calendar_backend.services.task_resolution import TaskResolutionService, load_plan_graph
 
 

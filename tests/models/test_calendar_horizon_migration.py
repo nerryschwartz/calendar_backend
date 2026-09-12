@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import calendar_backend.db.session as db_session
@@ -25,8 +26,6 @@ def test_calendar_horizon_migration_preserves_display_units(
             )
         command.upgrade(config, "head")
         with engine.connect() as connection:
-            import json
-
             duration = json.loads(
                 connection.scalar(text("SELECT master_horizon_duration FROM app_settings"))
             )

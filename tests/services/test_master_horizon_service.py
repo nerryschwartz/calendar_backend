@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from calendar_backend.domain.dtos import MasterHorizonDTO
 from calendar_backend.domain.calendar_duration import CalendarDuration
+from calendar_backend.domain.dtos import MasterHorizonDTO
 from calendar_backend.domain.enums import ConstraintKind
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
@@ -156,3 +156,19 @@ def test_refresh_master_horizon_end_tracks_updated_duration(service_db_session: 
 
     assert second.success and second.value is not None
     assert second.value.horizon_end == second_run + timedelta(minutes=90)
+
+
+def test_calendar_horizon_round_trip_after_sqlite_reopen(service_db_session: Session) -> None:
+    clock = FakeClock(datetime(2026, 11, 1, 7, 30, tzinfo=UTC))
+    duration = CalendarDuration(minutes=1)
+    result = AppSettingsService(service_db_session, clock).update_settings(
+        local_timezone="America/Chicago", master_horizon_duration=duration
+    )
+    assert result.success
+    service_db_session.commit()
+    with Session(service_db_session.get_bind()) as reopened:
+        settings = AppSettingsService(reopened, clock).get_settings()
+        assert settings.value is not None and settings.value.master_horizon_duration == duration
+        horizon = MasterHorizonService(reopened, clock).refresh_master_horizon(clock.now_utc())
+        assert horizon.success and horizon.value is not None
+        assert horizon.value.horizon_end == datetime(2026, 11, 1, 7, 31, tzinfo=UTC)

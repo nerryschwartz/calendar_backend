@@ -50,6 +50,14 @@ def non_minute_api_client(api_db_engine: Engine) -> Generator[TestClient]:
     )
 
 
+@pytest.fixture
+def lunch_api_client(api_db_engine: Engine) -> Generator[TestClient]:
+    yield from _api_client_for_clock(
+        api_db_engine,
+        ApiTestClock(datetime(2026, 9, 12, 10, 0, 37, 123456, tzinfo=UTC)),
+    )
+
+
 def _api_client_for_clock(api_db_engine: Engine, clock: Clock) -> Generator[TestClient]:
     app = create_app()
     session_factory = create_session_factory(api_db_engine)

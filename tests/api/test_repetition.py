@@ -1,9 +1,14 @@
 """Repetition routes exercise real persistence with an unaligned server clock."""
 
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import pytest
 from fastapi.testclient import TestClient
+from ortools.sat.python import cp_model
 
 
-def create_repetition(client: TestClient, **overrides) -> str:
+def create_repetition(client: TestClient, **overrides: object) -> str:
     master_id = client.get("/api/plans/master").json()["master_plan_id"]
     response = client.post(
         f"/api/plans/{master_id}/children",
@@ -89,3 +94,67 @@ def test_generation_status_is_read_only_and_matches_contract(api_client: TestCli
     generated = next(row for row in rows if row["plan_id"] == first)
     assert generated["instance_count"] == 2 and generated["generated_at"] is not None
     assert next(row for row in rows if row["plan_id"] == second)["generated_at"] is None
+
+
+@pytest.mark.slow
+def test_lunch_generates_fourteen_daily_tasks_in_shifted_windows(
+    lunch_api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_solver = cp_model.CpSolver
+
+    def single_worker_solver():
+        solver = original_solver()
+        solver.parameters.num_search_workers = 1
+        return solver
+
+    monkeypatch.setattr(cp_model, "CpSolver", single_worker_solver)
+    client = lunch_api_client
+    assert (
+        client.patch(
+            "/api/settings",
+            json={
+                "master_horizon_duration": {"days": 14},
+                "local_timezone": "America/Chicago",
+                "exact_solver_time_limit_seconds": 2,
+            },
+        ).status_code
+        == 200
+    )
+    rep_id = create_repetition(
+        client,
+        repeat_mode="DATE_RANGE",
+        manual_count=None,
+        start_time="2026-09-12T05:00:00Z",
+        end_time="2026-09-26T05:00:00Z",
+    )
+    status = client.get("/api/repetitions/generation-status").json()["repetitions"][0]
+    template_id = status["template_root_id"]
+    window = {"start_time": "2026-09-12T16:00:00Z", "end_time": "2026-09-12T20:00:00Z"}
+    group = client.post(f"/api/plans/{template_id}/constraints/groups", json={"windows": [window]})
+    assert group.status_code == 200, group.json()
+    assert client.post(f"/api/repetitions/{rep_id}/generate-instances").status_code == 200
+    response = client.post("/api/schedule/refresh")
+    assert response.status_code == 200, response.json()
+    entries = client.get("/api/calendar/tasks").json()["entries"]
+    assert len(entries) == 14
+    local_dates = set()
+    for entry in entries:
+        start = datetime.fromisoformat(entry["start_time"]).astimezone(ZoneInfo("America/Chicago"))
+        end = datetime.fromisoformat(entry["end_time"]).astimezone(ZoneInfo("America/Chicago"))
+        assert start.hour >= 11 and (end.hour < 15 or (end.hour == 15 and end.minute == 0))
+        assert end - start == timedelta(minutes=30)
+        assert entry["source_plan_id"] != template_id
+        local_dates.add(start.date())
+    assert local_dates == {
+        datetime(2026, 9, 12).date() + timedelta(days=index) for index in range(14)
+    }
+    status = client.get("/api/repetitions/generation-status").json()["repetitions"][0]
+    assert status["instance_count"] == 14
+    # A shell window is absolute and must not be shifted/reclassified as a template window.
+    assert (
+        client.post(
+            f"/api/plans/{rep_id}/constraints/groups", json={"windows": [window]}
+        ).status_code
+        == 200
+    )
+    assert client.post("/api/schedule/refresh").status_code == 422

@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.assignment import CalendarEntryDTO
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.domain.enums import (
     CalendarEntryType,
     CalendarRunStatus,
@@ -32,7 +33,6 @@ from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import RepetitionPlan
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.services.app_settings import AppSettingsService
-from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.services.free_time_activity import FreeTimeActivityService
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
 from calendar_backend.services.goal import GoalService
