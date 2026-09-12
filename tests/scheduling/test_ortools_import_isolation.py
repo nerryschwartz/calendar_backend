@@ -3,12 +3,14 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
 from calendar_backend.domain.enums import SolverStatus
 from calendar_backend.scheduling.exact_cp_sat import ExactAssignmentSolver
 
 from .conftest import assignment_input
 
 
+@pytest.mark.slow
 def test_non_exact_scheduling_modules_do_not_import_ortools() -> None:
     script = """
 import sys

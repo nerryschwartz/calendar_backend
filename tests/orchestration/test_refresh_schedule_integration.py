@@ -82,6 +82,7 @@ def test_refresh_schedule_happy_path_uses_exact_solver_not_heuristic_fallback(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_refresh_schedule_invalid_incomplete_blocks_before_assignment(
     service_db_session: Session,
 ) -> None:

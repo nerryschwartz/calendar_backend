@@ -40,7 +40,7 @@ from calendar_backend.models.constraints import TimeWindow as TimeWindowRow
 from calendar_backend.models.free_time import FreeTimeActivityPrerequisite
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
-from calendar_backend.models.repetitions import RepetitionInstance
+from calendar_backend.models.repetitions import RepetitionInstance, RepetitionSkippedOccurrence
 from calendar_backend.services.free_time_activity import (
     cleanup_orphaned_activities_after_plan_delete,
 )
@@ -89,6 +89,7 @@ class PlanTreeService:
             now = self._clock.now_utc()
             plan.name = name
             plan.updated_at = now
+            detach_linked_self_and_descendants(txn, plan, now)
             txn.flush()
             return ok(None)
 
@@ -174,6 +175,7 @@ class PlanTreeService:
             )
             if dependent is not None:
                 dependent.updated_at = now
+                detach_linked_self_and_descendants(txn, dependent, now)
             txn.flush()
             return ok(None)
 
@@ -197,6 +199,7 @@ class PlanTreeService:
             txn.delete(row)
             if dependent is not None:
                 dependent.updated_at = now
+                detach_linked_self_and_descendants(txn, dependent, now)
             txn.flush()
             return ok(None)
 
@@ -469,7 +472,7 @@ class PlanTreeService:
         child_plan.updated_at = now  # pyright: ignore[reportOptionalMemberAccess]
 
 
-def _execute_plan_deletes(
+def _execute_plan_deletes(  # noqa: PLR0912
     txn: Session,
     preview: DeletionPreview,
     plans: tuple[Plan, ...],
@@ -482,6 +485,39 @@ def _execute_plan_deletes(
 
     affected_set = set(affected_plan_ids)
     plans_by_id = {plan.plan_id: plan for plan in plans}
+
+    # An explicit linked-child deletion must not be recreated on template refresh.
+    requested = plans_by_id.get(preview.root_plan_id)
+    is_instance_root = (
+        txn.scalar(
+            select(RepetitionInstance.repetition_instance_id).where(
+                RepetitionInstance.root_clone_id == preview.root_plan_id
+            )
+        )
+        is not None
+    )
+    if (
+        requested is not None
+        and requested.clone_status == CloneStatus.LINKED
+        and not is_instance_root
+    ):
+        parent = plans_by_id.get(requested.parent_id)
+        if parent is not None and parent.plan_id not in affected_set:
+            detach_linked_self_and_descendants(txn, parent, updated_at)
+    surviving_repetitions = set()
+    for instance in txn.scalars(
+        select(RepetitionInstance).where(RepetitionInstance.root_clone_id.in_(affected_plan_ids))
+    ):
+        if instance.repetition_plan_id not in affected_set:
+            surviving_repetitions.add(instance.repetition_plan_id)
+            key = (instance.repetition_plan_id, instance.instance_index)
+            if txn.get(RepetitionSkippedOccurrence, key) is None:
+                txn.add(
+                    RepetitionSkippedOccurrence(
+                        repetition_plan_id=instance.repetition_plan_id,
+                        instance_index=instance.instance_index,
+                    )
+                )
 
     if preview.affected_calendar_entry_ids:
         txn.execute(
@@ -536,6 +572,34 @@ def _execute_plan_deletes(
             )
         )
     )
+
+    for repetition_id in surviving_repetitions:
+        for critical in (False, True):
+            remaining = txn.scalars(
+                select(RepetitionInstance)
+                .where(
+                    RepetitionInstance.repetition_plan_id == repetition_id,
+                    RepetitionInstance.is_critical == critical,
+                )
+                .order_by(RepetitionInstance.sort_order, RepetitionInstance.instance_index)
+            )
+            for position, instance in enumerate(remaining):
+                instance.sort_order = position
+    affected_parents = {plans_by_id[plan_id].parent_id for plan_id in affected_set} - affected_set
+    for parent_id in affected_parents:
+        for critical in (False, True):
+            remaining = sorted(
+                (
+                    plan
+                    for plan in plans
+                    if plan.parent_id == parent_id
+                    and plan.plan_id not in affected_set
+                    and plan.goal_is_critical == critical
+                ),
+                key=lambda plan: (plan.goal_sort_order, str(plan.plan_id)),
+            )
+            for position, plan in enumerate(remaining):
+                plan.goal_sort_order = position
 
     txn.execute(
         delete(PlanPrerequisite).where(

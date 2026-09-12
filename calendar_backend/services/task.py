@@ -97,6 +97,7 @@ class TaskService:
             task_plan.user_completed = False
             task_plan.completed_at = None
             plan.updated_at = now
+            detach_linked_self_and_descendants(txn, plan, now)
             txn.flush()
             return ok(task_plan_dto_from_rows(plan, task_plan))
 

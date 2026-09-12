@@ -10,9 +10,13 @@ from calendar_backend.api.deps import get_clock, get_db_session
 from calendar_backend.api.errors import unwrap_result
 from calendar_backend.api.serialize import dto_to_json
 from calendar_backend.domain.enums import RepeatMode
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
+from calendar_backend.domain.repetition_projection import CommitGenerationInput, PreviewInput
+from calendar_backend.domain.results import fail
 from calendar_backend.domain.time import Clock, truncate_to_minute
 from calendar_backend.services.repetition import RepetitionService
+from calendar_backend.services.repetition_projection import commit_generation, preview_generation
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -27,6 +31,36 @@ class UpdateRepetitionSettingsBody(BaseModel):
     manual_count: int | None = None
     end_time: datetime | None = None
     default_instance_critical: bool | None = None
+
+
+@router.post("/preview-instances")
+def preview_instances(
+    body: PreviewInput,
+    session: Annotated[Session, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> dict[str, Any]:
+    try:
+        return preview_generation(session, body, clock.now_utc()).model_dump(mode="json")
+    except (ValueError, OverflowError) as exc:
+        return unwrap_result(
+            fail(
+                ServiceMessage(
+                    code=MessageCode.INVALID_REPETITION_SETTINGS, message=str(exc), details={}
+                )
+            )
+        )
+
+
+@router.post("/{repetition_id}/commit-generation")
+def commit_instances(
+    repetition_id: UUID,
+    body: CommitGenerationInput,
+    session: Annotated[Session, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> dict[str, Any]:
+    return dto_to_json(
+        unwrap_result(commit_generation(session, PlanID(repetition_id), body, clock.now_utc()))
+    )
 
 
 @router.get("/generation-status")

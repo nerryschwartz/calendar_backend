@@ -41,7 +41,10 @@ _PLAN_KIND_TO_DETAIL_ATTR: dict[PlanKind, str] = {
 }
 
 
-def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage, ...]:
+def validate_master_tree_graph(
+    plans: tuple[Plan, ...],
+    skipped_occurrences: dict[uuid.UUID, tuple[int, ...]] | None = None,
+) -> tuple[ServiceMessage, ...]:
     """Return one ServiceMessage per invariant violation (empty when clean)."""
     violations: list[ServiceMessage] = []
     master_violations, master = _check_master(plans)
@@ -55,7 +58,7 @@ def validate_master_tree_graph(plans: tuple[Plan, ...]) -> tuple[ServiceMessage,
     violations.extend(_check_goal_child_ordering(plans))
     violations.extend(_check_repetition_plans(plans))
     violations.extend(_check_template_clone_status(plans))
-    violations.extend(_check_repetition_instances(plans))
+    violations.extend(_check_repetition_instances(plans, skipped_occurrences or {}))
     violations.extend(_check_repetition_instance_windows(plans))
     violations.extend(_check_constraints(plans))
     violations.extend(_check_plan_prerequisites(plans))
@@ -444,7 +447,9 @@ def _violations_for_non_dense_sequence(
     return [ServiceMessage(code=code, message=message, details=details)]
 
 
-def _check_repetition_instances(plans: tuple[Plan, ...]) -> list[ServiceMessage]:
+def _check_repetition_instances(
+    plans: tuple[Plan, ...], skipped_occurrences: dict[uuid.UUID, tuple[int, ...]]
+) -> list[ServiceMessage]:
     violations: list[ServiceMessage] = []
     plan_by_id = {plan.plan_id: plan for plan in plans}
     root_clone_ids_seen: dict[uuid.UUID, uuid.UUID] = {}
@@ -509,9 +514,12 @@ def _check_repetition_instances(plans: tuple[Plan, ...]) -> list[ServiceMessage]
 
         violations.extend(
             _violations_for_non_dense_sequence(
-                instance_indices,
+                instance_indices + list(skipped_occurrences.get(repetition_plan_id, ())),
                 code=MessageCode.CHAIN_INVARIANT_VIOLATION,
-                message="Repetition instance_index values must be dense starting at 0",
+                message=(
+                    "Repetition instance_index values must be dense starting at 0 "
+                    "when combined with intentional omissions"
+                ),
                 details={"repetition_plan_id": str(repetition_plan_id)},
             )
         )

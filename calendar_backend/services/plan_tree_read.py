@@ -22,12 +22,14 @@ from calendar_backend.domain.plan_read import (
     PlanDetailDTO,
     PlanPrerequisiteSummaryDTO,
     PlanSearchResultDTO,
+    RepetitionInstanceSummaryDTO,
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
 from calendar_backend.domain.time import Clock, SystemClock, truncate_to_minute
 from calendar_backend.models.constraints import TimeConstraintGroup
 from calendar_backend.models.plans import Plan
 from calendar_backend.models.prerequisites import PlanPrerequisite
+from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.master_horizon import MasterHorizonService
 from calendar_backend.services.master_plan import MasterPlanService
 from calendar_backend.services.task_resolution import load_plan_graph
@@ -92,6 +94,9 @@ class PlanTreeReadService:
             else None
         )
 
+        instance = self._session.scalar(
+            select(RepetitionInstance).where(RepetitionInstance.root_clone_id == plan.plan_id)
+        )
         return ok(
             PlanDetailDTO(
                 plan_id=PlanID(plan.plan_id),
@@ -112,6 +117,16 @@ class PlanTreeReadService:
                 task_detail=task_detail,
                 block_detail=block_detail,
                 repetition_detail=repetition_detail,
+                clone_status=plan.clone_status,
+                cloned_from_id=PlanID(plan.cloned_from_id) if plan.cloned_from_id else None,
+                repetition_instance=RepetitionInstanceSummaryDTO(
+                    repetition_plan_id=PlanID(instance.repetition_plan_id),
+                    instance_index=instance.instance_index,
+                    is_critical=instance.is_critical,
+                    sort_order=instance.sort_order,
+                )
+                if instance
+                else None,
             )
         )
 

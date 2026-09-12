@@ -114,6 +114,7 @@ def test_dispatch_db_status_missing_file(capsys: pytest.CaptureFixture[str]) -> 
     assert "alembic_revision: (no database file)" in captured.out
 
 
+@pytest.mark.slow
 def test_dispatch_master_show_bootstraps(capsys: pytest.CaptureFixture[str]) -> None:
     assert dispatch(["db", "init"]) == 0
     exit_code = dispatch(["master", "show"])
@@ -124,6 +125,7 @@ def test_dispatch_master_show_bootstraps(capsys: pytest.CaptureFixture[str]) -> 
     assert "is_master: True" in captured.out
 
 
+@pytest.mark.slow
 def test_dispatch_settings_show_bootstraps(capsys: pytest.CaptureFixture[str]) -> None:
     assert dispatch(["db", "init"]) == 0
     exit_code = dispatch(["settings", "show"])
@@ -134,6 +136,7 @@ def test_dispatch_settings_show_bootstraps(capsys: pytest.CaptureFixture[str]) -
     assert "heuristic_enabled: True" in captured.out
 
 
+@pytest.mark.slow
 def test_dispatch_master_show_service_failure_prints_stderr(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -160,6 +163,7 @@ def test_dispatch_master_show_service_failure_prints_stderr(
     assert "PLAN_NOT_FOUND" in captured.err
 
 
+@pytest.mark.slow
 def test_dispatch_settings_show_service_failure_prints_stderr(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -206,6 +210,7 @@ def test_dispatch_refresh_schedule_rejects_non_utc(
     assert "UTC" in captured.err
 
 
+@pytest.mark.slow
 def test_dispatch_refresh_schedule_stubbed_success(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -265,6 +270,7 @@ def test_dispatch_refresh_schedule_stubbed_success(
     assert "valid_incomplete_count: 0" in captured.out
 
 
+@pytest.mark.slow
 def test_dispatch_refresh_schedule_stubbed_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
