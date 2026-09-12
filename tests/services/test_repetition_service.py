@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
-from calendar_backend.domain.errors import MessageCode
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.ids import PlanID
 from calendar_backend.domain.plan_create import (
     GoalCreatePayload,
@@ -102,6 +102,36 @@ def _create_repetition(
 def _assert_tree_invariant(session: Session) -> None:
     result = PlanTreeInvariantService(session).validate_master_tree()
     assert result.success, result.errors
+
+
+def test_generation_failure_rolls_back_all_clones(
+    service_db_session: Session, master_plan_id: PlanID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import calendar_backend.services.repetition as repetition_module
+
+    repetition_id = _create_repetition(service_db_session, master_plan_id, _repetition_payload())
+    before = service_db_session.scalar(select(func.count()).select_from(Plan))
+    original = repetition_module._add_repetition_instance
+    calls = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = original(*args, **kwargs)
+        return (
+            ServiceMessage(
+                code=MessageCode.PREREQUISITE_CLONE_REWRITE_FAILED, message="injected", details={}
+            )
+            if calls == 2
+            else result
+        )
+
+    monkeypatch.setattr(repetition_module, "_add_repetition_instance", fail_second)
+    result = _repetition_service(service_db_session).generate_instances(repetition_id, RUN_AT)
+    assert not result.success
+    assert service_db_session.scalar(select(func.count()).select_from(Plan)) == before
+    assert service_db_session.scalar(select(func.count()).select_from(RepetitionInstance)) == 0
+    assert service_db_session.get(RepetitionPlan, repetition_id).generated_at is None
 
 
 def _ordered_child_plan_ids(session: Session, parent_goal_id: PlanID) -> list[uuid.UUID]:

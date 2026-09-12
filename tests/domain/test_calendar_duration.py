@@ -11,6 +11,7 @@ from calendar_backend.domain.calendar_duration import CalendarDuration
         ("2026-01-31T12:00:00Z", CalendarDuration(months=1), "2026-02-28T12:00:00Z"),
         ("2026-03-07T08:30:00Z", CalendarDuration(days=1), "2026-03-08T08:30:00Z"),
         ("2026-10-31T06:30:00Z", CalendarDuration(days=1), "2026-11-01T06:30:00Z"),
+        ("2026-11-01T07:30:00Z", CalendarDuration(minutes=1), "2026-11-01T07:31:00Z"),
         ("2026-09-12T12:00:00Z", CalendarDuration(years=2), "2028-09-12T12:00:00Z"),
     ],
 )

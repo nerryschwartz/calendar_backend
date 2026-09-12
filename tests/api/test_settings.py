@@ -44,6 +44,13 @@ def test_settings_accepts_iana_timezone(api_client: TestClient) -> None:
     assert response.json()["local_timezone"] == "America/New_York"
 
 
+def test_settings_rejects_calendar_overflow(api_client: TestClient) -> None:
+    response = api_client.patch("/api/settings", json={"master_horizon_duration": {"years": 10000}})
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "INVALID_DURATION"
+    assert api_client.get("/api/settings").json()["master_horizon_duration"]["years"] == 2
+
+
 def test_settings_rejects_fixed_timezone_abbreviation(api_client: TestClient) -> None:
     response = api_client.patch(
         "/api/settings",

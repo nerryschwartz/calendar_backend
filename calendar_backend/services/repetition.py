@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.dtos import RepetitionPlanDTO, repetition_plan_dto_from_rows
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
-from calendar_backend.domain.errors import MessageCode, ServiceMessage
+from calendar_backend.domain.errors import MessageCode, ServiceMessage, ServiceTransactionAborted
 from calendar_backend.domain.ids import (
     PlanID,
     RepetitionInstanceID,
@@ -28,12 +28,16 @@ from calendar_backend.domain.repetitions import (
     validate_repetition_settings_update,
 )
 from calendar_backend.domain.results import ServiceResult, fail, ok
-from calendar_backend.domain.time import Clock, SystemClock
+from calendar_backend.domain.time import Clock, SystemClock, sqlite_utc
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.models.plans import GoalPlan, Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
-from calendar_backend.services.master_horizon import get_master_horizon_end, validate_run_started_at
+from calendar_backend.services.master_horizon import (
+    MasterHorizonService,
+    get_master_horizon_end,
+    validate_run_started_at,
+)
 from calendar_backend.services.plan_tree import load_plan_with_subtype
 
 
@@ -129,57 +133,75 @@ class RepetitionService:
         if validation_error is not None:
             return fail(validation_error)
 
-        with transaction(self._session) as txn:
-            loaded = _load_repetition_plan(txn, repetition_plan_id)
-            if isinstance(loaded, ServiceMessage):
-                return fail(loaded)
-            plan, repetition_plan = loaded
+        try:
+            with transaction(self._session) as txn:
+                return self._generate_instances_in_txn(txn, repetition_plan_id, run_started_at)
+        except ServiceTransactionAborted as exc:
+            return fail(*exc.errors)
 
-            if repetition_plan.generated_at is not None:
-                return fail(
-                    ServiceMessage(
-                        code=MessageCode.REPETITION_ALREADY_GENERATED,
-                        message="Repetition instances were already generated",
-                        details={"repetition_plan_id": str(repetition_plan_id)},
-                    )
+    def _generate_instances_in_txn(
+        self, txn: Session, repetition_plan_id: PlanID, run_started_at: datetime
+    ) -> ServiceResult[RepetitionPlanDTO]:
+        loaded = _load_repetition_plan(txn, repetition_plan_id)
+        if isinstance(loaded, ServiceMessage):
+            return fail(loaded)
+        plan, repetition_plan = loaded
+
+        if repetition_plan.generated_at is not None:
+            return fail(
+                ServiceMessage(
+                    code=MessageCode.REPETITION_ALREADY_GENERATED,
+                    message="Repetition instances were already generated",
+                    details={"repetition_plan_id": str(repetition_plan_id)},
                 )
+            )
 
-            template_root_id = PlanID(repetition_plan.template_root_id)
-            if txn.get(Plan, template_root_id) is None:
-                return fail(
-                    ServiceMessage(
-                        code=MessageCode.PLAN_NOT_FOUND,
-                        message="Repetition template root not found",
-                        details={
-                            "repetition_plan_id": str(repetition_plan_id),
-                            "template_root_id": str(template_root_id),
-                        },
-                    )
+        template_root_id = PlanID(repetition_plan.template_root_id)
+        if txn.get(Plan, template_root_id) is None:
+            return fail(
+                ServiceMessage(
+                    code=MessageCode.PLAN_NOT_FOUND,
+                    message="Repetition template root not found",
+                    details={
+                        "repetition_plan_id": str(repetition_plan_id),
+                        "template_root_id": str(template_root_id),
+                    },
                 )
+            )
 
-            indices_result = _desired_instance_indices(txn, repetition_plan)
-            if isinstance(indices_result, ServiceMessage):
-                return fail(indices_result)
+        if (
+            repetition_plan.repeat_mode == RepeatMode.DATE_RANGE
+            and repetition_plan.end_time is None
+        ):
+            horizon_result = MasterHorizonService(txn, self._clock).refresh_master_horizon(
+                run_started_at
+            )
+            if not horizon_result.success:
+                raise ServiceTransactionAborted(horizon_result.errors)
 
-            for sort_order, instance_index in enumerate(indices_result):
-                add_error = _add_repetition_instance(
-                    txn,
-                    plan=plan,
-                    repetition_plan=repetition_plan,
-                    repetition_plan_id=repetition_plan_id,
-                    template_root_id=template_root_id,
-                    instance_index=instance_index,
-                    sort_order=sort_order,
-                    is_critical=repetition_plan.default_instance_critical,
-                    now=run_started_at,
-                )
-                if add_error is not None:
-                    return fail(add_error)
+        indices_result = _desired_instance_indices(txn, repetition_plan)
+        if isinstance(indices_result, ServiceMessage):
+            raise ServiceTransactionAborted((indices_result,))
 
-            repetition_plan.generated_at = run_started_at
-            plan.updated_at = run_started_at
-            txn.flush()
-            return ok(repetition_plan_dto_from_rows(plan, repetition_plan))
+        for sort_order, instance_index in enumerate(indices_result):
+            add_error = _add_repetition_instance(
+                txn,
+                plan=plan,
+                repetition_plan=repetition_plan,
+                repetition_plan_id=repetition_plan_id,
+                template_root_id=template_root_id,
+                instance_index=instance_index,
+                sort_order=sort_order,
+                is_critical=repetition_plan.default_instance_critical,
+                now=run_started_at,
+            )
+            if add_error is not None:
+                raise ServiceTransactionAborted((add_error,))
+
+        repetition_plan.generated_at = run_started_at
+        plan.updated_at = run_started_at
+        txn.flush()
+        return ok(repetition_plan_dto_from_rows(plan, repetition_plan))
 
     def refresh_repetition(
         self,
@@ -190,23 +212,34 @@ class RepetitionService:
         if validation_error is not None:
             return fail(validation_error)
 
-        with transaction(self._session) as txn:
-            return _refresh_repetition_in_txn(txn, repetition_plan_id, run_started_at)
+        try:
+            with transaction(self._session) as txn:
+                result = _refresh_repetition_in_txn(txn, repetition_plan_id, run_started_at)
+                if not result.success:
+                    raise ServiceTransactionAborted(result.errors)
+                return result
+        except ServiceTransactionAborted as exc:
+            return fail(*exc.errors)
 
     def refresh_all_repetitions(self, run_started_at: datetime) -> ServiceResult[None]:
         validation_error = validate_run_started_at(run_started_at)
         if validation_error is not None:
             return fail(validation_error)
 
-        with transaction(self._session) as txn:
-            repetition_plan_ids = txn.scalars(
-                select(RepetitionPlan.plan_id).where(RepetitionPlan.generated_at.is_not(None))
-            ).all()
-            for repetition_plan_id in repetition_plan_ids:
-                result = _refresh_repetition_in_txn(txn, PlanID(repetition_plan_id), run_started_at)
-                if not result.success:
-                    return fail(*result.errors)
-            return ok(None)
+        try:
+            with transaction(self._session) as txn:
+                repetition_plan_ids = txn.scalars(
+                    select(RepetitionPlan.plan_id).where(RepetitionPlan.generated_at.is_not(None))
+                ).all()
+                for repetition_plan_id in repetition_plan_ids:
+                    result = _refresh_repetition_in_txn(
+                        txn, PlanID(repetition_plan_id), run_started_at
+                    )
+                    if not result.success:
+                        raise ServiceTransactionAborted(result.errors)
+                return ok(None)
+        except ServiceTransactionAborted as exc:
+            return fail(*exc.errors)
 
 
 def _refresh_repetition_in_txn(  # noqa: PLR0911
@@ -311,11 +344,15 @@ def _desired_instance_indices(
     master_horizon_end = get_master_horizon_end(txn) if needs_horizon else None
     return compute_instance_indices(
         repeat_mode=repetition_plan.repeat_mode,
-        start_time=repetition_plan.start_time,
+        start_time=sqlite_utc(repetition_plan.start_time),
         repeat_interval_minutes=repetition_plan.repeat_interval_minutes,
         manual_count=repetition_plan.manual_count,
-        end_time=repetition_plan.end_time,
-        master_horizon_end=master_horizon_end,
+        end_time=sqlite_utc(repetition_plan.end_time)
+        if repetition_plan.end_time is not None
+        else None,
+        master_horizon_end=sqlite_utc(master_horizon_end)
+        if master_horizon_end is not None
+        else None,
     )
 
 

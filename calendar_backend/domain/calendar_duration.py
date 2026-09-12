@@ -23,4 +23,9 @@ class CalendarDuration:
 
     def end_at(self, start: datetime, timezone: str) -> datetime:
         local_end = start.astimezone(ZoneInfo(timezone)) + relativedelta(**asdict(self))
-        return resolve_imaginary(local_end.replace(fold=0)).astimezone(UTC)
+        end = resolve_imaginary(local_end.replace(fold=0)).astimezone(UTC)
+        if end <= start:
+            end = resolve_imaginary(local_end.replace(fold=1)).astimezone(UTC)
+        if end <= start:
+            raise ValueError("Calendar duration must end after its start")
+        return end
