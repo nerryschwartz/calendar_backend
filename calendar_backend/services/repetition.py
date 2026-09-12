@@ -7,11 +7,15 @@ from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from calendar_backend.db.session import transaction
-from calendar_backend.domain.dtos import RepetitionPlanDTO, repetition_plan_dto_from_rows
+from calendar_backend.domain.dtos import (
+    RepetitionGenerationStatusDTO,
+    RepetitionPlanDTO,
+    repetition_plan_dto_from_rows,
+)
 from calendar_backend.domain.enums import CloneStatus, ConstraintKind, PlanKind, RepeatMode
 from calendar_backend.domain.errors import MessageCode, ServiceMessage, ServiceTransactionAborted
 from calendar_backend.domain.ids import (
@@ -55,6 +59,51 @@ class RepetitionService:
     def __init__(self, session: Session, clock: Clock | None = None) -> None:
         self._session = session
         self._clock = clock or SystemClock()
+
+    def generation_status(self) -> tuple[RepetitionGenerationStatusDTO, ...]:
+        """Read master-reachable shells without entering any template blueprint."""
+        tree = (
+            select(Plan.plan_id, Plan.name, Plan.parent_id)
+            .where(Plan.is_master)
+            .cte("schedulable_tree", recursive=True)
+        )
+        tree = tree.union(
+            select(Plan.plan_id, Plan.name, Plan.parent_id)
+            .join(tree, Plan.parent_id == tree.c.plan_id)
+            .where(Plan.plan_id.not_in(select(RepetitionPlan.template_root_id)))
+        )
+        counts = (
+            select(
+                RepetitionInstance.repetition_plan_id,
+                func.count().label("instance_count"),
+            )
+            .group_by(RepetitionInstance.repetition_plan_id)
+            .subquery()
+        )
+        rows = self._session.execute(
+            select(
+                tree.c.plan_id,
+                tree.c.name,
+                tree.c.parent_id,
+                RepetitionPlan.template_root_id,
+                RepetitionPlan.generated_at,
+                func.coalesce(counts.c.instance_count, 0),
+            )
+            .join(RepetitionPlan, RepetitionPlan.plan_id == tree.c.plan_id)
+            .outerjoin(counts, counts.c.repetition_plan_id == tree.c.plan_id)
+            .order_by(tree.c.name, tree.c.plan_id)
+        )
+        return tuple(
+            RepetitionGenerationStatusDTO(
+                plan_id=PlanID(plan_id),
+                name=name,
+                parent_id=PlanID(parent_id) if parent_id is not None else None,
+                template_root_id=PlanID(template_root_id),
+                generated_at=sqlite_utc(generated_at) if generated_at is not None else None,
+                instance_count=instance_count,
+            )
+            for plan_id, name, parent_id, template_root_id, generated_at, instance_count in rows
+        )
 
     def update_settings(
         self,

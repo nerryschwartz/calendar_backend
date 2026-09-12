@@ -61,3 +61,31 @@ def test_open_ended_generation_refreshes_calendar_horizon(non_minute_api_client:
     plan_id = create_repetition(client, repeat_mode="DATE_RANGE", manual_count=None)
     response = client.post(f"/api/repetitions/{plan_id}/generate-instances")
     assert response.status_code == 200, response.json()
+
+
+def test_generation_status_is_read_only_and_matches_contract(api_client: TestClient):
+    assert api_client.get("/api/repetitions/generation-status").json() == {"repetitions": []}
+    first = create_repetition(api_client)
+    second = create_repetition(api_client, name="Dinner")
+    rows = api_client.get("/api/repetitions/generation-status").json()["repetitions"]
+    assert len(rows) == 2
+    for row in rows:
+        assert set(row) == {
+            "plan_id",
+            "name",
+            "parent_id",
+            "template_root_id",
+            "generated_at",
+            "instance_count",
+        }
+        assert row["generated_at"] is None and row["instance_count"] == 0
+    response = api_client.post("/api/schedule/refresh")
+    assert response.status_code == 422, response.json()
+    errors = response.json()["detail"]["errors"]
+    assert {error["details"]["repetition_plan_id"] for error in errors} == {first, second}
+    assert {error["code"] for error in errors} == {"REPETITION_NOT_GENERATED"}
+    assert api_client.post(f"/api/repetitions/{first}/generate-instances").status_code == 200
+    rows = api_client.get("/api/repetitions/generation-status").json()["repetitions"]
+    generated = next(row for row in rows if row["plan_id"] == first)
+    assert generated["instance_count"] == 2 and generated["generated_at"] is not None
+    assert next(row for row in rows if row["plan_id"] == second)["generated_at"] is None

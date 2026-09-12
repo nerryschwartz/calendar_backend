@@ -113,6 +113,29 @@ def _assert_tree_invariant(session: Session) -> None:
 
 
 @pytest.mark.slow
+def test_generation_status_excludes_blueprints_but_includes_nested_clones(
+    service_db_session: Session, master_plan_id: PlanID
+) -> None:
+    session = service_db_session
+    outer_id = _create_repetition(session, master_plan_id, _repetition_payload(manual_count=1))
+    outer = session.get(RepetitionPlan, outer_id)
+    nested = _goal_service(session).create_child(
+        PlanID(outer.template_root_id),
+        PlanKind.REPETITION,
+        _repetition_payload(manual_count=1),
+        is_critical=False,
+    )
+    assert nested.success
+    service = _repetition_service(session)
+    assert [row.plan_id for row in service.generation_status()] == [outer_id]
+    assert service.generate_instances(outer_id, RUN_AT).success
+    rows = service.generation_status()
+    assert len(rows) == 2
+    assert next(row for row in rows if row.plan_id != outer_id).generated_at is None
+    assert all(row.plan_id != nested.value.plan_id for row in rows)
+
+
+@pytest.mark.slow
 def test_template_windows_shift_sync_and_preserve_detached_clones(
     service_db_session: Session, master_plan_id: PlanID
 ) -> None:

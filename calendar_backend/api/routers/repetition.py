@@ -29,6 +29,13 @@ class UpdateRepetitionSettingsBody(BaseModel):
     default_instance_critical: bool | None = None
 
 
+@router.get("/generation-status")
+def generation_status(
+    session: Annotated[Session, Depends(get_db_session)],
+) -> dict[str, Any]:
+    return {"repetitions": dto_to_json(RepetitionService(session).generation_status())}
+
+
 @router.patch("/{repetition_id}/settings")
 def update_settings(
     repetition_id: UUID,

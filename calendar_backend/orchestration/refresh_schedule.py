@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from calendar_backend.db.session import transaction
 from calendar_backend.domain.enums import CalendarEntryType, LastFailureReason
+from calendar_backend.domain.errors import MessageCode, ServiceMessage
 from calendar_backend.domain.orchestration import RefreshScheduleResult
 from calendar_backend.domain.prerequisites import validate_prerequisite_clones_for_refresh
 from calendar_backend.domain.results import ServiceResult, fail, ok
@@ -19,6 +20,7 @@ from calendar_backend.services.block_resolution import BlockResolutionService
 from calendar_backend.services.calendar_state import load_or_create_active_calendar_state
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
 from calendar_backend.services.task_assignment import TaskAssignmentService
+from calendar_backend.services.repetition import RepetitionService
 from calendar_backend.services.task_resolution import TaskResolutionService, load_plan_graph
 
 
@@ -34,6 +36,26 @@ class OrchestrationService:
         run_started_at: datetime,
     ) -> ServiceResult[RefreshScheduleResult]:
         """Run the V2 refresh pipeline with prerequisite preflight and shared run."""
+        blockers = tuple(
+            repetition
+            for repetition in RepetitionService(self._session).generation_status()
+            if repetition.generated_at is None
+        )
+        if blockers:
+            return fail(
+                *(
+                    ServiceMessage(
+                        code=MessageCode.REPETITION_NOT_GENERATED,
+                        message=f'Repetition "{repetition.name}" has not generated its instances',
+                        details={
+                            "repetition_plan_id": str(repetition.plan_id),
+                            "name": repetition.name,
+                        },
+                    )
+                    for repetition in blockers
+                )
+            )
+
         block_resolve_result = BlockResolutionService(self._session, self._clock).resolve_blocks(
             run_started_at
         )

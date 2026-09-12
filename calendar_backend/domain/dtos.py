@@ -188,6 +188,16 @@ class MasterHorizonDTO:
 
 
 @dataclass(frozen=True)
+class RepetitionGenerationStatusDTO:
+    plan_id: PlanID
+    name: str
+    parent_id: PlanID | None
+    template_root_id: PlanID
+    generated_at: datetime | None
+    instance_count: int
+
+
+@dataclass(frozen=True)
 class _TimeWindowDTO:
     time_window_id: TimeWindowID
     start_time: datetime
