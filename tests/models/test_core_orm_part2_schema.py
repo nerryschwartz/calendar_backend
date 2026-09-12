@@ -489,7 +489,7 @@ def test_check_app_settings_singleton_id(part2_schema_engine: Engine) -> None:
                     {
                         "singleton_id": 2,
                         "local_timezone": "UTC",
-                        "master_horizon_duration_minutes": 60,
+                        "master_horizon_duration": {"minutes": 60},
                         "exact_solver_time_limit_seconds": 30,
                         "exact_solver_model_size_limit": 1000,
                         "heuristic_enabled": True,

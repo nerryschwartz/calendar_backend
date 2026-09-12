@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -46,8 +46,21 @@ class MasterHorizonService:
                     raise ServiceTransactionAborted(settings_result.errors)
 
                 master_plan_id = master_result.value.plan_id
-                duration_minutes = settings_result.value.master_horizon_duration_minutes
-                horizon_end = run_started_at + timedelta(minutes=duration_minutes)
+                settings = settings_result.value
+                try:
+                    horizon_end = settings.master_horizon_duration.end_at(
+                        run_started_at, settings.local_timezone
+                    )
+                except (OverflowError, ValueError):
+                    raise ServiceTransactionAborted(
+                        (
+                            ServiceMessage(
+                                code=MessageCode.INVALID_DURATION,
+                                message="Master horizon exceeds the supported calendar range",
+                                details={},
+                            ),
+                        )
+                    ) from None
 
                 group, window = _upsert_master_horizon_window(
                     txn,

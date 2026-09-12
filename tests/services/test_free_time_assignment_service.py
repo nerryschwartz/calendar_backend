@@ -32,6 +32,7 @@ from calendar_backend.models.free_time import FreeTimeActivity
 from calendar_backend.models.plans import RepetitionPlan
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.services.free_time_activity import FreeTimeActivityService
 from calendar_backend.services.free_time_assignment import FreeTimeAssignmentService
 from calendar_backend.services.goal import GoalService
@@ -84,7 +85,7 @@ def _bootstrap_master_with_short_horizon(
     AppSettingsService(session, clock).get_settings()
     assert (
         AppSettingsService(session, clock)
-        .update_settings(master_horizon_duration_minutes=duration_minutes)
+        .update_settings(master_horizon_duration=CalendarDuration(minutes=duration_minutes))
         .success
     )
     assert MasterHorizonService(session, clock).refresh_master_horizon(RUN_AT).success

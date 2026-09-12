@@ -34,6 +34,7 @@ from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.models.runs import ActiveCalendarState, CalendarRun
 from calendar_backend.orchestration.refresh_schedule import OrchestrationService
 from calendar_backend.services.app_settings import AppSettingsService
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.services.free_time_activity import FreeTimeActivityService
 from calendar_backend.services.goal import GoalService
 from calendar_backend.services.master_horizon import MasterHorizonService
@@ -206,7 +207,7 @@ def bootstrap_multi_activity_refresh_fixture(
     master_id = bootstrap_master_with_horizon(session)
     assert (
         AppSettingsService(session, clock())
-        .update_settings(master_horizon_duration_minutes=240)
+        .update_settings(master_horizon_duration=CalendarDuration(minutes=240))
         .success
     )
     assert MasterHorizonService(session, clock()).refresh_master_horizon(RUN_AT).success

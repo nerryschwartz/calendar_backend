@@ -19,7 +19,7 @@ from calendar_backend.models.plans import Plan, RepetitionPlan, TaskPlan
 from calendar_backend.models.prerequisites import PlanPrerequisite
 from calendar_backend.models.repetitions import RepetitionInstance
 from calendar_backend.services.app_settings import (
-    DEFAULT_MASTER_HORIZON_DURATION_MINUTES,
+    DEFAULT_MASTER_HORIZON_DURATION,
     AppSettingsService,
 )
 from calendar_backend.services.goal import GoalService
@@ -566,7 +566,7 @@ def test_generate_instances_date_range_open_end_uses_master_horizon(
     result = _repetition_service(service_db_session).generate_instances(repetition_id, RUN_AT)
 
     assert result.success
-    horizon_end = RUN_AT + timedelta(minutes=DEFAULT_MASTER_HORIZON_DURATION_MINUTES)
+    horizon_end = DEFAULT_MASTER_HORIZON_DURATION.end_at(RUN_AT, "UTC")
     expected_count = 0
     while RUN_AT + timedelta(minutes=_WEEKLY_INTERVAL_MINUTES * expected_count) < horizon_end:
         expected_count += 1

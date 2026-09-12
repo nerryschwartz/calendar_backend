@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.domain.enums import ConstraintKind, FreeTimeWeekStartDay, RepeatMode
 from calendar_backend.domain.ids import (
     BlockCalendarEntryID,
@@ -158,7 +159,7 @@ class PlanDeletionPreviewDTO:
 @dataclass(frozen=True)
 class AppSettingsDTO:
     local_timezone: str
-    master_horizon_duration_minutes: int
+    master_horizon_duration: CalendarDuration
     exact_solver_time_limit_seconds: int
     exact_solver_model_size_limit: int
     heuristic_enabled: bool
@@ -169,7 +170,7 @@ class AppSettingsDTO:
 def app_settings_dto_from_row(row: AppSettings) -> AppSettingsDTO:
     return AppSettingsDTO(
         local_timezone=row.local_timezone,
-        master_horizon_duration_minutes=row.master_horizon_duration_minutes,
+        master_horizon_duration=CalendarDuration(**row.master_horizon_duration),
         exact_solver_time_limit_seconds=row.exact_solver_time_limit_seconds,
         exact_solver_model_size_limit=row.exact_solver_model_size_limit,
         heuristic_enabled=row.heuristic_enabled,

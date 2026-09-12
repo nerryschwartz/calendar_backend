@@ -5,11 +5,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from calendar_backend.domain.dtos import MasterHorizonDTO
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.domain.enums import ConstraintKind
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.models.constraints import TimeConstraintGroup, TimeWindow
 from calendar_backend.services.app_settings import (
-    DEFAULT_MASTER_HORIZON_DURATION_MINUTES,
+    DEFAULT_MASTER_HORIZON_DURATION,
     AppSettingsService,
 )
 from calendar_backend.services.master_horizon import MasterHorizonService
@@ -70,7 +71,7 @@ def test_refresh_master_horizon_window_bounds(service_db_session: Session) -> No
     result = MasterHorizonService(service_db_session, clock).refresh_master_horizon(RUN_STARTED_AT)
 
     assert result.success and result.value is not None
-    expected_end = RUN_STARTED_AT + timedelta(minutes=DEFAULT_MASTER_HORIZON_DURATION_MINUTES)
+    expected_end = DEFAULT_MASTER_HORIZON_DURATION.end_at(RUN_STARTED_AT, "UTC")
     assert result.value.horizon_start == RUN_STARTED_AT
     assert result.value.horizon_end == expected_end
 
@@ -93,9 +94,7 @@ def test_refresh_master_horizon_second_refresh_replaces_bounds(service_db_sessio
     assert second.value.constraint_group_id == first.value.constraint_group_id
     assert second.value.time_window_id != first.value.time_window_id
     assert second.value.horizon_start == second_run
-    assert second.value.horizon_end == second_run + timedelta(
-        minutes=DEFAULT_MASTER_HORIZON_DURATION_MINUTES
-    )
+    assert second.value.horizon_end == DEFAULT_MASTER_HORIZON_DURATION.end_at(second_run, "UTC")
 
 
 @pytest.mark.integration
@@ -150,7 +149,7 @@ def test_refresh_master_horizon_end_tracks_updated_duration(service_db_session: 
     assert first.success
 
     AppSettingsService(service_db_session, clock).update_settings(
-        master_horizon_duration_minutes=90
+        master_horizon_duration=CalendarDuration(minutes=90)
     )
     second_run = datetime(2026, 6, 9, 9, 0, tzinfo=UTC)
     second = horizon_service.refresh_master_horizon(second_run)

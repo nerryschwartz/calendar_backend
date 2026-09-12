@@ -47,8 +47,8 @@ def test_empty_db_bootstrap_master_settings_and_refresh_horizon(
     assert settings_result.success and settings_result.value is not None
     assert horizon_result.success and horizon_result.value is not None
     assert horizon_result.value.horizon_start == RUN_STARTED_AT
-    assert horizon_result.value.horizon_end == RUN_STARTED_AT + timedelta(
-        minutes=settings_result.value.master_horizon_duration_minutes
+    assert horizon_result.value.horizon_end == settings_result.value.master_horizon_duration.end_at(
+        RUN_STARTED_AT, settings_result.value.local_timezone
     )
 
 

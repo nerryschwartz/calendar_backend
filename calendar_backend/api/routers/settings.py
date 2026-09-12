@@ -7,19 +7,35 @@ from typing import Annotated, Any
 from calendar_backend.api.deps import get_clock, get_db_session
 from calendar_backend.api.errors import unwrap_result
 from calendar_backend.api.serialize import dto_to_json
+from calendar_backend.domain.calendar_duration import CalendarDuration
 from calendar_backend.domain.enums import FreeTimeWeekStartDay
 from calendar_backend.domain.time import Clock
 from calendar_backend.services.app_settings import AppSettingsService
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
+class CalendarDurationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    years: int = Field(default=0, ge=0, strict=True)
+    months: int = Field(default=0, ge=0, strict=True)
+    days: int = Field(default=0, ge=0, strict=True)
+    hours: int = Field(default=0, ge=0, strict=True)
+    minutes: int = Field(default=0, ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def validate_duration(self) -> CalendarDurationBody:
+        CalendarDuration(**self.model_dump())
+        return self
+
+
 class UpdateSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     local_timezone: str | None = None
-    master_horizon_duration_minutes: int | None = None
+    master_horizon_duration: CalendarDurationBody | None = None
     exact_solver_time_limit_seconds: int | None = None
     exact_solver_model_size_limit: int | None = None
     heuristic_enabled: bool | None = None
@@ -44,7 +60,11 @@ def update_settings(
         unwrap_result(
             AppSettingsService(session, clock).update_settings(
                 local_timezone=body.local_timezone,
-                master_horizon_duration_minutes=body.master_horizon_duration_minutes,
+                master_horizon_duration=(
+                    CalendarDuration(**body.master_horizon_duration.model_dump())
+                    if body.master_horizon_duration is not None
+                    else None
+                ),
                 exact_solver_time_limit_seconds=body.exact_solver_time_limit_seconds,
                 exact_solver_model_size_limit=body.exact_solver_model_size_limit,
                 heuristic_enabled=body.heuristic_enabled,
