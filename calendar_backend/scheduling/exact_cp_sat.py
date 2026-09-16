@@ -8,8 +8,9 @@ All ortools imports for the scheduling package must live in this module only.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from time import perf_counter
 
 from ortools.sat.python import cp_model
 
@@ -71,6 +72,7 @@ class _ComponentContext:
     model: cp_model.CpModel
     task_variables: tuple[_TaskVariables, ...]
     hints_by_plan_id: dict[PlanID, tuple[TimeWindow, ...]]
+    deadline: float
 
 
 @dataclass(frozen=True)
@@ -112,11 +114,9 @@ class ExactAssignmentSolver:
         component_statuses: list[SolverStatus] = []
         any_limit_reached = False
 
-        for component_index in range(len(base_components)):
-            component = decomposition.iter_component_sub_inputs(
-                assignment_input,
-                prior_solved_assignments=prior_solved_assignments,
-            )[component_index]
+        deadline = perf_counter() + _time_limit_seconds(assignment_input.solver_limits)
+        for base_component in base_components:
+            component = replace(base_component, deadline=deadline)
             component_result = solve_exact_component(component)
             if not is_usable_solver_result(component_result):
                 return component_result
@@ -271,7 +271,11 @@ def _run_lex_chain(  # noqa: PLR0911
 
 def _solve_context(context: _ComponentContext) -> tuple[int, cp_model.CpSolver]:
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = _time_limit_seconds(context.component.solver_limits)
+    solver.parameters.num_search_workers = 1
+    remaining = context.deadline - perf_counter()
+    if remaining <= 0:
+        return cp_model.UNKNOWN, solver
+    solver.parameters.max_time_in_seconds = remaining
     status = solver.Solve(context.model)
     return status, solver
 
@@ -324,6 +328,9 @@ def _build_component_context(
         model=model,
         task_variables=task_variables,
         hints_by_plan_id=hints_by_plan_id,
+        deadline=component.deadline
+        if component.deadline is not None
+        else perf_counter() + _time_limit_seconds(component.solver_limits),
     )
 
 

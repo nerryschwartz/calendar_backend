@@ -171,7 +171,7 @@ def test_solve_aggregates_mixed_component_statuses_to_feasible() -> None:
     second = schedulable_task(
         task_id=second_id,
         duration_minutes=30,
-        effective_time_windows=(morning,),
+        effective_time_windows=(window(utc(2026, 6, 7, 13, 0), utc(2026, 6, 7, 14, 0)),),
     )
     optimal_assignments = (
         TaskAssignment(
@@ -182,7 +182,7 @@ def test_solve_aggregates_mixed_component_statuses_to_feasible() -> None:
     feasible_assignments = (
         TaskAssignment(
             plan_id=second_id,
-            segments=(window(utc(2026, 6, 7, 9, 30), utc(2026, 6, 7, 10, 0)),),
+            segments=(window(utc(2026, 6, 7, 13, 0), utc(2026, 6, 7, 13, 30)),),
         ),
     )
 

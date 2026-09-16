@@ -76,12 +76,16 @@ def test_decompose_two_disconnected_chains_yields_two_components() -> None:
                 schedulable_task(
                     task_id=chain_b_first,
                     duration_minutes=30,
-                    effective_time_windows=(morning,),
+                    effective_time_windows=(
+                        window(utc(2026, 6, 7, 13, 0), utc(2026, 6, 7, 16, 0)),
+                    ),
                 ),
                 schedulable_task(
                     task_id=chain_b_second,
                     duration_minutes=30,
-                    effective_time_windows=(morning,),
+                    effective_time_windows=(
+                        window(utc(2026, 6, 7, 13, 0), utc(2026, 6, 7, 16, 0)),
+                    ),
                 ),
             ),
             precedence_edges=(
@@ -144,7 +148,7 @@ def test_iter_component_sub_inputs_accumulates_prior_component_placements() -> N
     second = schedulable_task(
         task_id=second_id,
         duration_minutes=30,
-        effective_time_windows=(morning,),
+        effective_time_windows=(window(utc(2026, 6, 7, 13, 0), utc(2026, 6, 7, 16, 0)),),
     )
     assignment_input_value = assignment_input(
         tasks=(first, second),

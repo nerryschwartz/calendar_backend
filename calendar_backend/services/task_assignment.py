@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import time
+from dataclasses import replace
 from datetime import datetime
 
 from sqlalchemy import delete, or_, select
@@ -282,11 +283,11 @@ def _solve_assignment(
     all_warnings: list[ServiceMessage] = []
     used_heuristic = False
 
-    for component_index in range(len(base_components)):
-        component = decomposition.iter_component_sub_inputs(
-            assignment_input,
-            prior_solved_assignments=prior_solved_assignments,
-        )[component_index]
+    deadline = started + (
+        assignment_input.solver_limits.time_limit_seconds if assignment_input.solver_limits else 30
+    )
+    for base_component in base_components:
+        component = replace(base_component, deadline=deadline)
         exact_result = solve_exact_component(component)
         if is_usable_solver_result(exact_result):
             prior_solved_assignments = (
