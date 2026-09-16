@@ -13,7 +13,7 @@ from calendar_backend.domain.results import ServiceResult, ok
 from calendar_backend.domain.time import Clock, SystemClock
 from calendar_backend.models.plans import GoalPlan, Plan
 
-MASTER_PLAN_NAME = "master"
+MASTER_PLAN_NAME = "Master"
 
 
 class MasterPlanService:

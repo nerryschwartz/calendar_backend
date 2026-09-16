@@ -50,9 +50,7 @@ def test_generation_metadata_upgrade_downgrade_preserves_plans(tmp_path, monkeyp
         command.downgrade(config, "b91f6d82a304")
         assert "repetition_generation_receipt" not in inspect(engine).get_table_names()
         with Session(engine) as session:
-            assert (
-                session.scalar(select(Plan.name).where(Plan.plan_id == plan_id)) == "Keep this plan"
-            )
+            assert session.scalar(select(Plan.name).where(Plan.plan_id == plan_id)) == "master"
         command.upgrade(config, "head")
     finally:
         engine.dispose()

@@ -120,6 +120,11 @@ class MovePlanBody(BaseModel):
     is_critical: bool | None = None
 
 
+class ChildOrderBody(BaseModel):
+    critical_child_ids: list[UUID]
+    non_critical_child_ids: list[UUID]
+
+
 class PrerequisiteBody(BaseModel):
     prerequisite_plan_id: UUID
 
@@ -208,6 +213,25 @@ def create_child(
         body.is_critical,
     )
     return dto_to_json(unwrap_result(result))
+
+
+@router.put("/{goal_id}/children/order")
+def order_children(
+    goal_id: UUID,
+    body: ChildOrderBody,
+    session: Annotated[Session, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> dict[str, Any]:
+    unwrap_result(
+        GoalService(session, clock).order_children(
+            PlanID(goal_id),
+            tuple(PlanID(value) for value in body.critical_child_ids),
+            tuple(PlanID(value) for value in body.non_critical_child_ids),
+        )
+    )
+    return dto_to_json(
+        unwrap_result(PlanTreeReadService(session, clock).get_plan_detail(PlanID(goal_id)))
+    )
 
 
 @router.post("/{plan_id}/move")
