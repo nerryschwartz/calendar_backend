@@ -512,6 +512,7 @@ def _refresh_instance_clone_subtree(
             template_plan=template_plan,
             clone_plan=clone_plan,
             clone_by_template=clone_by_template,
+            offset=offset,
             now=now,
         )
         _sync_user_windows(
@@ -596,6 +597,7 @@ def _propagate_linked_clone_from_template(
     template_plan: Plan,
     clone_plan: Plan,
     clone_by_template: dict[uuid.UUID, uuid.UUID],
+    offset: timedelta,
     now: datetime,
 ) -> None:
     clone_plan.name = template_plan.name
@@ -629,10 +631,14 @@ def _propagate_linked_clone_from_template(
         clone_repetition = txn.get(RepetitionPlan, clone_plan_id)
         if clone_repetition is not None:
             clone_repetition.repeat_mode = source_repetition.repeat_mode
-            clone_repetition.start_time = source_repetition.start_time
+            clone_repetition.start_time = sqlite_utc(source_repetition.start_time) + offset
             clone_repetition.repeat_interval_minutes = source_repetition.repeat_interval_minutes
             clone_repetition.manual_count = source_repetition.manual_count
-            clone_repetition.end_time = source_repetition.end_time
+            clone_repetition.end_time = (
+                sqlite_utc(source_repetition.end_time) + offset
+                if source_repetition.end_time is not None
+                else None
+            )
             clone_repetition.default_instance_critical = source_repetition.default_instance_critical
             cloned_template_root_id = clone_by_template.get(source_repetition.template_root_id)
             if cloned_template_root_id is not None:
