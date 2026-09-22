@@ -58,9 +58,17 @@ def is_usable_solver_result(result: AssignmentSolverResult) -> bool:
     return result.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE) and result.failure is None
 
 
+def unknown_result(failure: ServiceMessage) -> AssignmentSolverResult:
+    return AssignmentSolverResult(SolverStatus.UNKNOWN, (), (), failure)
+
+
 def weakest_solver_status(*statuses: SolverStatus) -> SolverStatus:
     if not statuses:
+        return SolverStatus.UNKNOWN
+    if SolverStatus.INFEASIBLE in statuses:
         return SolverStatus.INFEASIBLE
+    if SolverStatus.UNKNOWN in statuses:
+        return SolverStatus.UNKNOWN
     if any(status == SolverStatus.FEASIBLE for status in statuses):
         return SolverStatus.FEASIBLE
     if all(status == SolverStatus.OPTIMAL for status in statuses):

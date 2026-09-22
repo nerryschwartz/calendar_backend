@@ -18,6 +18,7 @@ from calendar_backend.scheduling.types import (
     TaskAssignment,
     feasible_result,
     infeasible_result,
+    unknown_result,
 )
 
 
@@ -60,7 +61,14 @@ class HeuristicAssignmentSolver:
                 latest_end=latest_end,
             )
             if segments is None:
-                return infeasible_result(_failure_for_no_placement(task, occupied))
+                failure = _failure_for_no_placement(task, occupied)
+                return unknown_result(
+                    ServiceMessage(
+                        MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+                        "Greedy search found no placement; this does not prove that the task windows are invalid",
+                        {**failure.details, "stage": "heuristic", "proof_status": "not_proven"},
+                    )
+                )
 
             failure = validate_task_assignment(
                 task,
@@ -69,7 +77,7 @@ class HeuristicAssignmentSolver:
                 other_assignments=tuple(assignments),
             )
             if failure is not None:
-                return infeasible_result(failure)
+                return unknown_result(failure)
 
             assignments.append(TaskAssignment(plan_id=task.plan_id, segments=segments))
             occupied = (*occupied, *segments)
@@ -79,7 +87,7 @@ class HeuristicAssignmentSolver:
         if __debug__:
             assert validation_failure is None
         if validation_failure is not None:
-            return infeasible_result(validation_failure)
+            return unknown_result(validation_failure)
 
         return feasible_result(assignment_tuple)
 

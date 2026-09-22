@@ -235,7 +235,7 @@ def _apply_allowed_families_and_narrowing(
     enriched: list[ResolvedTask] = []
     for task in tasks:
         allowed_families = _allowed_families_for_task(task.plan_id, indexes)
-        if block_placements:
+        if block_placements or allowed_families != ("default",):
             narrowed = narrow_task_effective_windows(
                 task.effective_time_windows,
                 allowed_families,

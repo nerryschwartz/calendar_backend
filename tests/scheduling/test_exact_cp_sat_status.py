@@ -108,7 +108,7 @@ def test_solve_returns_optimal_for_tiny_real_model() -> None:
     assert is_usable_solver_result(result) is True
 
 
-def test_solve_model_size_guard_returns_not_usable_without_failure() -> None:
+def test_solve_model_size_guard_returns_unknown_with_failure() -> None:
     task = schedulable_task(
         duration_minutes=60,
         effective_time_windows=(window(utc(2026, 6, 7, 9, 0), utc(2026, 6, 7, 18, 0)),),
@@ -119,10 +119,10 @@ def test_solve_model_size_guard_returns_not_usable_without_failure() -> None:
         assignment_input(tasks=(task,), solver_limits=limits),
     )
 
-    assert result.status == SolverStatus.INFEASIBLE
+    assert result.status == SolverStatus.UNKNOWN
     assert result.assignments == ()
     assert [warning.code for warning in result.warnings] == [MessageCode.SOLVER_LIMIT_REACHED]
-    assert result.failure is None
+    assert result.failure is not None
     assert is_usable_solver_result(result) is False
 
 
@@ -138,9 +138,9 @@ def test_solve_exact_component_model_size_guard_skips_model_construction() -> No
         result = solve_exact_component(component)
 
     build.assert_not_called()
-    assert result.status == SolverStatus.INFEASIBLE
+    assert result.status == SolverStatus.UNKNOWN
     assert [warning.code for warning in result.warnings] == [MessageCode.SOLVER_LIMIT_REACHED]
-    assert result.failure is None
+    assert result.failure is not None
     assert is_usable_solver_result(result) is False
 
 
@@ -155,7 +155,7 @@ def test_solve_component_failure_returns_not_usable_with_failure_message() -> No
     assert result.status == SolverStatus.INFEASIBLE
     assert result.assignments == ()
     assert result.failure is not None
-    assert result.failure.code == MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT
+    assert result.failure.code == MessageCode.NO_VALID_WINDOW_FOR_TASK
     assert is_usable_solver_result(result) is False
 
 

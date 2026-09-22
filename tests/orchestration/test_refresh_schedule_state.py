@@ -52,6 +52,7 @@ def test_refresh_schedule_solver_failure_preserves_active_calendar_run_id(
     state = oh.active_state(service_db_session)
     assert state is not None
 
+    prior_run_id = state.active_calendar_run_id
     TimeConstraintService(service_db_session, oh.clock()).add_user_group(
         parent_id,
         (oh.window(oh.RUN_AT, oh.RUN_AT + timedelta(minutes=30)),),
@@ -65,7 +66,8 @@ def test_refresh_schedule_solver_failure_preserves_active_calendar_run_id(
     assert failure.value.assignment is not None
     state = oh.active_state(service_db_session)
     assert state is not None
-    assert state.active_calendar_run_id == failure.value.block_assignment.calendar_run_id
+    assert state.active_calendar_run_id == prior_run_id
+    assert state.active_calendar_run_id != failure.value.assignment.calendar_run_id
     assert (
         failure.value.assignment.calendar_run_id == failure.value.block_assignment.calendar_run_id
     )
@@ -109,7 +111,7 @@ def test_refresh_schedule_precondition_failure_sets_reason_without_calendar_muta
     assert state is not None
     assert state.last_refresh_failed is True
     assert state.last_failure_reason == LastFailureReason.ASSIGNMENT_PRECONDITION_FAILED
-    assert state.active_calendar_run_id == result.value.block_assignment.calendar_run_id
+    assert state.active_calendar_run_id is None
 
 
 @pytest.mark.integration

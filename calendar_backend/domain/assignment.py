@@ -129,7 +129,10 @@ def analyze_assignment_conflicts(
     solver_result: AssignmentSolverResult,
 ) -> tuple[AssignmentConflict, ...]:
     """Derive deterministic assignment conflicts from solver failure and staged input checks."""
-    if solver_result.status != SolverStatus.INFEASIBLE or solver_result.failure is None:
+    if (
+        solver_result.status not in (SolverStatus.INFEASIBLE, SolverStatus.UNKNOWN)
+        or solver_result.failure is None
+    ):
         return ()
 
     resolved_tasks_by_id = {task.plan_id: task for task in resolved.valid_incomplete}

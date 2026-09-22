@@ -56,6 +56,7 @@ from calendar_backend.scheduling.types import (
 )
 from calendar_backend.services.app_settings import AppSettingsService
 from calendar_backend.services.calendar_state import load_or_create_active_calendar_state
+from calendar_backend.services.assignment_diagnostics import enrich_assignment_conflicts
 from calendar_backend.services.master_horizon import validate_run_started_at
 
 
@@ -72,6 +73,7 @@ class TaskAssignmentService:
         run_started_at: datetime,
         *,
         calendar_run_id: CalendarRunID | None = None,
+        previous_task_run_id: CalendarRunID | None = None,
     ) -> ServiceResult[AssignmentResult]:
         """Assign valid incomplete tasks and persist TASK calendar entries.
 
@@ -81,6 +83,40 @@ class TaskAssignmentService:
         """
         precondition_error = _assign_tasks_precondition_error(resolved, run_started_at)
         if precondition_error is not None:
+            if precondition_error.code == MessageCode.INVALID_INCOMPLETE_TASKS_BLOCK_ASSIGNMENT:
+                conflicts = tuple(
+                    AssignmentConflict(
+                        conflicting_plan_ids=(task.plan_id,),
+                        task_ids=(task.plan_id,),
+                        reason_code=error.code,
+                        explanation=f'"{task.name}": {error.message}',
+                    )
+                    for task in resolved.invalid_incomplete
+                    for error in task.validation_errors
+                )
+                solver_result = AssignmentSolverResult(
+                    SolverStatus.INFEASIBLE,
+                    (),
+                    (),
+                    replace(
+                        precondition_error,
+                        details={**precondition_error.details, "stage": "resolution"},
+                    ),
+                )
+                with transaction(self._session) as txn:
+                    conflicts = enrich_assignment_conflicts(
+                        txn,
+                        conflicts,
+                        resolved,
+                        assignment_input_from_resolved(resolved),
+                        solver_result,
+                    )
+                return fail(
+                    precondition_error,
+                    _value=AssignmentResult(
+                        run_started_at, SolverStatus.INFEASIBLE, (), conflicts, (), 0, None
+                    ),
+                )
             return fail(precondition_error)
 
         with transaction(self._session) as txn:
@@ -101,7 +137,9 @@ class TaskAssignmentService:
             if exact_unavailable_error is not None:
                 return fail(exact_unavailable_error)
 
-            task_entries = _load_task_calendar_entries(txn, run_started_at=run_started_at)
+            task_entries = _load_task_calendar_entries(
+                txn, run_started_at=run_started_at, previous_task_run_id=previous_task_run_id
+            )
             block_entries = _load_block_calendar_entries(txn, run_started_at=run_started_at)
             state = txn.get(ActiveCalendarState, 1)
             active_calendar_run_id = (
@@ -135,7 +173,7 @@ class TaskAssignmentService:
             heuristic_enabled=settings.heuristic_enabled,
         )
         solver_result = _normalize_infeasible_solver_result(solver_result)
-        if solver_result.status == SolverStatus.INFEASIBLE:
+        if not is_usable_solver_result(solver_result):
             assert solver_result.failure is not None
             analysis_result = ConflictAnalysisService().analyze(
                 assignment_input,
@@ -144,12 +182,15 @@ class TaskAssignmentService:
             )
             assert analysis_result.success and analysis_result.value is not None
             with transaction(self._session) as txn:
+                conflicts = enrich_assignment_conflicts(
+                    txn, analysis_result.value, resolved, assignment_input, solver_result
+                )
                 assignment_result = _persist_failed_assignment(
                     txn,
                     self._clock,
                     run_started_at=run_started_at,
                     solver_result=solver_result,
-                    conflicts=analysis_result.value,
+                    conflicts=conflicts,
                     runtime_ms=runtime_ms,
                     calendar_run_id=calendar_run_id,
                 )
@@ -225,12 +266,13 @@ def _load_task_calendar_entries(
     session: Session,
     *,
     run_started_at: datetime,
+    previous_task_run_id: CalendarRunID | None = None,
 ) -> tuple[CalendarEntry, ...]:
     state = session.get(ActiveCalendarState, 1)
     if state is None or state.active_calendar_run_id is None:
         return ()
 
-    active_calendar_run_id = state.active_calendar_run_id
+    active_calendar_run_id = previous_task_run_id or state.active_calendar_run_id
     return tuple(
         session.scalars(
             select(CalendarEntry).where(
@@ -298,16 +340,27 @@ def _solve_assignment(
             all_warnings.extend(exact_result.warnings)
             continue
 
-        if not heuristic_enabled:
+        if not heuristic_enabled or (
+            exact_result.status == SolverStatus.INFEASIBLE and exact_result.failure is not None
+        ):
             runtime_ms = int((time.perf_counter() - started) * 1000)
             return exact_result, runtime_ms
 
         all_warnings.extend(exact_result.warnings)
         component_input = decomposition.assignment_input_from_component(component)
         heuristic_result = HeuristicAssignmentSolver().solve(component_input)
-        if heuristic_result.status == SolverStatus.INFEASIBLE:
+        if not is_usable_solver_result(heuristic_result):
             runtime_ms = int((time.perf_counter() - started) * 1000)
-            return heuristic_result, runtime_ms
+            failure = heuristic_result.failure
+            if failure is not None and exact_result.failure is not None:
+                failure = replace(
+                    failure, details={**failure.details, **exact_result.failure.details}
+                )
+            return replace(
+                heuristic_result,
+                warnings=(*all_warnings, *heuristic_result.warnings),
+                failure=failure,
+            ), runtime_ms
 
         used_heuristic = True
         prior_solved_assignments = (
@@ -371,13 +424,13 @@ def _aggregate_mixed_solver_result(
 def _normalize_infeasible_solver_result(
     solver_result: AssignmentSolverResult,
 ) -> AssignmentSolverResult:
-    if solver_result.status != SolverStatus.INFEASIBLE or solver_result.failure is not None:
+    if is_usable_solver_result(solver_result) or solver_result.failure is not None:
         return solver_result
 
     return AssignmentSolverResult(
-        status=SolverStatus.INFEASIBLE,
+        status=SolverStatus.UNKNOWN,
         assignments=(),
-        warnings=(),
+        warnings=solver_result.warnings,
         failure=ServiceMessage(
             code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
             message="Exact solver could not produce a usable assignment",
@@ -403,7 +456,7 @@ def _persist_failed_assignment(
             run_started_at=run_started_at,
             clock=clock,
             status=CalendarRunStatus.FAILED,
-            solver_status=SolverStatus.INFEASIBLE,
+            solver_status=solver_result.status,
             conflict_count=len(conflicts),
             warning_count=len(solver_result.warnings),
             runtime_ms=runtime_ms,
@@ -424,7 +477,7 @@ def _persist_failed_assignment(
 
     return AssignmentResult(
         run_started_at=run_started_at,
-        optimization_status=SolverStatus.INFEASIBLE,
+        optimization_status=solver_result.status,
         calendar_entries=(),
         conflicts=conflicts,
         warnings=solver_result.warnings,

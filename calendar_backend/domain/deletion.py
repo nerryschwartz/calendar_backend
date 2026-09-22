@@ -5,9 +5,11 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from typing import Literal
 
 from calendar_backend.domain.dtos import PlanDeletionPreviewDTO
-from calendar_backend.domain.enums import PlanKind
+from calendar_backend.domain.enums import PlanKind, ConstraintKind
+from calendar_backend.domain.time import TimeWindow
 from calendar_backend.domain.errors import MessageCode
 from calendar_backend.domain.ids import BlockCalendarEntryID, CalendarEntryID, PlanID
 from calendar_backend.models.blocks import BlockCalendarEntry
@@ -34,6 +36,54 @@ class DeletionPreview:
 
 
 @dataclass(frozen=True)
+class DiagnosticTask:
+    plan_id: PlanID
+    name: str
+    duration_minutes: int
+    divisible: bool
+    minimum_chunk_size_minutes: int | None
+    allowed_block_families: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DiagnosticConstraintSource:
+    plan_id: PlanID
+    name: str
+    constraint_kind: ConstraintKind
+    constraint_group_id: uuid.UUID
+    windows: tuple[TimeWindow, ...]
+
+
+@dataclass(frozen=True)
+class DiagnosticWindows:
+    plan_id: PlanID
+    windows: tuple[TimeWindow, ...]
+
+
+@dataclass(frozen=True)
+class DiagnosticPlan:
+    plan_id: PlanID
+    name: str
+
+
+@dataclass(frozen=True)
+class DiagnosticSolver:
+    stage: str
+    estimate: float | None
+    limit: float | None
+    proof_status: Literal["proven_infeasible", "not_proven"]
+
+
+@dataclass(frozen=True)
+class AssignmentDiagnostics:
+    tasks: tuple[DiagnosticTask, ...]
+    constraint_sources: tuple[DiagnosticConstraintSource, ...]
+    effective_windows: tuple[DiagnosticWindows, ...]
+    blocking_plans: tuple[DiagnosticPlan, ...]
+    solver: DiagnosticSolver
+
+
+@dataclass(frozen=True)
 class AssignmentConflict:
     conflicting_plan_ids: tuple[PlanID, ...]
     affected_priority_by_plan_id: tuple[tuple[PlanID, int], ...] = ()
@@ -42,6 +92,7 @@ class AssignmentConflict:
     explanation: str = ""
     is_global: bool = False
     is_approximate: bool = True
+    diagnostics: AssignmentDiagnostics | None = None
 
 
 def build_assignment_conflict(
