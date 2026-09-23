@@ -87,7 +87,12 @@ PART2_ENUM_COLUMNS: dict[tuple[str, str], set[str]] = {
     },
     ("calendar_entry", "entry_type"): {"TASK", "FREE_TIME"},
     ("calendar_run", "status"): {"SUCCESS", "FAILED"},
-    ("calendar_run", "solver_status"): {"OPTIMAL", "FEASIBLE", "INFEASIBLE"},
+    ("calendar_run", "solver_status"): {
+        "OPTIMAL",
+        "FEASIBLE",
+        "INFEASIBLE",
+        "UNKNOWN",
+    },
     ("active_calendar_state", "last_failure_reason"): {
         "ASSIGNMENT_FAILED",
         "ASSIGNMENT_PRECONDITION_FAILED",

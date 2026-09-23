@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 
-
 class DiagnosticTestClock:
     def __init__(self, now: datetime) -> None:
         self._now = now
