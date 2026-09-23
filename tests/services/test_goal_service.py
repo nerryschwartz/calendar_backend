@@ -155,7 +155,7 @@ def _create_clone_source_plan(session: Session, master_plan_id: PlanID) -> PlanI
                 plan_id=source_id,
                 plan_kind=PlanKind.GOAL,
                 name="clone source",
-                parent_id=master_plan_id,
+                parent_id=None,
                 is_master=False,
                 cloned_from_id=None,
                 clone_status=CloneStatus.NOT_CLONED,

@@ -108,6 +108,17 @@ class GoalService:
                 now=self._clock.now_utc(),
             )
 
+    def order_children(
+        self,
+        goal_id: PlanID,
+        critical_child_ids: tuple[PlanID, ...],
+        non_critical_child_ids: tuple[PlanID, ...],
+    ) -> ServiceResult[None]:
+        with transaction(self._session) as txn:
+            return _apply_child_order(
+                txn, goal_id, critical_child_ids, non_critical_child_ids, self._clock.now_utc()
+            )
+
     # Type checker: within-bucket reorder.
     @overload
     def move_plan(self, plan_id: PlanID, position: int) -> ServiceResult[None]: ...
@@ -331,10 +342,49 @@ def _sorted_bucket_children(
     )
 
 
-def _assign_dense_goal_sort_orders(plans: list[Plan], *, now: datetime) -> None:
-    for index, plan in enumerate(plans):
-        plan.goal_sort_order = index
-        plan.updated_at = now
+def _apply_child_order(
+    txn: Session,
+    goal_id: PlanID,
+    critical_child_ids: tuple[PlanID, ...],
+    non_critical_child_ids: tuple[PlanID, ...],
+    now: datetime,
+) -> ServiceResult[None]:
+    error = _load_parent_goal(txn, goal_id, bool(critical_child_ids))
+    if error is not None:
+        return fail(error)
+    children = {
+        row.plan_id: row for row in txn.scalars(select(Plan).where(Plan.parent_id == goal_id))
+    }
+    requested = (*critical_child_ids, *non_critical_child_ids)
+    if len(set(requested)) != len(requested) or set(requested) != set(children):
+        return fail(
+            ServiceMessage(
+                code=MessageCode.INVALID_MOVE,
+                message="Child membership changed or ordering is invalid; include every current direct child exactly once",
+                details={
+                    "parent_id": str(goal_id),
+                    "current_child_ids": ",".join(sorted(map(str, children))),
+                },
+            )
+        )
+    updates = [
+        (children[child_id], critical, index)
+        for critical, ids in ((True, critical_child_ids), (False, non_critical_child_ids))
+        for index, child_id in enumerate(ids)
+        if (children[child_id].goal_is_critical, children[child_id].goal_sort_order)
+        != (critical, index)
+    ]
+    if not updates:
+        return ok(None)
+    parent = txn.get(Plan, goal_id)
+    assert parent is not None
+    detach_linked_self_and_descendants(txn, parent, now)
+    for child, critical, index in updates:
+        child.goal_is_critical = critical
+        child.goal_sort_order = index
+        child.updated_at = now
+    txn.flush()
+    return ok(None)
 
 
 def _move_within_bucket(
@@ -384,10 +434,20 @@ def _move_within_bucket(
 
     siblings.pop(current_index)
     siblings.insert(position, plan)
-    _assign_dense_goal_sort_orders(siblings, now=now)
-    detach_linked_self_and_descendants(txn, plan, now)
-    txn.flush()
-    return ok(None)
+    other = _sorted_bucket_children(
+        txn, parent_goal_id=parent_goal_id, is_critical=not plan.goal_is_critical
+    )
+    critical, non_critical = (siblings, other) if plan.goal_is_critical else (other, siblings)
+    result = _apply_child_order(
+        txn,
+        parent_goal_id,
+        tuple(PlanID(row.plan_id) for row in critical),
+        tuple(PlanID(row.plan_id) for row in non_critical),
+        now,
+    )
+    if result.success:
+        detach_linked_self_and_descendants(txn, plan, now)
+    return result
 
 
 def _move_across_buckets(
@@ -430,7 +490,6 @@ def _move_across_buckets(
         is_critical=plan.goal_is_critical,
     )
     source_siblings = [row for row in source_siblings if row.plan_id != plan_id]
-    _assign_dense_goal_sort_orders(source_siblings, now=now)
 
     target_siblings = _sorted_bucket_children(
         txn,
@@ -451,12 +510,20 @@ def _move_across_buckets(
             )
         )
 
-    plan.goal_is_critical = is_critical
     target_siblings.insert(insert_at, plan)
-    _assign_dense_goal_sort_orders(target_siblings, now=now)
-    detach_linked_self_and_descendants(txn, plan, now)
-    txn.flush()
-    return ok(None)
+    critical, non_critical = (
+        (target_siblings, source_siblings) if is_critical else (source_siblings, target_siblings)
+    )
+    result = _apply_child_order(
+        txn,
+        parent_goal_id,
+        tuple(PlanID(row.plan_id) for row in critical),
+        tuple(PlanID(row.plan_id) for row in non_critical),
+        now,
+    )
+    if result.success:
+        detach_linked_self_and_descendants(txn, plan, now)
+    return result
 
 
 def _load_movable_goal_child(

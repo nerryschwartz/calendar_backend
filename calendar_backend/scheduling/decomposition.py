@@ -1,18 +1,4 @@
-"""Precedence-connected assignment decomposition and CP-SAT model-size guards.
-
-Variable-count estimate (conservative over-approximation for slice 2):
-- ``horizon_minutes``: minute span from the component timeline anchor through the
-  latest ``end_time`` among task windows, occupied intervals, and stability hints.
-- Per task ``max_segments``: ``1`` when indivisible; otherwise
-  ``max(1, (duration_minutes + minimum_chunk - 1) // minimum_chunk)`` when
-  ``minimum_chunk > 0``, else ``1``.
-- Per task: ``3 * max_segments`` (presence + start + duration variables).
-- Per precedence edge: ``2`` coupling variables.
-- Fixed ``MODEL_OVERHEAD`` of ``10``.
-
-Total estimate =
-  ``MODEL_OVERHEAD + horizon_minutes + sum(3 * max_segments) + 2 * edge_count``.
-"""
+"""Precedence/resource-connected components and structural CP-SAT size guards."""
 
 from __future__ import annotations
 
@@ -20,7 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from calendar_backend.domain.ids import PlanID
-from calendar_backend.domain.task_families import DownstreamTaskFeasibilitySummary
+from calendar_backend.domain.task_families import (
+    DownstreamTaskFeasibilitySummary,
+    demand_windows_for_block_family,
+)
 from calendar_backend.domain.time import TimeWindow
 from calendar_backend.scheduling.input import (
     AssignmentInput,
@@ -30,10 +19,6 @@ from calendar_backend.scheduling.input import (
     SolverLimits,
 )
 from calendar_backend.scheduling.types import TaskAssignment
-
-MODEL_OVERHEAD = 10
-VARS_PER_SEGMENT = 3
-VARS_PER_PRECEDENCE_EDGE = 2
 
 
 @dataclass(frozen=True)
@@ -45,12 +30,13 @@ class AssignmentComponent:
     previous_placements_by_task_id: tuple[tuple[PlanID, tuple[TimeWindow, ...]], ...]
     solver_limits: SolverLimits | None = None
     downstream_task_feasibility_summaries: tuple[DownstreamTaskFeasibilitySummary, ...] = ()
+    deadline: float | None = None
 
 
 def decompose_assignment_input(
     assignment_input: AssignmentInput,
 ) -> tuple[AssignmentComponent, ...]:
-    """Split input into precedence-connected components in deterministic order."""
+    """Couple tasks connected by precedence or competition for any effective window."""
     if not assignment_input.tasks:
         return ()
 
@@ -63,7 +49,7 @@ def decompose_assignment_input(
         if edge.predecessor_plan_id in task_plan_ids and edge.successor_plan_id in task_plan_ids
     )
 
-    component_plan_ids = _connected_components(task_plan_ids, filtered_edges)
+    component_plan_ids = _connected_components(tasks_by_plan_id, filtered_edges)
     ordered_component_plan_ids = sorted(
         component_plan_ids,
         key=lambda plan_ids: min(str(plan_id) for plan_id in plan_ids),
@@ -141,10 +127,31 @@ def assignment_input_from_component(component: AssignmentComponent) -> Assignmen
 
 
 def estimate_model_variable_count(component: AssignmentComponent) -> int:
-    horizon_minutes = _component_horizon_minutes(component)
-    segment_vars = sum(_max_segments_for_task(task) * VARS_PER_SEGMENT for task in component.tasks)
-    edge_vars = len(component.precedence_edges) * VARS_PER_PRECEDENCE_EDGE
-    return MODEL_OVERHEAD + horizon_minutes + segment_vars + edge_vars
+    """Bound variables through all lex objectives; time-domain width adds no variables.
+
+    Per segment: four scheduling vars, one per window, ordering, priority,
+    gap/span/start objectives. Edges add segment selectors and two extrema;
+    stability hints add match/change and six movement vars per matched slot.
+    """
+    segments = {task.plan_id: _max_segments_for_task(task) for task in component.tasks}
+    estimate = 16 + 3 * len(component.occupied_intervals)
+    for task in component.tasks:
+        count = segments[task.plan_id]
+        estimate += count * (12 + len(task.effective_time_windows)) + 3
+        if task.block_family is not None:
+            estimate += count * len(
+                demand_windows_for_block_family(
+                    component.downstream_task_feasibility_summaries, task.block_family
+                )
+            )
+    estimate += sum(
+        segments[edge.predecessor_plan_id] + segments[edge.successor_plan_id] + 2
+        for edge in component.precedence_edges
+    )
+    for plan_id, hints in component.previous_placements_by_task_id:
+        if plan_id in segments:
+            estimate += 5 + 6 * min(len(hints), segments[plan_id])
+    return estimate
 
 
 def model_size_guard_exceeded(
@@ -157,10 +164,10 @@ def model_size_guard_exceeded(
 
 
 def _connected_components(
-    task_plan_ids: set[PlanID],
+    tasks: dict[PlanID, SchedulableTask],
     edges: tuple[PrecedenceEdge, ...],
 ) -> tuple[frozenset[PlanID], ...]:
-    parent = {plan_id: plan_id for plan_id in task_plan_ids}
+    parent = {plan_id: plan_id for plan_id in tasks}
 
     def find(plan_id: PlanID) -> PlanID:
         root = plan_id
@@ -181,8 +188,26 @@ def _connected_components(
     for edge in edges:
         union(edge.predecessor_plan_id, edge.successor_plan_id)
 
+    # The furthest-reaching active interval connects each overlap island without
+    # materializing its quadratic set of pairwise resource-conflict edges.
+    intervals = sorted(
+        (window.start_time, window.end_time, task.plan_id)
+        for task in tasks.values()
+        for window in task.effective_time_windows
+    )
+    furthest_end = None
+    representative = None
+    for start, end, plan_id in intervals:
+        if furthest_end is not None and start < furthest_end:
+            assert representative is not None
+            union(plan_id, representative)
+        else:
+            furthest_end, representative = end, plan_id
+        if end > furthest_end:
+            furthest_end, representative = end, plan_id
+
     components_by_root: dict[PlanID, set[PlanID]] = {}
-    for plan_id in task_plan_ids:
+    for plan_id in tasks:
         root = find(plan_id)
         components_by_root.setdefault(root, set()).add(plan_id)
 
@@ -232,35 +257,6 @@ def _max_segments_for_task(task: SchedulableTask) -> int:
         return 1
 
     return max(1, (task.duration_minutes + minimum_chunk - 1) // minimum_chunk)
-
-
-def _timeline_anchor(component: AssignmentComponent) -> datetime:
-    anchor = component.run_started_at
-    for task in component.tasks:
-        for effective_window in task.effective_time_windows:
-            anchor = min(anchor, effective_window.start_time)
-    for occupied in component.occupied_intervals:
-        anchor = min(anchor, occupied.start_time)
-    for _, segments in component.previous_placements_by_task_id:
-        for segment in segments:
-            anchor = min(anchor, segment.start_time)
-    return anchor
-
-
-def _component_horizon_minutes(component: AssignmentComponent) -> int:
-    timeline_anchor = _timeline_anchor(component)
-    latest_end = component.run_started_at
-    for task in component.tasks:
-        for window in task.effective_time_windows:
-            latest_end = max(latest_end, window.end_time)
-    for occupied in component.occupied_intervals:
-        latest_end = max(latest_end, occupied.end_time)
-    for _, segments in component.previous_placements_by_task_id:
-        for segment in segments:
-            latest_end = max(latest_end, segment.end_time)
-
-    delta = latest_end - timeline_anchor
-    return max(0, int(delta.total_seconds() // 60))
 
 
 def _occupied_from_segments(

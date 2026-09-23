@@ -111,7 +111,8 @@ def test_refresh_schedule_invalid_incomplete_blocks_before_assignment(
     assert result.value.resolved_blocks is not None
     assert result.value.resolved is not None
     assert len(result.value.resolved.invalid_incomplete) == 1
-    assert result.value.assignment is None
+    assert result.value.assignment is not None
+    assert result.value.assignment.conflicts
     assert result.value.free_time is None
     assert oh.calendar_entry_count(service_db_session) == entries_before
     assert oh.calendar_run_count(service_db_session) == runs_before + 1

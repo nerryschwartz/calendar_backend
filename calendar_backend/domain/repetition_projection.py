@@ -278,6 +278,10 @@ def project_instances(
                 source.immediate_prerequisite_ref, source.immediate_prerequisite_ref
             )
             node.template_root_ref = refs.get(source.template_root_ref, source.template_root_ref)
+            if node.repetition is not None:
+                node.repetition.start_time += offset
+                if node.repetition.end_time is not None:
+                    node.repetition.end_time += offset
             for group in node.constraint_groups:
                 group.ref = generated_ref(key, index, group.ref)
                 for window in group.windows:

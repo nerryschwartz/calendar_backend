@@ -8,8 +8,9 @@ All ortools imports for the scheduling package must live in this module only.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from time import perf_counter
 
 from ortools.sat.python import cp_model
 
@@ -71,6 +72,7 @@ class _ComponentContext:
     model: cp_model.CpModel
     task_variables: tuple[_TaskVariables, ...]
     hints_by_plan_id: dict[PlanID, tuple[TimeWindow, ...]]
+    deadline: float
 
 
 @dataclass(frozen=True)
@@ -85,12 +87,48 @@ def solve_exact_component(component: AssignmentComponent) -> AssignmentSolverRes
     if not component.tasks:
         return exact_optimal_result(())
 
+    for task in component.tasks:
+        if not task.effective_time_windows:
+            return infeasible_result(
+                ServiceMessage(
+                    MessageCode.NO_VALID_WINDOW_FOR_TASK,
+                    "Task has no effective windows after inherited constraints and family restrictions",
+                    {
+                        "plan_id": str(task.plan_id),
+                        "stage": "input",
+                        "proof_status": "proven_infeasible",
+                    },
+                )
+            )
     if model_size_guard_exceeded(component, component.solver_limits):
-        return _exact_guard_not_usable_result()
+        return _exact_guard_not_usable_result(component)
 
     component_result = _solve_component_with_status(component)
     if component_result is None:
         return _exact_not_usable_result()
+    if component_result.status in (SolverStatus.INFEASIBLE, SolverStatus.UNKNOWN):
+        proven = component_result.status == SolverStatus.INFEASIBLE
+        failure = ServiceMessage(
+            code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+            message="Exact solver proved that no assignment satisfies all task constraints"
+            if proven
+            else "Exact solver reached its search limit without finding an assignment; infeasibility is not proven",
+            details={
+                "stage": "exact",
+                "limit": str(_time_limit_seconds(component.solver_limits)),
+                "proof_status": "proven_infeasible" if proven else "not_proven",
+            },
+        )
+        return AssignmentSolverResult(
+            component_result.status,
+            (),
+            ()
+            if proven
+            else (
+                ServiceMessage(MessageCode.SOLVER_LIMIT_REACHED, failure.message, failure.details),
+            ),
+            failure,
+        )
 
     if component_result.status == SolverStatus.OPTIMAL:
         return exact_optimal_result(component_result.assignments)
@@ -112,11 +150,9 @@ class ExactAssignmentSolver:
         component_statuses: list[SolverStatus] = []
         any_limit_reached = False
 
-        for component_index in range(len(base_components)):
-            component = decomposition.iter_component_sub_inputs(
-                assignment_input,
-                prior_solved_assignments=prior_solved_assignments,
-            )[component_index]
+        deadline = perf_counter() + _time_limit_seconds(assignment_input.solver_limits)
+        for base_component in base_components:
+            component = replace(base_component, deadline=deadline)
             component_result = solve_exact_component(component)
             if not is_usable_solver_result(component_result):
                 return component_result
@@ -146,7 +182,10 @@ def _solve_single_component(  # pyright: ignore[reportUnusedFunction]
     component: AssignmentComponent,
 ) -> tuple[TaskAssignment, ...] | None:
     component_result = _solve_component_with_status(component)
-    if component_result is None:
+    if component_result is None or component_result.status not in (
+        SolverStatus.OPTIMAL,
+        SolverStatus.FEASIBLE,
+    ):
         return None
     return component_result.assignments
 
@@ -169,6 +208,8 @@ def _solve_component_with_status(
         return None
 
     assignments, status, limit_reached = lex_result
+    if status in (SolverStatus.INFEASIBLE, SolverStatus.UNKNOWN):
+        return _ComponentSolveResult((), status, limit_reached)
     validation_failure = validate_full_assignment(
         assignment_input_from_component(component),
         assignments,
@@ -192,13 +233,23 @@ def _run_lex_chain(  # noqa: PLR0911
             solve_status,
             _solver_status_from_ortools(ortools_status),
         )
-        if _solve_hit_time_limit(solver, time_limit_seconds):
+        if (
+            ortools_status == cp_model.FEASIBLE
+            or perf_counter() >= context.deadline
+            or _solve_hit_time_limit(solver, time_limit_seconds)
+        ):
             limit_reached = True
 
     context.model.Minimize(0)
     ortools_status, solver = _solve_context(context)
     if ortools_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None
+        return (
+            (),
+            SolverStatus.INFEASIBLE
+            if ortools_status == cp_model.INFEASIBLE
+            else SolverStatus.UNKNOWN,
+            ortools_status != cp_model.INFEASIBLE,
+        )
     absorb_solve(ortools_status, solver)
 
     last_assignments = _extract_assignments(
@@ -216,7 +267,7 @@ def _run_lex_chain(  # noqa: PLR0911
             maximize=True,
         )
         if assignments is None:
-            return last_assignments, solve_status, limit_reached
+            return last_assignments, SolverStatus.FEASIBLE, True
         absorb_solve(ortools_status, solver)
         last_assignments = assignments
 
@@ -233,7 +284,7 @@ def _run_lex_chain(  # noqa: PLR0911
             maximize=maximize,
         )
         if assignments is None:
-            return last_assignments, solve_status, limit_reached
+            return last_assignments, SolverStatus.FEASIBLE, True
         absorb_solve(ortools_status, solver)
         last_assignments = assignments
 
@@ -246,7 +297,7 @@ def _run_lex_chain(  # noqa: PLR0911
             maximize=False,
         )
         if assignments is None:
-            return last_assignments, solve_status, limit_reached
+            return last_assignments, SolverStatus.FEASIBLE, True
         absorb_solve(ortools_status, solver)
         last_assignments = assignments
 
@@ -262,7 +313,7 @@ def _run_lex_chain(  # noqa: PLR0911
             maximize=maximize,
         )
         if assignments is None:
-            return last_assignments, solve_status, limit_reached
+            return last_assignments, SolverStatus.FEASIBLE, True
         absorb_solve(ortools_status, solver)
         last_assignments = assignments
 
@@ -271,7 +322,11 @@ def _run_lex_chain(  # noqa: PLR0911
 
 def _solve_context(context: _ComponentContext) -> tuple[int, cp_model.CpSolver]:
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = _time_limit_seconds(context.component.solver_limits)
+    solver.parameters.num_search_workers = 1
+    remaining = context.deadline - perf_counter()
+    if remaining <= 0:
+        return cp_model.UNKNOWN, solver
+    solver.parameters.max_time_in_seconds = remaining
     status = solver.Solve(context.model)
     return status, solver
 
@@ -324,6 +379,9 @@ def _build_component_context(
         model=model,
         task_variables=task_variables,
         hints_by_plan_id=hints_by_plan_id,
+        deadline=component.deadline
+        if component.deadline is not None
+        else perf_counter() + _time_limit_seconds(component.solver_limits),
     )
 
 
@@ -1047,9 +1105,15 @@ def _bounded_overlap_minutes(
     return overlap
 
 
-def _exact_guard_not_usable_result() -> AssignmentSolverResult:
+def _exact_guard_not_usable_result(component: AssignmentComponent) -> AssignmentSolverResult:
+    details = {
+        "stage": "model_size_guard",
+        "estimate": str(estimate_model_variable_count(component)),
+        "limit": str(component.solver_limits.model_size_limit if component.solver_limits else 0),
+        "proof_status": "not_proven",
+    }
     return AssignmentSolverResult(
-        status=SolverStatus.INFEASIBLE,
+        status=SolverStatus.UNKNOWN,
         assignments=(),
         warnings=(
             ServiceMessage(
@@ -1058,21 +1122,25 @@ def _exact_guard_not_usable_result() -> AssignmentSolverResult:
                     "Exact solver skipped because the estimated model size exceeded "
                     "the configured limit"
                 ),
-                details={},
+                details=details,
             ),
         ),
-        failure=None,
+        failure=ServiceMessage(
+            MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
+            "Exact search was skipped by its structural model-size limit; infeasibility is not proven",
+            details,
+        ),
     )
 
 
 def _exact_not_usable_result() -> AssignmentSolverResult:
     return AssignmentSolverResult(
-        status=SolverStatus.INFEASIBLE,
+        status=SolverStatus.UNKNOWN,
         assignments=(),
         warnings=(),
         failure=ServiceMessage(
             code=MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT,
             message="Exact solver could not produce a usable assignment",
-            details={},
+            details={"stage": "exact", "proof_status": "not_proven"},
         ),
     )

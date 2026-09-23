@@ -784,7 +784,7 @@ def test_solve_assignment_mixed_exact_then_heuristic_per_component(
                 duration_minutes=30,
                 divisible=False,
                 minimum_chunk_size_minutes=None,
-                effective_time_windows=(morning,),
+                effective_time_windows=(_window(_utc(2026, 6, 7, 13, 0), _utc(2026, 6, 7, 14, 0)),),
                 priority_path=(1,),
             ),
         ),

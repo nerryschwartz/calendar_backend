@@ -47,6 +47,7 @@ class SolverStatus(StrEnum):
     OPTIMAL = "OPTIMAL"
     FEASIBLE = "FEASIBLE"
     INFEASIBLE = "INFEASIBLE"
+    UNKNOWN = "UNKNOWN"
 
 
 class LastFailureReason(StrEnum):

@@ -48,6 +48,7 @@ def test_solver_status_is_mutually_exclusive_outcome() -> None:
         SolverStatus.OPTIMAL,
         SolverStatus.FEASIBLE,
         SolverStatus.INFEASIBLE,
+        SolverStatus.UNKNOWN,
     }
 
 

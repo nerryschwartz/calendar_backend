@@ -109,7 +109,10 @@ class BlockAssignmentService:
             heuristic_enabled=settings.heuristic_enabled,
         )
         solver_result = _normalize_infeasible_solver_result(solver_result)
-        if solver_result.status == SolverStatus.INFEASIBLE:
+        if (
+            solver_result.status not in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+            or solver_result.failure is not None
+        ):
             assert solver_result.failure is not None
             with transaction(self._session) as txn:
                 assignment_result = _persist_failed_block_assignment(
@@ -220,7 +223,7 @@ def _persist_failed_block_assignment(
             run_started_at=run_started_at,
             clock=clock,
             status=CalendarRunStatus.FAILED,
-            solver_status=SolverStatus.INFEASIBLE,
+            solver_status=solver_result.status,
             conflict_count=0,
             warning_count=len(solver_result.warnings),
             runtime_ms=runtime_ms,
@@ -241,7 +244,7 @@ def _persist_failed_block_assignment(
 
     return BlockAssignmentResult(
         run_started_at=run_started_at,
-        optimization_status=SolverStatus.INFEASIBLE,
+        optimization_status=solver_result.status,
         block_calendar_entries=(),
         warnings=solver_result.warnings,
         runtime_ms=runtime_ms,

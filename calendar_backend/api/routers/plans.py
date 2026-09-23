@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from calendar_backend.api.deps import get_clock, get_db_session
@@ -27,7 +27,7 @@ from calendar_backend.services.plan_tree_invariant import PlanTreeInvariantServi
 from calendar_backend.services.plan_tree_read import PlanTreeReadService
 from calendar_backend.services.task import TaskService
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/api/plans", tags=["plans"])
@@ -35,6 +35,47 @@ router = APIRouter(prefix="/api/plans", tags=["plans"])
 
 class RenameBody(BaseModel):
     name: str
+
+
+class GoalTemplateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal[PlanKind.GOAL]
+    name: str
+
+
+class TaskTemplateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal[PlanKind.TASK]
+    name: str
+    duration_minutes: int
+    divisible: bool = False
+    minimum_chunk_size_minutes: int | None = None
+
+
+class BlockTemplateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal[PlanKind.BLOCK]
+    name: str
+    duration_minutes: int
+    divisible: bool = False
+    minimum_chunk_size_minutes: int | None = None
+    block_family: str
+
+
+class RepetitionTemplateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal[PlanKind.REPETITION]
+    name: str
+    repeat_mode: RepeatMode
+    start_time: datetime
+    repeat_interval_minutes: int
+    manual_count: int | None = None
+    end_time: datetime | None = None
+    default_instance_critical: bool = False
+    template: Annotated[
+        GoalTemplateBody | TaskTemplateBody | BlockTemplateBody | RepetitionTemplateBody,
+        Field(discriminator="kind"),
+    ]
 
 
 class CreateChildBody(BaseModel):
@@ -57,11 +98,31 @@ class CreateChildBody(BaseModel):
     template_divisible: bool | None = None
     template_minimum_chunk_size_minutes: int | None = None
     template_block_family: str | None = None
+    template: Annotated[
+        GoalTemplateBody | TaskTemplateBody | BlockTemplateBody | RepetitionTemplateBody | None,
+        Field(discriminator="kind"),
+    ] = None
+
+    @model_validator(mode="after")
+    def validate_template_representation(self) -> CreateChildBody:
+        if self.template is not None:
+            if self.kind != PlanKind.REPETITION:
+                raise ValueError("Only repetitions can have a template")
+            if any(field.startswith("template_") for field in self.model_fields_set):
+                raise ValueError("Use either template or legacy template_* fields, not both")
+        if self.template_type == PlanKind.REPETITION:
+            raise ValueError("Nested repetitions require the recursive template object")
+        return self
 
 
 class MovePlanBody(BaseModel):
     position: int
     is_critical: bool | None = None
+
+
+class ChildOrderBody(BaseModel):
+    critical_child_ids: list[UUID]
+    non_critical_child_ids: list[UUID]
 
 
 class PrerequisiteBody(BaseModel):
@@ -152,6 +213,25 @@ def create_child(
         body.is_critical,
     )
     return dto_to_json(unwrap_result(result))
+
+
+@router.put("/{goal_id}/children/order")
+def order_children(
+    goal_id: UUID,
+    body: ChildOrderBody,
+    session: Annotated[Session, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> dict[str, Any]:
+    unwrap_result(
+        GoalService(session, clock).order_children(
+            PlanID(goal_id),
+            tuple(PlanID(value) for value in body.critical_child_ids),
+            tuple(PlanID(value) for value in body.non_critical_child_ids),
+        )
+    )
+    return dto_to_json(
+        unwrap_result(PlanTreeReadService(session, clock).get_plan_detail(PlanID(goal_id)))
+    )
 
 
 @router.post("/{plan_id}/move")
@@ -353,9 +433,12 @@ def _create_payload_from_body(body: CreateChildBody):
             minimum_chunk_size_minutes=body.minimum_chunk_size_minutes,
             block_family=body.block_family or "default",
         )
-    template_type = body.template_type or PlanKind.TASK
-    template_payload: GoalCreatePayload | TaskCreatePayload | BlockCreatePayload
-    if template_type == PlanKind.GOAL:
+    template_type = (
+        body.template.kind if body.template is not None else body.template_type or PlanKind.TASK
+    )
+    if body.template is not None:
+        template_payload = _template_payload(body.template)
+    elif template_type == PlanKind.GOAL:
         template_payload = GoalCreatePayload(name=body.template_name or "template")
     elif template_type == PlanKind.BLOCK:
         template_payload = BlockCreatePayload(
@@ -382,4 +465,37 @@ def _create_payload_from_body(body: CreateChildBody):
         default_instance_critical=body.default_instance_critical or False,
         template_type=template_type,
         template_payload=template_payload,
+    )
+
+
+def _template_payload(
+    body: GoalTemplateBody | TaskTemplateBody | BlockTemplateBody | RepetitionTemplateBody,
+) -> GoalCreatePayload | TaskCreatePayload | BlockCreatePayload | RepetitionCreatePayload:
+    if isinstance(body, GoalTemplateBody):
+        return GoalCreatePayload(name=body.name)
+    if isinstance(body, RepetitionTemplateBody):
+        return RepetitionCreatePayload(
+            name=body.name,
+            repeat_mode=body.repeat_mode,
+            start_time=body.start_time,
+            repeat_interval_minutes=body.repeat_interval_minutes,
+            manual_count=body.manual_count,
+            end_time=body.end_time,
+            default_instance_critical=body.default_instance_critical,
+            template_type=body.template.kind,
+            template_payload=_template_payload(body.template),
+        )
+    if isinstance(body, BlockTemplateBody):
+        return BlockCreatePayload(
+            name=body.name,
+            duration_minutes=body.duration_minutes,
+            divisible=body.divisible,
+            minimum_chunk_size_minutes=body.minimum_chunk_size_minutes,
+            block_family=body.block_family,
+        )
+    return TaskCreatePayload(
+        name=body.name,
+        duration_minutes=body.duration_minutes,
+        divisible=body.divisible,
+        minimum_chunk_size_minutes=body.minimum_chunk_size_minutes,
     )

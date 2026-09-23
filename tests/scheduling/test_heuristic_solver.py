@@ -176,9 +176,9 @@ def test_solve_fails_insufficient_total_capacity() -> None:
 
     result = HeuristicAssignmentSolver().solve(assignment_input_value)
 
-    assert result.status == SolverStatus.INFEASIBLE
+    assert result.status == SolverStatus.UNKNOWN
     assert result.failure is not None
-    assert result.failure.code == MessageCode.INSUFFICIENT_TOTAL_CAPACITY
+    assert result.failure.code == MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT
 
 
 def test_solve_fails_when_narrowed_effective_window_shorter_than_duration() -> None:
@@ -189,9 +189,9 @@ def test_solve_fails_when_narrowed_effective_window_shorter_than_duration() -> N
 
     result = HeuristicAssignmentSolver().solve(assignment_input(tasks=(task,)))
 
-    assert result.status == SolverStatus.INFEASIBLE
+    assert result.status == SolverStatus.UNKNOWN
     assert result.failure is not None
-    assert result.failure.code == MessageCode.INSUFFICIENT_TOTAL_CAPACITY
+    assert result.failure.code == MessageCode.SOLVER_FAILED_TO_FIND_FEASIBLE_ASSIGNMENT
 
 
 def test_solve_feasible_includes_heuristic_feasible_warning() -> None:

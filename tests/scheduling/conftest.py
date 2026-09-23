@@ -97,12 +97,12 @@ def two_disconnected_chain_input() -> AssignmentInput:
             schedulable_task(
                 task_id=chain_b_first,
                 duration_minutes=30,
-                effective_time_windows=(morning,),
+                effective_time_windows=(window(utc(2026, 6, 7, 13, 0), utc(2026, 6, 7, 16, 0)),),
             ),
             schedulable_task(
                 task_id=chain_b_second,
                 duration_minutes=30,
-                effective_time_windows=(morning,),
+                effective_time_windows=(window(utc(2026, 6, 7, 13, 0), utc(2026, 6, 7, 16, 0)),),
             ),
         ),
         precedence_edges=(
